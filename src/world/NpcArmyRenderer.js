@@ -1,5 +1,4 @@
 import { Container, Graphics } from 'pixi.js';
-import { TILE_SIZE } from './constants.js';
 import { drawFlagGraphics, cssToNum } from '../systems/AppearanceSystem.js';
 
 // ---------------------------------------------------------------------------
@@ -15,20 +14,6 @@ const POLE_HEIGHT = 28;
 /** Flag rectangle dimensions drawn at the pole top. */
 const FLAG_W = 16;
 const FLAG_H = 11;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function _castleCenterPx(castle) {
-  if (!castle) return null;
-  return { x: (castle.x + 2) * TILE_SIZE, y: (castle.y + 2) * TILE_SIZE };
-}
-
-function _villageCenterPx(village) {
-  if (!village) return null;
-  return { x: (village.x + 1) * TILE_SIZE, y: (village.y + 1) * TILE_SIZE };
-}
 
 // ---------------------------------------------------------------------------
 // NpcArmyRenderer
@@ -71,7 +56,8 @@ export class NpcArmyRenderer {
   /**
    * Synchronise visual tokens with the current pending-march list.
    * Tokens for marches that no longer exist are destroyed; new tokens are
-   * created for newly queued marches; all tokens are repositioned.
+   * created for newly queued marches; all tokens are repositioned using the
+   * current world-pixel position stored in `march.worldX` / `march.worldY`.
    *
    * @param {ReadonlyArray<object>} marches  From `diplomacySystem.getPendingMarches()`
    * @param {import('./MapData.js').MapData}  mapData
@@ -89,17 +75,8 @@ export class NpcArmyRenderer {
 
     // ── Create / reposition tokens ───────────────────────────────────────────
     for (const march of marches) {
-      const fromPx = _castleCenterPx(mapData.castles[march.attackerCastleIdx]);
-      const toPx = march.targetType === 'castle'
-        ? _castleCenterPx(mapData.castles[march.targetIdx])
-        : _villageCenterPx(mapData.villages[march.targetIdx]);
-
-      if (!fromPx || !toPx) continue;
-
-      // Linear interpolation of world position.
-      const t  = Math.max(0, Math.min(1, march.progress));
-      const px = fromPx.x + (toPx.x - fromPx.x) * t;
-      const py = fromPx.y + (toPx.y - fromPx.y) * t;
+      // Guard: worldX/worldY must be set (they are set at march creation time).
+      if (march.worldX == null || march.worldY == null) continue;
 
       let token = this._tokens.get(march.id);
       if (!token) {
@@ -108,8 +85,8 @@ export class NpcArmyRenderer {
         this.container.addChild(token);
       }
 
-      token.x = px;
-      token.y = py;
+      token.x = march.worldX;
+      token.y = march.worldY;
     }
   }
 

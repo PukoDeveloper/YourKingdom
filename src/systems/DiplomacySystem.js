@@ -13,8 +13,9 @@
  *   - Ruler personality         (arrogant/warlike → negative; gentle → positive)
  */
 
-import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
+import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, TERRAIN } from '../world/constants.js';
 import { BuildingSystem, BLDG_TAVERN } from './BuildingSystem.js';
+import { buildPath } from '../world/NpcPathfinder.js';
 
 // ---------------------------------------------------------------------------
 // NPC AI constants
@@ -50,8 +51,24 @@ export const GARRISON_TAX_PENALTY_PER_UNIT = 2;
 /** NPC gold cap. */
 const NPC_GOLD_CAP = 3000;
 
-/** World pixels per second for NPC army marches across the map. */
+/** World pixels per second for NPC army marches on open terrain. */
 const NPC_MARCH_SPEED_PX = 240;
+
+/** Speed multiplier on FOREST tiles (mirrors Player.js FOREST_SPEED_MULT). */
+const MARCH_FOREST_SPEED_MULT = 0.4;
+
+/**
+ * Terrain-aware speed multiplier at a world-pixel position.
+ * @param {import('../world/MapData.js').MapData} mapData
+ * @param {number} wx  World-pixel X
+ * @param {number} wy  World-pixel Y
+ * @returns {number}
+ */
+function _marchSpeedMult(mapData, wx, wy) {
+  return mapData.getTerrainAtWorld(wx, wy) === TERRAIN.FOREST
+    ? MARCH_FOREST_SPEED_MULT
+    : 1.0;
+}
 
 /**
  * Win-rate threshold for a single squad: if the estimated win chance using only
@@ -156,6 +173,12 @@ export class DiplomacySystem {
     this.nationSystem = nationSystem;
 
     /**
+     * Map data reference – kept for pathfinding when armies are dispatched.
+     * @type {import('../world/MapData.js').MapData}
+     */
+    this._mapData = mapData;
+
+    /**
      * Castle positions indexed by nation id, used for distance calculations.
      * Index i corresponds to nation id i (mirrors the NationSystem convention
      * where castles[i] is always assigned to nation id i during world generation).
@@ -244,7 +267,10 @@ export class DiplomacySystem {
      *   sendBoth: boolean,
      *   victory: boolean,
      *   atkLoss: number,
-     *   progress: number,
+     *   worldX: number,
+     *   worldY: number,
+     *   _path: { x: number, y: number }[],
+     *   _pathSegIdx: number,
      *   _atkKey: string,
      *   _defKey: string,
      *   _attackerName: string,
@@ -748,6 +774,8 @@ export class DiplomacySystem {
       const s2Str    = this._squadStrength(squad2);
       const defStr   = bestTarget.defStr;
       // If squad1 is empty fall back to 0 win rate so we always commit squad2 when available.
+      // The `+ 1` in the denominator is a baseline defender advantage that prevents
+      // division-by-zero and ensures even zero-strength defenders win occasionally.
       const winRate1 = squad1.length > 0 && s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
       const totalStr = s1Str + s2Str;
       const winRate2 = totalStr > 0 ? totalStr / (totalStr + defStr + 1) : 0;
@@ -768,6 +796,22 @@ export class DiplomacySystem {
       // ── Queue the march ─────────────────────────────────────────────────────
       const attackerName = nations[id]?.name ?? s.name;
       const squadLabel   = _squadLabel(sendBoth);
+
+      // Pre-compute the A* path from the attacker's castle to the target.
+      const fromPx = _marchCastlePx(this._mapData.castles[id]);
+      const toPx   = bestTarget.type === 'castle'
+        ? _marchCastlePx(this._mapData.castles[bestTarget.idx])
+        : _marchVillagePx(this._mapData.villages[bestTarget.idx]);
+
+      let path;
+      if (fromPx && toPx) {
+        // A* path; fall back to a direct two-point line if pathfinder returns null
+        // (e.g. both endpoints happen to be surrounded by water — extremely rare).
+        path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+      } else {
+        return; // cannot determine positions – skip this march
+      }
+
       this._pendingMarches.push({
         id:                this._marchNextId++,
         attackerNationId:  id,
@@ -778,7 +822,10 @@ export class DiplomacySystem {
         sendBoth,
         victory,
         atkLoss,
-        progress:          0,
+        worldX:            path[0].x,
+        worldY:            path[0].y,
+        _path:             path,
+        _pathSegIdx:       0,
         _atkKey:           atkKey,
         _defKey:           `${bestTarget.type}:${bestTarget.idx}`,
         _attackerName:     attackerName,
@@ -849,8 +896,9 @@ export class DiplomacySystem {
   }
 
   /**
-   * Advance all pending NPC marches by `dt` seconds and resolve any that
-   * have arrived at their target.
+   * Advance all pending NPC marches by `dt` seconds along their A*-computed
+   * paths.  Armies slow down on FOREST tiles (same penalty as the player) and
+   * cannot cut through MOUNTAIN or WATER tiles (blocked by the path itself).
    *
    * Must be called every game-loop frame from Game.js.
    *
@@ -868,26 +916,41 @@ export class DiplomacySystem {
     const resolved = [];
 
     for (const march of this._pendingMarches) {
-      // Compute pixel positions for start and target.
-      const fromPx = _marchCastlePx(mapData.castles[march.attackerCastleIdx]);
-      const toPx = march.targetType === 'castle'
-        ? _marchCastlePx(mapData.castles[march.targetIdx])
-        : _marchVillagePx(mapData.villages[march.targetIdx]);
-
-      if (!fromPx || !toPx) {
-        // Invalid positions – resolve immediately without effect.
+      const path = march._path;
+      if (!path || path.length < 2) {
+        // Invalid path – resolve immediately without effect.
         resolved.push(march);
         continue;
       }
 
-      const dist = Math.sqrt((toPx.x - fromPx.x) ** 2 + (toPx.y - fromPx.y) ** 2);
-      if (dist < 1) {
-        march.progress = 1;
-      } else {
-        march.progress = Math.min(1, march.progress + (NPC_MARCH_SPEED_PX * dt) / dist);
+      // How many world-pixels can the army travel this frame?
+      const speedMult  = _marchSpeedMult(mapData, march.worldX, march.worldY);
+      let   remaining  = NPC_MARCH_SPEED_PX * speedMult * dt;
+
+      // Consume `remaining` pixels by stepping along waypoints.
+      while (remaining > 0 && march._pathSegIdx < path.length - 1) {
+        const next = path[march._pathSegIdx + 1];
+        const dx   = next.x - march.worldX;
+        const dy   = next.y - march.worldY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist <= remaining) {
+          // Advance fully to the next waypoint.
+          march.worldX       = next.x;
+          march.worldY       = next.y;
+          remaining         -= dist;
+          march._pathSegIdx += 1;
+        } else {
+          // Partial advance along this segment.
+          const t      = remaining / dist;
+          march.worldX = march.worldX + dx * t;
+          march.worldY = march.worldY + dy * t;
+          remaining    = 0;
+        }
       }
 
-      if (march.progress >= 1) {
+      // Check arrival: reached the last waypoint.
+      if (march._pathSegIdx >= path.length - 1) {
         resolved.push(march);
         const resMessages = this._resolveMarch(march);
         messages.push(...resMessages);
