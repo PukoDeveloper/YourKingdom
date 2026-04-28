@@ -95,7 +95,7 @@ export class Game {
     const defaultY = (tileY + 0.5) * TILE_SIZE;
     const startX = savedState?.player?.x ?? defaultX;
     const startY = savedState?.player?.y ?? defaultY;
-    this._player = new Player(startX, startY);
+    this._player = new Player(startX, startY, savedState?.playerAppearance ?? null);
     this._world.addChild(this._player.container);
 
     // -----------------------------------------------------------------------
@@ -152,6 +152,7 @@ export class Game {
       () => this.save(),
       this._nationSystem,
       () => this._resetGame(),
+      this._player,
     );
 
     // -----------------------------------------------------------------------
@@ -230,9 +231,10 @@ export class Game {
   /** Collect full game state and persist it to localStorage. */
   save() {
     const ok = SaveManager.save({
-      seed:    this._seed,
-      player:  { x: this._player.x, y: this._player.y },
-      dayTime: this._dayNight.time,
+      seed:             this._seed,
+      player:           { x: this._player.x, y: this._player.y },
+      playerAppearance: this._player.getAppearanceState(),
+      dayTime:          this._dayNight.time,
       ...this._gameUI.getState(),
     });
     this._gameUI.showToast(ok ? '遊戲已儲存 💾' : '儲存失敗 ✗');

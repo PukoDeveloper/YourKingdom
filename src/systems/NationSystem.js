@@ -12,6 +12,7 @@
  */
 
 import { Unit } from './Army.js';
+import { generateFlagAppearance } from './AppearanceSystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
@@ -112,7 +113,7 @@ export class NationSystem {
   constructor(mapData) {
     this.seed = mapData.seed;
 
-    /** @type {{ id: number, name: string, color: string, emblem: string }[]} */
+    /** @type {{ id: number, name: string, color: string, emblem: string, flagApp: object }[]} */
     this.nations = [];
 
     /** @type {Settlement[]} – parallel array to mapData.castles */
@@ -132,9 +133,10 @@ export class NationSystem {
     const { castles, villages, seed } = mapData;
 
     // One nation per castle
-    castles.forEach((_, i) => {
-      const tpl = NATION_TEMPLATES[i % NATION_TEMPLATES.length];
-      this.nations.push({ id: i, name: tpl.name, color: tpl.color, emblem: tpl.emblem });
+    castles.forEach((c, i) => {
+      const tpl     = NATION_TEMPLATES[i % NATION_TEMPLATES.length];
+      const flagApp = generateFlagAppearance(c.x + seed, c.y + i * 37);
+      this.nations.push({ id: i, name: tpl.name, color: tpl.color, emblem: tpl.emblem, flagApp });
     });
 
     // Castle settlements
@@ -258,7 +260,13 @@ export class NationSystem {
    */
   getNation(settlement) {
     if (settlement.nationId < 0) {
-      return { id: -1, name: '中立', color: '#9E9E9E', emblem: '⚑' };
+      return {
+        id:      -1,
+        name:    '中立',
+        color:   '#9E9E9E',
+        emblem:  '⚑',
+        flagApp: { bgColor: '#9E9E9E', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '⚑', symbolShape: 'circle' },
+      };
     }
     return this.nations[settlement.nationId];
   }

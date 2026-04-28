@@ -1,5 +1,6 @@
 import { Graphics } from 'pixi.js';
 import { TERRAIN, TILE_SIZE } from './constants.js';
+import { drawFlagGraphics } from '../systems/AppearanceSystem.js';
 
 const T = TILE_SIZE; // 48
 
@@ -108,9 +109,10 @@ export function drawTile(g, localX, localY, terrain) {
 /**
  * Draw a detailed castle building at world-pixel position (px, py).
  * The building occupies 4×4 tiles = (4 * TILE_SIZE)² pixels.
- * @param {number} [flagColor=0xE53935] Nation banner colour (hex number).
+ * @param {number} [flagColor=0xE53935] Nation banner colour (hex number) – used as fallback.
+ * @param {object|null} [flagApp]  Composite flag appearance from AppearanceSystem.
  */
-export function drawCastleBuilding(g, px, py, flagColor = 0xE53935) {
+export function drawCastleBuilding(g, px, py, flagColor = 0xE53935, flagApp = null) {
   const S = T * 4; // 192
 
   // --- Outer defensive ground ---
@@ -177,11 +179,15 @@ export function drawCastleBuilding(g, px, py, flagColor = 0xE53935) {
 
   // --- Flagpole + banner on keep (nation colour) ---
   g.rect(px + 94, py + 54, 4, 22).fill(0x8D6E63);
-  g.poly([
-    px + 98, py + 54,
-    px + 118, py + 62,
-    px + 98, py + 70,
-  ]).fill(flagColor);
+  if (flagApp) {
+    drawFlagGraphics(g, px + 98, py + 54, 20, 16, flagApp);
+  } else {
+    g.poly([
+      px + 98, py + 54,
+      px + 118, py + 62,
+      px + 98, py + 70,
+    ]).fill(flagColor);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +197,10 @@ export function drawCastleBuilding(g, px, py, flagColor = 0xE53935) {
 /**
  * Draw a village cluster at world-pixel position (px, py).
  * The village occupies 2×2 tiles = (2 * TILE_SIZE)² pixels.
- * @param {number} [flagColor=0xBF360C] Nation banner colour (hex number).
+ * @param {number} [flagColor=0xBF360C] Nation banner colour (hex number) – used as fallback.
+ * @param {object|null} [flagApp]  Composite flag appearance from AppearanceSystem.
  */
-export function drawVillageBuilding(g, px, py, flagColor = 0xBF360C) {
+export function drawVillageBuilding(g, px, py, flagColor = 0xBF360C, flagApp = null) {
   const S = T * 2; // 96
 
   // --- Ground base ---
@@ -228,11 +235,15 @@ export function drawVillageBuilding(g, px, py, flagColor = 0xBF360C) {
 
   // --- Flagpole on house-2 roof peak (nation colour) ---
   g.rect(px + 74, py - 8, 3, 16).fill(0x8D6E63); // pole
-  g.poly([
-    px + 77, py - 8,
-    px + 91, py - 1,
-    px + 77, py + 6,
-  ]).fill(flagColor); // triangular banner
+  if (flagApp) {
+    drawFlagGraphics(g, px + 77, py - 8, 14, 11, flagApp);
+  } else {
+    g.poly([
+      px + 77, py - 8,
+      px + 91, py - 1,
+      px + 77, py + 6,
+    ]).fill(flagColor); // triangular banner
+  }
 }
 
 // ---------------------------------------------------------------------------

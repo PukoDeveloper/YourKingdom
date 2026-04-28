@@ -4,6 +4,8 @@
  * Any member that has the TRAIT_CAPTAIN trait can be set as the squad captain.
  */
 
+import { generateCharAppearance, charAppearanceFromIndices } from './AppearanceSystem.js';
+
 export const MAX_MEMBERS   = 10;
 export const MAX_SQUADS    = 3;
 export const TRAIT_CAPTAIN = '隊長';
@@ -15,15 +17,16 @@ export const TRAIT_CAPTAIN = '隊長';
 export class Unit {
   /**
    * @param {{
-   *   id:      number,
-   *   name:    string,
-   *   role:    string,
-   *   traits?: string[],
-   *   stats?:  Object,
-   *   active?: boolean
+   *   id:          number,
+   *   name:        string,
+   *   role:        string,
+   *   traits?:     string[],
+   *   stats?:      Object,
+   *   active?:     boolean,
+   *   appearance?: Object
    * }} opts
    */
-  constructor({ id, name, role, traits = [], stats = {}, active = true }) {
+  constructor({ id, name, role, traits = [], stats = {}, active = true, appearance = null }) {
     this.id     = id;
     this.name   = name;
     this.role   = role;
@@ -31,6 +34,19 @@ export class Unit {
     this.stats  = { attack: 5, defense: 5, morale: 50, ...stats };
     /** Whether this unit participates in battle. */
     this.active = active !== false;
+
+    /**
+     * Modular appearance parts.  Auto-generated from the unit id if not
+     * explicitly supplied (so every soldier gets a deterministic random look).
+     * @type {{ bodyColorIdx: number, headgearIdx: number, armorColorIdx: number, markColorIdx: number,
+     *          bodyColor: number, bodyColorCSS: string, headgear: string,
+     *          armorColor: number, armorColorCSS: string, markColor: number, markColorCSS: string }}
+     */
+    if (appearance && appearance.bodyColorIdx !== undefined) {
+      this.appearance = charAppearanceFromIndices(appearance);
+    } else {
+      this.appearance = generateCharAppearance(id * 17, id * 31 + 7);
+    }
   }
 
   /** @returns {boolean} true when the unit carries the captain trait */
@@ -237,8 +253,14 @@ export class Army {
         captainId:     sq.captainId,
         members:       sq.members.map(m => ({
           ...m,
-          stats:  { ...m.stats },
-          traits: [...m.traits],
+          stats:      { ...m.stats },
+          traits:     [...m.traits],
+          appearance: {
+            bodyColorIdx:  m.appearance.bodyColorIdx,
+            headgearIdx:   m.appearance.headgearIdx,
+            armorColorIdx: m.appearance.armorColorIdx,
+            markColorIdx:  m.appearance.markColorIdx,
+          },
         })),
       })),
     };

@@ -1,6 +1,16 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
 import { TRAIT_RULER }                     from '../systems/NationSystem.js';
+import {
+  renderFlagHTML,
+  renderCharHTML,
+  charAppearanceFromIndices,
+  CHAR_BODY_COLORS_CSS,
+  CHAR_HEADGEAR_TYPES,
+  CHAR_HEADGEAR_LABELS,
+  CHAR_ARMOR_COLORS_CSS,
+  CHAR_MARK_COLORS_CSS,
+} from '../systems/AppearanceSystem.js';
 
 /**
  * GameUI – manages the Backpack and Team DOM panels.
@@ -18,13 +28,17 @@ export class GameUI {
    * @param {() => void} [onSave]  Called when the player presses the save button.
    * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
    * @param {() => void} [onReset] Called when the player confirms a game reset.
+   * @param {import('../entities/Player.js').Player|null} [player]  Live Player instance.
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
     /** @type {import('../systems/NationSystem.js').NationSystem|null} */
     this.nationSystem = nationSystem;
+
+    /** @type {import('../entities/Player.js').Player|null} */
+    this.player = player;
 
     /** @type {'backpack'|'team'|'nations'|'settings'|null} */
     this._activePanel  = null;
@@ -123,11 +137,12 @@ export class GameUI {
     const tabBar = document.createElement('div');
     tabBar.id = 'ui-tab-bar';
     tabBar.innerHTML = `
-      <button id="btn-backpack" class="ui-tab-btn" title="背包">🎒</button>
-      <button id="btn-team"     class="ui-tab-btn" title="隊伍">⚔️</button>
-      <button id="btn-nations"  class="ui-tab-btn" title="王國">🏰</button>
-      <button id="btn-save"     class="ui-tab-btn" title="儲存">💾</button>
-      <button id="btn-settings" class="ui-tab-btn" title="設定">⚙️</button>
+      <button id="btn-backpack"   class="ui-tab-btn" title="背包">🎒</button>
+      <button id="btn-team"       class="ui-tab-btn" title="隊伍">⚔️</button>
+      <button id="btn-nations"    class="ui-tab-btn" title="王國">🏰</button>
+      <button id="btn-appearance" class="ui-tab-btn" title="外觀">🎨</button>
+      <button id="btn-save"       class="ui-tab-btn" title="儲存">💾</button>
+      <button id="btn-settings"   class="ui-tab-btn" title="設定">⚙️</button>
     `;
     document.body.appendChild(tabBar);
 
@@ -219,6 +234,7 @@ export class GameUI {
     document.getElementById('btn-backpack').addEventListener('click', () => this._togglePanel('backpack'));
     document.getElementById('btn-team').addEventListener('click',     () => this._togglePanel('team'));
     document.getElementById('btn-nations').addEventListener('click',  () => this._togglePanel('nations'));
+    document.getElementById('btn-appearance').addEventListener('click', () => this._togglePanel('appearance'));
     document.getElementById('btn-settings').addEventListener('click', () => this._togglePanel('settings'));
     document.getElementById('ui-panel-close').addEventListener('click', () => this._closePanel());
 
@@ -268,10 +284,11 @@ export class GameUI {
     this._activePanel = type;
     const panel = document.getElementById('ui-panel');
     panel.classList.add('visible');
-    document.getElementById('btn-backpack').classList.toggle('active', type === 'backpack');
-    document.getElementById('btn-team').classList.toggle('active',     type === 'team');
-    document.getElementById('btn-nations').classList.toggle('active',  type === 'nations');
-    document.getElementById('btn-settings').classList.toggle('active', type === 'settings');
+    document.getElementById('btn-backpack').classList.toggle('active',   type === 'backpack');
+    document.getElementById('btn-team').classList.toggle('active',       type === 'team');
+    document.getElementById('btn-nations').classList.toggle('active',    type === 'nations');
+    document.getElementById('btn-appearance').classList.toggle('active', type === 'appearance');
+    document.getElementById('btn-settings').classList.toggle('active',   type === 'settings');
 
     if (type === 'backpack') {
       document.getElementById('ui-panel-title').textContent = '🎒 背包';
@@ -279,6 +296,9 @@ export class GameUI {
     } else if (type === 'nations') {
       document.getElementById('ui-panel-title').textContent = '🏰 王國';
       this._renderNations();
+    } else if (type === 'appearance') {
+      document.getElementById('ui-panel-title').textContent = '🎨 外觀';
+      this._renderAppearance();
     } else if (type === 'settings') {
       document.getElementById('ui-panel-title').textContent = '⚙️ 設定';
       this._renderSettings();
@@ -294,6 +314,7 @@ export class GameUI {
     document.getElementById('btn-backpack').classList.remove('active');
     document.getElementById('btn-team').classList.remove('active');
     document.getElementById('btn-nations').classList.remove('active');
+    document.getElementById('btn-appearance').classList.remove('active');
     document.getElementById('btn-settings').classList.remove('active');
   }
 
@@ -526,6 +547,111 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
+  // Appearance customization panel
+  // -------------------------------------------------------------------------
+
+  _renderAppearance() {
+    const content = document.getElementById('ui-panel-content');
+
+    const app = this.player
+      ? this.player.appearance
+      : charAppearanceFromIndices({ bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 });
+
+    const _swatch = (colors, selectedIdx, dataAttr) =>
+      colors.map((c, i) =>
+        `<button class="ap-swatch${i === selectedIdx ? ' selected' : ''}" data-${dataAttr}="${i}"
+                 style="background:${c};width:28px;height:28px;border-radius:50%;border:2px solid ${i === selectedIdx ? '#fff' : 'transparent'};cursor:pointer"></button>`
+      ).join('');
+
+    const headgearHTML = CHAR_HEADGEAR_TYPES.map((t, i) =>
+      `<button class="ap-choice${i === app.headgearIdx ? ' selected' : ''}" data-headgear="${i}">${CHAR_HEADGEAR_LABELS[i]}</button>`
+    ).join('');
+
+    content.innerHTML = `
+      <div class="ap-preview-row">
+        <div id="ap-preview-wrap"></div>
+        <span class="ap-preview-label">玩家外觀預覽</span>
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">衣甲顏色</div>
+        <div class="ap-swatches" id="ap-body-swatches">
+          ${_swatch(CHAR_BODY_COLORS_CSS, app.bodyColorIdx, 'body')}
+        </div>
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">頭部造型</div>
+        <div class="ap-choices">${headgearHTML}</div>
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">護甲顏色</div>
+        <div class="ap-swatches" id="ap-armor-swatches">
+          ${_swatch(CHAR_ARMOR_COLORS_CSS, app.armorColorIdx, 'armor')}
+        </div>
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">標記顏色</div>
+        <div class="ap-swatches" id="ap-mark-swatches">
+          ${_swatch(CHAR_MARK_COLORS_CSS, app.markColorIdx, 'mark')}
+        </div>
+      </div>
+    `;
+
+    // Track pending changes without hitting the player object on every click
+    let pending = {
+      bodyColorIdx:  app.bodyColorIdx,
+      headgearIdx:   app.headgearIdx,
+      armorColorIdx: app.armorColorIdx,
+      markColorIdx:  app.markColorIdx,
+    };
+
+    const _refreshPreview = () => {
+      const preview = charAppearanceFromIndices(pending);
+      document.getElementById('ap-preview-wrap').innerHTML = renderCharHTML(preview, 56);
+    };
+    _refreshPreview();
+
+    const _apply = () => {
+      if (this.player) this.player.setAppearance(pending);
+    };
+
+    content.querySelectorAll('[data-body]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pending.bodyColorIdx = Number(btn.dataset.body);
+        content.querySelectorAll('[data-body]').forEach(b => b.style.border = `2px solid transparent`);
+        btn.style.border = `2px solid #fff`;
+        _apply(); _refreshPreview();
+      });
+    });
+
+    content.querySelectorAll('[data-headgear]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pending.headgearIdx = Number(btn.dataset.headgear);
+        content.querySelectorAll('[data-headgear]').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        _apply(); _refreshPreview();
+      });
+    });
+
+    content.querySelectorAll('[data-armor]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pending.armorColorIdx = Number(btn.dataset.armor);
+        content.querySelectorAll('[data-armor]').forEach(b => b.style.border = `2px solid transparent`);
+        btn.style.border = `2px solid #fff`;
+        _apply(); _refreshPreview();
+      });
+    });
+
+    content.querySelectorAll('[data-mark]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        pending.markColorIdx = Number(btn.dataset.mark);
+        content.querySelectorAll('[data-mark]').forEach(b => b.style.border = `2px solid transparent`);
+        btn.style.border = `2px solid #fff`;
+        _apply(); _refreshPreview();
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Nations panel
   // -------------------------------------------------------------------------
 
@@ -552,7 +678,8 @@ export class GameUI {
 
     const settlements = tab === 'castles' ? castleSettlements : villageSettlements;
     const cardsHTML = settlements.map((s, i) => {
-      const nation = this.nationSystem.getNation(s);
+      const nation   = this.nationSystem.getNation(s);
+      const flagHTML = nation.flagApp ? renderFlagHTML(nation.flagApp, 36) : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
       const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
       const popStr   = s.population.toLocaleString();
       return `
@@ -560,7 +687,7 @@ export class GameUI {
              style="border-color: ${nation.color}44; --ns-color: ${nation.color}"
              role="button" tabindex="0">
           <div class="sc-header">
-            <span class="sc-emblem">${nation.emblem}</span>
+            <span class="sc-flag">${flagHTML}</span>
             <span class="sc-name">${s.name}</span>
             <span class="sc-arrow">›</span>
           </div>
@@ -617,16 +744,17 @@ export class GameUI {
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
+    const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
     const rulerTraitsHTML = ruler.traits.map(t =>
       `<span class="trait-tag${t === TRAIT_RULER ? ' trait-ruler' : ''}">${t}</span>`
     ).join('');
 
-    document.getElementById('ui-settlement-detail-icon').textContent = nation.emblem;
+    document.getElementById('ui-settlement-detail-icon').innerHTML = flagHTML;
     document.getElementById('ui-settlement-detail-name').textContent = settlement.name;
     document.getElementById('ui-settlement-detail-body').innerHTML = `
       <div class="sd-nation-banner" style="background: ${nation.color}22; border-color: ${nation.color}55">
-        <span class="sd-nation-emblem">${nation.emblem}</span>
+        <span class="sd-nation-flag">${flagHTML}</span>
         <span class="sd-nation-name" style="color:${nation.color}">${nation.name}</span>
         <span class="sd-type-tag">${typeLabel}</span>
       </div>
@@ -708,10 +836,12 @@ export class GameUI {
       const m = squad.members[i];
       if (m) {
         const isCaptain = m.id === squad.captainId;
+        const avatarHTML = m.appearance ? renderCharHTML(m.appearance, 32) : '';
         memberCards.push(`
           <div class="unit-card-compact${isCaptain ? ' captain' : ''}${m.active ? '' : ' inactive'}"
                data-id="${m.id}" role="button" tabindex="0">
-            <span class="ucc-badge">${isCaptain ? '⭐' : '👤'}</span>
+            <span class="ucc-avatar">${avatarHTML}</span>
+            <span class="ucc-badge">${isCaptain ? '⭐' : ''}</span>
             <span class="ucc-name">${m.name}</span>
             <span class="ucc-role">${m.role}</span>
             <span class="ucc-status${m.active ? ' active' : ''}">${m.active ? '參戰' : '待命'}</span>

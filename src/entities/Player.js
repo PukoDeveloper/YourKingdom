@@ -1,5 +1,10 @@
 import { Container, Graphics } from 'pixi.js';
 import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
+import {
+  generateCharAppearance,
+  charAppearanceFromIndices,
+  drawCharGraphics,
+} from '../systems/AppearanceSystem.js';
 
 const SPEED              = 200;  // world pixels per second
 const RADIUS             = 12;   // player body radius in world pixels
@@ -9,43 +14,54 @@ export class Player {
   /**
    * @param {number} worldX  starting world-pixel X
    * @param {number} worldY  starting world-pixel Y
+   * @param {object|null} [appearanceIndices]  saved appearance index object, or null for default
    */
-  constructor(worldX, worldY) {
+  constructor(worldX, worldY, appearanceIndices = null) {
     this.x = worldX;
     this.y = worldY;
 
     /** Last non-zero movement direction for idle facing. */
     this._facingAngle = -Math.PI / 2; // facing north by default
 
+    /** Current appearance (modular parts). */
+    this.appearance = appearanceIndices
+      ? charAppearanceFromIndices(appearanceIndices)
+      : generateCharAppearance(0, 42); // default hero look
+
     this.container = this._buildSprite();
   }
 
   // ---------------------------------------------------------------------------
-  // Sprite creation
+  // Sprite creation / update
   // ---------------------------------------------------------------------------
 
   _buildSprite() {
     const c = new Container();
-    const g = new Graphics();
-
-    // Drop shadow
-    g.ellipse(0, 5, RADIUS + 3, 6).fill({ color: 0x000000, alpha: 0.28 });
-
-    // Body
-    g.circle(0, 0, RADIUS).fill(0xE53935).stroke({ color: 0x8B0000, width: 2 });
-
-    // Face (brighter circle for head)
-    g.circle(0, -2, 6).fill(0xFFCDD2);
-
-    // Eyes
-    g.circle(-3, -4, 2).fill(0x212121);
-    g.circle( 3, -4, 2).fill(0x212121);
-
-    // Direction indicator (small triangle at top, points "forward")
-    g.poly([0, -(RADIUS + 2), -4, -(RADIUS + 8), 4, -(RADIUS + 8)]).fill(0xE53935);
-
-    c.addChild(g);
+    this._graphics = new Graphics();
+    drawCharGraphics(this._graphics, RADIUS, this.appearance);
+    c.addChild(this._graphics);
     return c;
+  }
+
+  /**
+   * Change the player's appearance and rebuild the sprite.
+   * @param {{ bodyColorIdx: number, headgearIdx: number, armorColorIdx: number, markColorIdx: number }} indices
+   */
+  setAppearance(indices) {
+    this.appearance = charAppearanceFromIndices(indices);
+    this._graphics.clear();
+    drawCharGraphics(this._graphics, RADIUS, this.appearance);
+  }
+
+  /** Return serialisable appearance index snapshot. */
+  getAppearanceState() {
+    const a = this.appearance;
+    return {
+      bodyColorIdx:  a.bodyColorIdx,
+      headgearIdx:   a.headgearIdx,
+      armorColorIdx: a.armorColorIdx,
+      markColorIdx:  a.markColorIdx,
+    };
   }
 
   // ---------------------------------------------------------------------------

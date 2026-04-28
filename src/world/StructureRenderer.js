@@ -30,27 +30,33 @@ export class StructureRenderer {
     for (let i = 0; i < mapData.castles.length; i++) {
       const { x, y } = mapData.castles[i];
       let flagColor = 0xE53935;
+      let flagApp   = null;
       if (nationSystem) {
         const settlement = nationSystem.castleSettlements[i];
         if (settlement) {
-          const parsed = _hexToNum(nationSystem.getNation(settlement).color);
+          const nation = nationSystem.getNation(settlement);
+          const parsed = _hexToNum(nation.color);
           if (parsed !== null) flagColor = parsed;
+          flagApp = nation.flagApp ?? null;
         }
       }
-      drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
+      drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor, flagApp);
     }
 
     for (let i = 0; i < mapData.villages.length; i++) {
       const { x, y } = mapData.villages[i];
       let flagColor = 0xBF360C;
+      let flagApp   = null;
       if (nationSystem) {
         const settlement = nationSystem.villageSettlements[i];
         if (settlement) {
-          const parsed = _hexToNum(nationSystem.getNation(settlement).color);
+          const nation = nationSystem.getNation(settlement);
+          const parsed = _hexToNum(nation.color);
           if (parsed !== null) flagColor = parsed;
+          flagApp = nation.flagApp ?? null;
         }
       }
-      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
+      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor, flagApp);
     }
 
     for (const { x, y } of mapData.ports) {
