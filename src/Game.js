@@ -178,6 +178,16 @@ export class Game {
     // Rebuild map structures whenever the player changes their kingdom flag or name.
     this._gameUI.onPlayerKingdomChanged = () => this._structureRenderer.rebuild();
 
+    // Advance in-game days when resting at an inn.
+    this._gameUI.onAdvanceDays = (n) => {
+      for (let i = 0; i < n; i++) {
+        this._gameUI.onDayPassed();
+      }
+      // Keep the day-detection tracker in sync so the regular game loop
+      // does not fire onDayPassed again for the same rollover.
+      this._prevDayTime = this._dayNight.time;
+    };
+
     // -----------------------------------------------------------------------
     // Game loop
     // -----------------------------------------------------------------------

@@ -2562,6 +2562,195 @@
         font-size: 11px;
         line-height: 1.4;
       }
+
+      /* ── Facility interior screens ──────────────────────────────── */
+      .fac-back-row {
+        display: flex;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .btn-fac-back {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.45);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 4px 0;
+        touch-action: manipulation;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .btn-fac-back:hover { color: #e2c97e; }
+      .fac-title {
+        color: #e2c97e;
+        font-size: 15px;
+        font-weight: 700;
+        margin-bottom: 10px;
+      }
+      .fac-gold-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 14px;
+        color: #e2c97e;
+        font-size: 13px;
+        font-weight: 600;
+        background: rgba(226,201,126,0.08);
+        border: 1px solid rgba(226,201,126,0.2);
+        border-radius: 8px;
+        padding: 6px 12px;
+      }
+
+      /* ── Shop item rows ─────────────────────────────────────────── */
+      .shop-item-list { display: flex; flex-direction: column; gap: 8px; }
+      .shop-item-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(226,201,126,0.15);
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      .sir-icon { font-size: 24px; min-width: 28px; text-align: center; }
+      .sir-info { flex: 1; min-width: 0; }
+      .sir-name { color: #eee; font-size: 13px; font-weight: 600; }
+      .sir-desc { color: rgba(255,255,255,0.4); font-size: 11px; margin-top: 2px; }
+      .sir-stat { color: #90caf9; font-size: 11px; font-weight: 600; margin-left: 4px; }
+      .sir-price {
+        color: #e2c97e;
+        font-size: 13px;
+        font-weight: 700;
+        white-space: nowrap;
+        min-width: 46px;
+        text-align: right;
+      }
+      .btn-buy {
+        padding: 6px 14px;
+        background: rgba(226,201,126,0.18);
+        border: 1.5px solid rgba(226,201,126,0.6);
+        border-radius: 8px;
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.12s;
+        touch-action: manipulation;
+        white-space: nowrap;
+      }
+      .btn-buy:hover { background: rgba(226,201,126,0.32); }
+      .btn-buy:disabled { opacity: 0.4; cursor: not-allowed; }
+
+      /* ── Inn screen ──────────────────────────────────────────────── */
+      .inn-scene-art {
+        font-size: 48px;
+        text-align: center;
+        margin: 8px 0 6px;
+      }
+      .inn-scene-msg {
+        color: rgba(255,255,255,0.7);
+        font-size: 13px;
+        line-height: 1.7;
+        text-align: center;
+        margin-bottom: 16px;
+        padding: 0 8px;
+      }
+      .inn-scene-msg em {
+        color: #e2c97e;
+        font-style: normal;
+        font-weight: 600;
+      }
+      .inn-wounded-note {
+        color: #ff8f00;
+        font-size: 12px;
+        text-align: center;
+        margin-bottom: 12px;
+      }
+      .inn-options { display: flex; flex-direction: column; gap: 10px; }
+      .inn-option-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(226,201,126,0.15);
+        border-radius: 10px;
+        padding: 12px 14px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .ioc-icon { font-size: 26px; }
+      .ioc-info { flex: 1; }
+      .ioc-title { color: #eee; font-size: 13px; font-weight: 600; }
+      .ioc-desc  { color: rgba(255,255,255,0.4); font-size: 11px; margin-top: 3px; }
+
+      /* ── Tavern screen ───────────────────────────────────────────── */
+      .tavern-section-title {
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        letter-spacing: 1px;
+        margin: 14px 0 8px;
+        text-transform: uppercase;
+      }
+      .recruit-list { display: flex; flex-direction: column; gap: 8px; }
+      .recruit-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(226,201,126,0.15);
+        border-radius: 10px;
+        padding: 10px 12px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .rc-info { flex: 1; min-width: 0; }
+      .rc-name  { color: #eee; font-size: 13px; font-weight: 600; }
+      .rc-role  { color: rgba(255,255,255,0.5); font-size: 11px; margin-left: 6px; }
+      .rc-stats  { color: rgba(255,255,255,0.45); font-size: 11px; margin-top: 2px; }
+      .rc-traits { color: #ce93d8; font-size: 11px; margin-top: 2px; }
+
+      /* ── Government building screen ─────────────────────────────── */
+      .gov-ruler-section {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin: 10px 0 14px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(226,201,126,0.15);
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .gov-ruler-icon { font-size: 36px; }
+      .gov-ruler-name { color: #e2c97e; font-size: 15px; font-weight: 700; }
+      .gov-ruler-role { color: rgba(255,255,255,0.5); font-size: 12px; margin-top: 2px; }
+      .gov-ruler-traits { color: #ce93d8; font-size: 11px; margin-top: 4px; }
+      .gov-stats-row {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .gov-stat {
+        flex: 1;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 8px 10px;
+        text-align: center;
+      }
+      .gov-stat-label { display: block; color: rgba(255,255,255,0.4); font-size: 10px; margin-bottom: 4px; }
+      .gov-stat-val   { display: block; color: #eee; font-size: 13px; font-weight: 600; }
+      .gov-ruler-speech {
+        color: rgba(255,255,255,0.6);
+        font-size: 13px;
+        line-height: 1.7;
+        padding: 12px;
+        background: rgba(255,255,255,0.03);
+        border-radius: 8px;
+        border-left: 3px solid rgba(226,201,126,0.4);
+      }
+      .gov-ruler-speech em {
+        color: #e2c97e;
+        font-style: normal;
+      }
     </style>
   </head>
   <body>

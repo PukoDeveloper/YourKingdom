@@ -22,6 +22,12 @@ import {
   FLAG_STRIPE_STYLES,
   FLAG_SYMBOLS,
 } from '../systems/AppearanceSystem.js';
+import {
+  BuildingSystem,
+  BLDG_PALACE, BLDG_CHIEF_HOUSE,
+  BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_TAVERN, BLDG_INN,
+  CATALOG_GENERAL, CATALOG_BLACKSMITH, CATALOG_MAGE, CATALOG_TAVERN_FOOD,
+} from '../systems/BuildingSystem.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
 const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形'];
@@ -77,6 +83,12 @@ const _BATTLE_THEMES = {
 function _dailyHpRecovery(maxHp) {
   return Math.max(1, Math.floor(maxHp * 0.1));
 }
+
+/** Greeting lines spoken by government-building NPCs. */
+const _GOV_GREETING = {
+  palace:      '本王近來為治理疆土而殫精竭慮，汝此番到訪，所為何事？',
+  chief_house: '哎呀，稀客稀客！快請進，我讓內人沏茶。近來村裡一切都好，有勞掛念。',
+};
 
 /**
  * GameUI – manages the Backpack and Team DOM panels.
@@ -143,6 +155,14 @@ export class GameUI {
     /** Settlement currently displayed in the location overlay, or null. */
     this._locationSettlement = null;
 
+    /**
+     * When a specific building is open inside the location screen, this holds
+     * { building: Building, settlement: Settlement }.  Null when showing the
+     * facility list.
+     * @type {{ building: import('../systems/BuildingSystem.js').Building, settlement: import('../systems/NationSystem.js').Settlement }|null}
+     */
+    this._facilityView = null;
+
     /** Player's custom kingdom state (flag, name, type). */
     this._playerKingdom = { ...DEFAULT_KINGDOM };
 
@@ -164,6 +184,15 @@ export class GameUI {
 
     /** Callback invoked when the player confirms a game reset. */
     this.onReset = onReset;
+
+    /**
+     * Callback invoked when the player rests at an inn.
+     * Argument is the number of in-game days to advance (1 or more).
+     * Wired up by Game.js to call onDayPassed() N times and keep the
+     * day-night tracker in sync.
+     * @type {((days: number) => void)|null}
+     */
+    this.onAdvanceDays = null;
 
     /**
      * Callback invoked after a settlement is captured by the player.
@@ -1938,38 +1967,43 @@ export class GameUI {
 
   /** Facility list for the current settlement. */
   _renderLocationFacilities(settlement) {
+    this._facilityView = null;
     const content = document.getElementById('location-content');
 
-    let facilities;
-    let sectionTitle;
-
-    if (settlement.type === 'castle') {
-      sectionTitle = '城內設施';
-      facilities = [
-        { icon: '🏯', name: '王宮',  desc: '國王接見廳\n覲見統治者' },
-        { icon: '🏨', name: '旅店',  desc: '安心休憩之所\n恢復體力' },
-        { icon: '🍺', name: '酒館',  desc: '打聽情報\n招募夥伴' },
-        { icon: '🏪', name: '雜貨店', desc: '買賣物資\n補充補給' },
-        { icon: '⚒️', name: '鐵匠',  desc: '鍛造武器\n強化裝備' },
-        { icon: '🛡️', name: '守衛所', desc: '城衛指揮所\n申請護衛' },
-      ];
-    } else if (settlement.type === 'village') {
-      sectionTitle = '村內設施';
-      facilities = [
-        { icon: '🏠', name: '村長家', desc: '委託任務\n了解近況' },
-        { icon: '🛒', name: '市集',   desc: '交易物資\n農產買賣' },
-        { icon: '🛏️', name: '旅舍',   desc: '歇腳休息\n補充體力' },
-        { icon: '🏪', name: '雜貨鋪', desc: '日常用品\n基本補給' },
-      ];
-    } else {
-      // port
-      sectionTitle = '港口設施';
-      facilities = [
-        { icon: '⚓', name: '碼頭',  desc: '船運服務\n乘船出行' },
-        { icon: '📦', name: '倉庫',  desc: '存放貨物\n物資管理' },
-        { icon: '🍺', name: '酒館',  desc: '水手常聚\n打聽消息' },
+    // Port settlements use a minimal hardcoded list (no Building objects).
+    if (settlement.type === 'port') {
+      const portFacilities = [
+        { icon: '⚓', name: '碼頭',   desc: '船運服務\n乘船出行' },
+        { icon: '📦', name: '倉庫',   desc: '存放貨物\n物資管理' },
+        { icon: '🍺', name: '酒館',   desc: '水手常聚\n打聽消息' },
         { icon: '🏪', name: '雜貨店', desc: '海貨特產\n補給物資' },
       ];
+      const cards = portFacilities.map((f, i) => `
+        <div class="facility-card" data-port-idx="${i}" role="button" tabindex="0">
+          <div class="fc-icon">${f.icon}</div>
+          <div class="fc-name">${f.name}</div>
+          <div class="fc-desc">${f.desc.replace(/\n/g, '<br>')}</div>
+        </div>`).join('');
+      content.innerHTML = `
+        <div class="loc-facilities-title">港口設施</div>
+        <div class="loc-facilities-grid">${cards}</div>
+      `;
+      content.querySelectorAll('.facility-card[data-port-idx]').forEach(card => {
+        const open = () => {
+          const idx = Number(card.dataset.portIdx);
+          this._toast(`${portFacilities[idx].icon} ${portFacilities[idx].name}：功能開發中…`);
+        };
+        card.addEventListener('click', open);
+        card.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        });
+      });
+      return;
+    }
+
+    if (!settlement.buildings || settlement.buildings.length === 0) {
+      content.innerHTML = '<p class="ui-empty">暫無設施</p>';
+      return;
     }
 
     const backRow = settlement.type === 'castle' ? `
@@ -1977,11 +2011,13 @@ export class GameUI {
         <button class="btn-loc-back" id="btn-loc-back">← 返回城門</button>
       </div>` : '';
 
-    const facilityCards = facilities.map((f, i) => `
-      <div class="facility-card" data-facility-idx="${i}" role="button" tabindex="0">
-        <div class="fc-icon">${f.icon}</div>
-        <div class="fc-name">${f.name}</div>
-        <div class="fc-desc">${f.desc.replace(/\n/g, '<br>')}</div>
+    const sectionTitle = settlement.type === 'castle' ? '城內設施' : '村內設施';
+
+    const facilityCards = settlement.buildings.map((bldg, i) => `
+      <div class="facility-card" data-bldg-idx="${i}" role="button" tabindex="0">
+        <div class="fc-icon">${bldg.icon}</div>
+        <div class="fc-name">${bldg.name}</div>
+        <div class="fc-desc">${bldg.desc.replace(/\n/g, '<br>')}</div>
       </div>
     `).join('');
 
@@ -1998,17 +2034,456 @@ export class GameUI {
       });
     }
 
-    content.querySelectorAll('.facility-card[data-facility-idx]').forEach(card => {
+    content.querySelectorAll('.facility-card[data-bldg-idx]').forEach(card => {
       const open = () => {
-        const idx = Number(card.dataset.facilityIdx);
-        const f   = facilities[idx];
-        this._toast(`${f.icon} ${f.name}：功能開發中…`);
+        const idx  = Number(card.dataset.bldgIdx);
+        const bldg = settlement.buildings[idx];
+        if (bldg) this._openFacility(bldg, settlement);
       };
       card.addEventListener('click', open);
       card.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Gold helpers
+  // -------------------------------------------------------------------------
+
+  /** Return the player's current gold total. */
+  _getGold() {
+    return this.inventory.getItems()
+      .filter(i => i.name === '金幣' && i.type === 'loot')
+      .reduce((sum, i) => sum + i.quantity, 0);
+  }
+
+  /**
+   * Deduct `amount` gold from the player's inventory.
+   * Returns true on success, false if not enough gold.
+   * @param {number} amount
+   * @returns {boolean}
+   */
+  _spendGold(amount) {
+    if (amount <= 0) return true;
+    let remaining = amount;
+    const goldItems = this.inventory.getItems()
+      .filter(i => i.name === '金幣' && i.type === 'loot');
+    for (const gi of goldItems) {
+      if (remaining <= 0) break;
+      const deduct = Math.min(gi.quantity, remaining);
+      this.inventory.removeItem(gi.id, deduct);
+      remaining -= deduct;
+    }
+    return remaining <= 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Facility dispatcher
+  // -------------------------------------------------------------------------
+
+  /**
+   * Open a specific building's interface inside the location screen.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _openFacility(building, settlement) {
+    this._facilityView = { building, settlement };
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    switch (building.type) {
+      case BLDG_GENERAL:
+        this._renderShop(building, settlement, this._buildGeneralCatalog(settlement));
+        break;
+      case BLDG_BLACKSMITH:
+        this._renderShop(building, settlement, CATALOG_BLACKSMITH);
+        break;
+      case BLDG_MAGE:
+        this._renderShop(building, settlement, CATALOG_MAGE);
+        break;
+      case BLDG_TAVERN:
+        this._renderTavern(building, settlement);
+        break;
+      case BLDG_INN:
+        this._renderInn(building, settlement);
+        break;
+      case BLDG_PALACE:
+      case BLDG_CHIEF_HOUSE:
+        this._renderGovBuilding(building, settlement);
+        break;
+      default:
+        this._toast(`${building.icon} ${building.name}：功能開發中…`);
+        this._facilityView = null;
+        this._renderLocationFacilities(settlement);
+    }
+  }
+
+  /** Build the 雜貨舖 catalog, prepending local resource items. */
+  _buildGeneralCatalog(settlement) {
+    const resourceIcon = {
+      '木材': '🪵', '農產': '🌾', '礦石': '⛏️', '絲綢': '🧵',
+      '煤炭': '🪨', '草藥': '🌿', '魚獲': '🐟', '皮毛': '🦊',
+      '食鹽': '🧂', '陶器': '🏺',
+    };
+    const localItems = (settlement.resources ?? []).map((res, i) => ({
+      id:          `local_res_${i}`,
+      name:        res,
+      icon:        resourceIcon[res] ?? '📦',
+      type:        'loot',
+      basePrice:   10,
+      quantity:    5,
+      description: `本地特產：${res}（折扣）`,
+    }));
+    return [...localItems, ...CATALOG_GENERAL];
+  }
+
+  /** Shared back-button HTML for facility screens. */
+  _facilityBackHTML(settlement) {
+    return `
+      <div class="fac-back-row">
+        <button class="btn-fac-back" id="btn-fac-back">← 返回設施列表</button>
+      </div>`;
+  }
+
+  /** Gold display bar HTML. */
+  _goldBarHTML() {
+    return `<div class="fac-gold-bar">🪙 持有金幣：<span id="fac-gold-display">${this._getGold()}</span></div>`;
+  }
+
+  /** Attach the back button after rendering a facility screen. */
+  _attachFacilityBack(settlement) {
+    document.getElementById('btn-fac-back')?.addEventListener('click', () => {
+      this._facilityView = null;
+      this._renderLocationFacilities(settlement);
+    });
+  }
+
+  /** Refresh the gold display inside the currently open facility screen. */
+  _refreshGoldDisplay() {
+    const el = document.getElementById('fac-gold-display');
+    if (el) el.textContent = this._getGold();
+  }
+
+  // -------------------------------------------------------------------------
+  // Shop screen (雜貨舖 / 鐵匠舖 / 法師亭)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Render a generic shop interface.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {import('../systems/BuildingSystem.js').CatalogItem[]} catalog
+   */
+  _renderShop(building, settlement, catalog) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
+
+    const itemsHTML = catalog.map(item => {
+      const price   = BuildingSystem.computePrice(item, building, settlement.resources ?? []);
+      const statsHTML = item.stats
+        ? Object.entries(item.stats).map(([k, v]) =>
+            `<span class="sir-stat">${STAT_LABEL[k] ?? k} ${v >= 0 ? '+' : ''}${v}</span>`
+          ).join(' ')
+        : '';
+      return `
+        <div class="shop-item-row" data-item-id="${item.id}" data-price="${price}">
+          <span class="sir-icon">${item.icon}</span>
+          <div class="sir-info">
+            <div class="sir-name">${item.name} ${statsHTML}</div>
+            ${item.description ? `<div class="sir-desc">${item.description}</div>` : ''}
+            <div class="sir-desc">數量：×${item.quantity}</div>
+          </div>
+          <span class="sir-price">🪙${price}</span>
+          <button class="btn-buy" data-item-id="${item.id}" data-price="${price}">購買</button>
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">${building.icon} ${building.name}</div>
+      ${this._goldBarHTML()}
+      <div class="shop-item-list">${itemsHTML}</div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    content.querySelectorAll('.btn-buy').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.dataset.itemId;
+        const price  = Number(btn.dataset.price);
+        const item   = catalog.find(i => i.id === itemId);
+        if (!item) return;
+
+        if (this._getGold() < price) {
+          this._toast('💸 金幣不足！');
+          return;
+        }
+        this._spendGold(price);
+        this.inventory.addItem({
+          name:        item.name,
+          type:        item.type,
+          icon:        item.icon,
+          quantity:    item.quantity,
+          description: item.description ?? '',
+          stats:       item.stats,
+        });
+        this._toast(`✅ 購買了 ${item.icon} ${item.name}（-${price} 🪙）`);
+        this._refreshGoldDisplay();
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Inn screen (旅店)
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderInn(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    // Base nightly cost scales with economy level.
+    const baseCost   = 5 + (settlement.economyLevel ?? 1) * 2;
+    const cost1Night = Math.round(baseCost * building.priceMult);
+    const cost3Night = Math.round(baseCost * building.priceMult * 2.5);
+
+    const allMembers = this.army.getSquads().flatMap(s => s.members);
+    const woundedCount = allMembers.filter(m => m.stats.hp < m.stats.maxHp).length;
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">${building.icon} ${building.name}</div>
+      ${this._goldBarHTML()}
+      <div class="inn-scene-art">🛏️</div>
+      <div class="inn-scene-msg">掌櫃笑著迎上來：<br><em>「歡迎光臨！請問要住幾晚？」</em></div>
+      ${woundedCount > 0 ? `<div class="inn-wounded-note">⚠️ 目前有 ${woundedCount} 名成員受傷，休息可加速恢復。</div>` : ''}
+      <div class="inn-options">
+        <div class="inn-option-card" id="inn-opt-1">
+          <span class="ioc-icon">🌙</span>
+          <div class="ioc-info">
+            <div class="ioc-title">休息一晚</div>
+            <div class="ioc-desc">恢復所有成員 20% HP・消耗一天糧食</div>
+          </div>
+          <span class="sir-price">🪙${cost1Night}</span>
+          <button class="btn-buy" id="btn-inn-1" data-cost="${cost1Night}" data-days="1">入住</button>
+        </div>
+        <div class="inn-option-card" id="inn-opt-3">
+          <span class="ioc-icon">🌟</span>
+          <div class="ioc-info">
+            <div class="ioc-title">休息三晚</div>
+            <div class="ioc-desc">完全恢復所有成員 HP・消耗三天糧食</div>
+          </div>
+          <span class="sir-price">🪙${cost3Night}</span>
+          <button class="btn-buy" id="btn-inn-3" data-cost="${cost3Night}" data-days="3">入住</button>
+        </div>
+      </div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    content.querySelectorAll('.btn-buy[data-days]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cost = Number(btn.dataset.cost);
+        const days = Number(btn.dataset.days);
+
+        if (this._getGold() < cost) {
+          this._toast('💸 金幣不足！');
+          return;
+        }
+        this._spendGold(cost);
+
+        // Restore HP
+        let restored = 0;
+        this.army.getSquads().forEach(sq => {
+          sq.members.forEach(m => {
+            if (m.stats.hp < m.stats.maxHp) {
+              if (days >= 3) {
+                m.stats.hp = m.stats.maxHp;
+              } else {
+                m.stats.hp = Math.min(m.stats.maxHp, m.stats.hp + Math.ceil(m.stats.maxHp * 0.2));
+              }
+              // Reactivate downed units after full rest
+              if (days >= 3 && !m.active) m.active = true;
+              restored++;
+            }
+          });
+        });
+
+        // Advance days (food consumption + HP recovery ticks)
+        if (typeof this.onAdvanceDays === 'function') {
+          this.onAdvanceDays(days);
+        }
+
+        const msg = days >= 3
+          ? `😴 休息了三晚，所有成員完全恢復！(-${cost} 🪙)`
+          : `😴 休息了一晚，成員恢復 20% HP。(-${cost} 🪙)`;
+        this._toast(msg);
+        this._refreshGoldDisplay();
+        // Re-render to update wounded count
+        this._renderInn(building, settlement);
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Tavern screen (酒館)
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderTavern(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const day      = this.diplomacySystem?._currentDay ?? 0;
+    const recruits = BuildingSystem.generateRecruits(
+      settlement.buildings?.[0]?.type ? (this.nationSystem?.castleSettlements?.indexOf(settlement) ?? 0) * 17 : 0,
+      0,
+      0,
+      day,
+    );
+
+    // Use settlement position as seed if available via nationSystem
+    let sx = 0, sy = 0;
+    if (this.nationSystem) {
+      const castleIdx = this.nationSystem.castleSettlements.indexOf(settlement);
+      const villageIdx = this.nationSystem.villageSettlements.indexOf(settlement);
+      if (castleIdx >= 0) {
+        // We don't have mapData here, use castleIdx as a proxy
+        sx = castleIdx * 137; sy = castleIdx * 251;
+      } else if (villageIdx >= 0) {
+        sx = villageIdx * 173 + 500; sy = villageIdx * 293 + 500;
+      }
+    }
+    const actualRecruits = BuildingSystem.generateRecruits(sx, sy, 0, day);
+
+    // Food catalog with prices
+    const foodItems = CATALOG_TAVERN_FOOD.map(item => ({
+      ...item,
+      price: BuildingSystem.computePrice(item, building, settlement.resources ?? []),
+    }));
+
+    const STAT_LABEL = { attack: '攻擊', defense: '防禦', morale: '士氣' };
+
+    const foodHTML = foodItems.map(item => `
+      <div class="shop-item-row">
+        <span class="sir-icon">${item.icon}</span>
+        <div class="sir-info">
+          <div class="sir-name">${item.name}</div>
+          ${item.description ? `<div class="sir-desc">${item.description}</div>` : ''}
+          <div class="sir-desc">×${item.quantity}</div>
+        </div>
+        <span class="sir-price">🪙${item.price}</span>
+        <button class="btn-buy tavern-food-buy" data-id="${item.id}" data-price="${item.price}">購買</button>
+      </div>`).join('');
+
+    const recruitHTML = actualRecruits.map((r, i) => {
+      const statLine = Object.entries(r.stats)
+        .map(([k, v]) => `${STAT_LABEL[k] ?? k}:${v}`).join(' ');
+      const traitLine = r.traits.length ? r.traits.join('・') : '';
+      return `
+        <div class="recruit-card">
+          <div class="rc-info">
+            <div class="rc-name">${r.name} <span class="rc-role">${r.role}</span></div>
+            <div class="rc-stats">${statLine}</div>
+            ${traitLine ? `<div class="rc-traits">${traitLine}</div>` : ''}
+          </div>
+          <span class="sir-price">🪙${r.hireCost}</span>
+          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}">招募</button>
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">${building.icon} ${building.name}</div>
+      ${this._goldBarHTML()}
+      <div class="tavern-section-title">🍽 食物與飲品</div>
+      <div class="shop-item-list">${foodHTML}</div>
+      <div class="tavern-section-title">⚔ 可招募的冒險者</div>
+      <div class="recruit-list">${recruitHTML}</div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    // Food buy buttons
+    content.querySelectorAll('.tavern-food-buy').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const itemId = btn.dataset.id;
+        const price  = Number(btn.dataset.price);
+        const item   = CATALOG_TAVERN_FOOD.find(i => i.id === itemId);
+        if (!item) return;
+        if (this._getGold() < price) { this._toast('💸 金幣不足！'); return; }
+        this._spendGold(price);
+        this.inventory.addItem({
+          name: item.name, type: item.type, icon: item.icon,
+          quantity: item.quantity, description: item.description ?? '',
+        });
+        this._toast(`✅ 購買了 ${item.icon} ${item.name}（-${price} 🪙）`);
+        this._refreshGoldDisplay();
+      });
+    });
+
+    // Recruit buttons
+    content.querySelectorAll('.tavern-recruit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx  = Number(btn.dataset.recruitIdx);
+        const cost = Number(btn.dataset.cost);
+        const r    = actualRecruits[idx];
+        if (!r) return;
+        if (this._getGold() < cost) { this._toast('💸 金幣不足！'); return; }
+        this._spendGold(cost);
+        this._toast(`✅ 招募了 ${r.name}（-${cost} 🪙）`);
+        this._refreshGoldDisplay();
+        this.tryAcquireUnit({ name: r.name, role: r.role, traits: r.traits, stats: r.stats });
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Government building screen (王宮 / 村長家)
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderGovBuilding(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const ruler = settlement.ruler;
+    const traits = ruler?.traits?.filter(t => t !== '統治者') ?? [];
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">${building.icon} ${building.name}</div>
+      <div class="gov-ruler-section">
+        <div class="gov-ruler-icon">👑</div>
+        <div class="gov-ruler-info">
+          <div class="gov-ruler-name">${ruler?.name ?? '不詳'}</div>
+          <div class="gov-ruler-role">${ruler?.role ?? ''}</div>
+          ${traits.length ? `<div class="gov-ruler-traits">${traits.join('・')}</div>` : ''}
+        </div>
+      </div>
+      <div class="gov-stats-row">
+        <div class="gov-stat"><span class="gov-stat-label">人口</span><span class="gov-stat-val">${settlement.population.toLocaleString()}</span></div>
+        <div class="gov-stat"><span class="gov-stat-label">經濟</span><span class="gov-stat-val">${'⭐'.repeat(settlement.economyLevel ?? 1)}</span></div>
+        <div class="gov-stat"><span class="gov-stat-label">資源</span><span class="gov-stat-val">${(settlement.resources ?? []).join('、') || '無'}</span></div>
+      </div>
+      <div class="gov-ruler-speech">
+        <em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em>
+      </div>
+    `;
+
+    this._attachFacilityBack(settlement);
   }
 
   // -------------------------------------------------------------------------
