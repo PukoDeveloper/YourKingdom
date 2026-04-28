@@ -1221,6 +1221,7 @@ export class GameUI {
     }
 
     // Daily HP recovery for all wounded units.
+    // Each unit recovers 10% of their maxHp per day (minimum 1).
     let recoveredCount = 0;
     squads.forEach(sq => {
       sq.members.forEach(m => {
@@ -1354,7 +1355,7 @@ export class GameUI {
       <div class="ud-hp-section">
         <div class="ud-hp-label-row">
           <span class="ud-hp-label">生命值</span>
-          <span class="ud-hp-nums">${Math.ceil(unit.stats.hp)} / ${unit.stats.maxHp}</span>
+          <span class="ud-hp-nums">${Math.ceil(unit.stats.hp)} / ${Math.ceil(unit.stats.maxHp)}</span>
           <span class="ud-hp-status" style="color:${hpColor}">${hpStatusText}</span>
         </div>
         <div class="ud-hp-bar-wrap">
