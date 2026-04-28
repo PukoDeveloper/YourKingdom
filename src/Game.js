@@ -172,6 +172,7 @@ export class Game {
       () => this._resetGame(),
       this._player,
       this._diplomacySystem,
+      this._dayNight,
     );
 
     // Rebuild structures now that GameUI is ready (restores player flags from save).

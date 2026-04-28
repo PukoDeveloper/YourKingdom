@@ -109,8 +109,9 @@ export class GameUI {
    * @param {() => void} [onReset] Called when the player confirms a game reset.
    * @param {import('../entities/Player.js').Player|null} [player]  Live Player instance.
    * @param {import('../systems/DiplomacySystem.js').DiplomacySystem|null} [diplomacySystem]
+   * @param {import('../world/DayNightCycle.js').DayNightCycle|null} [dayNightCycle]
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
@@ -119,6 +120,9 @@ export class GameUI {
 
     /** @type {import('../systems/DiplomacySystem.js').DiplomacySystem|null} */
     this.diplomacySystem = diplomacySystem;
+
+    /** @type {import('../world/DayNightCycle.js').DayNightCycle|null} */
+    this._dayNightCycle = dayNightCycle;
 
     /** @type {import('../entities/Player.js').Player|null} */
     this.player = player;
@@ -3323,8 +3327,9 @@ export class GameUI {
    * @param {string} text  Message body.
    */
   _addInboxMessage(icon, text) {
-    const day = this.diplomacySystem?._currentDay ?? 0;
-    this._inbox.unshift({ icon, text, day, read: false });
+    const day  = this.diplomacySystem?._currentDay ?? 0;
+    const time = this._dayNightCycle?.getTimeString() ?? '';
+    this._inbox.unshift({ icon, text, day, time, read: false });
     if (this._inbox.length > GameUI._MAX_INBOX) {
       this._inbox.length = GameUI._MAX_INBOX;
     }
@@ -3370,7 +3375,7 @@ export class GameUI {
         <span class="inbox-icon">${m.icon}</span>
         <div class="inbox-body">
           <div class="inbox-text">${m.text}</div>
-          <div class="inbox-day">第 ${m.day} 天</div>
+          <div class="inbox-day">第 ${m.day} 天${m.time ? ' ' + m.time : ''}</div>
         </div>
       </div>`).join('');
 

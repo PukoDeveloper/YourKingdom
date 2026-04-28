@@ -80,6 +80,13 @@ const NPC_SINGLE_SQUAD_WIN_THRESHOLD = 0.55;
 const NPC_WAR_CASUALTY_COUNT = 2;
 
 /**
+ * Period (in days) used to stagger phase-based NPC AI actions across nations.
+ * Each nation evaluates war / recruit only once every this many days, offset by
+ * its own id so that different nations act on different days.
+ */
+const NPC_ACTION_STAGGER_PERIOD = 2;
+
+/**
  * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
  * Defined here to avoid a circular import.
  */
@@ -720,6 +727,10 @@ export class DiplomacySystem {
     castleSettlements.forEach((s, id) => {
       if (!s || s.controllingNationId !== id) return; // nation must hold its home castle
 
+      // Stagger: each nation only evaluates war on its own day offset to avoid
+      // all nations launching attacks simultaneously.
+      if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
+
       // Only one march at a time per nation.
       if (this._pendingMarches.some(m => m.attackerNationId === id)) return;
 
@@ -989,6 +1000,10 @@ export class DiplomacySystem {
     const tryRecruit = (s, settlementType, idx) => {
       const nationId = s.controllingNationId;
       if (nationId < 0) return; // player-owned
+
+      // Stagger: each settlement recruits on its own day offset to prevent all
+      // settlements hiring simultaneously on every dusk phase.
+      if ((day % NPC_ACTION_STAGGER_PERIOD) !== (idx % NPC_ACTION_STAGGER_PERIOD)) return;
 
       // Check if this settlement has a tavern.
       const hasTavern = s.buildings?.some(b => b.type === BLDG_TAVERN);
@@ -1331,6 +1346,10 @@ export class DiplomacySystem {
     settlements.forEach((s, id) => {
       // Skip extinct nations – they have no influence and should not condemn anyone.
       if (this.nationSystem.isNationExtinct(id)) return;
+
+      // Stagger: each nation processes its daily diplomatic events on its own
+      // day offset so that all nations do not fire simultaneously on every day.
+      if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
 
       const p          = this._rulerPersonality(s);
       const roll       = Math.random();
