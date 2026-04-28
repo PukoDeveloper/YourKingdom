@@ -984,7 +984,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
+          message: `📢 ${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
         });
       } else if (p === PERSONALITY_WARLIKE && roll < 0.2) {
         // Warlike ruler threatens the player
@@ -994,7 +994,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
+          message: `⚠ ${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
         });
       } else if (p === PERSONALITY_GENTLE && roll < 0.15) {
         // Gentle ruler sends goodwill
@@ -1004,8 +1004,79 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
+          message: `🕊 ${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
         });
+      }
+
+      // ── NPC-NPC diplomatic events ─────────────────────────────────────────
+      // Each nation also interacts with other NPC nations based on personality.
+
+      // Arrogant rulers publicly condemn hostile neighbours.
+      if (p === PERSONALITY_ARROGANT && Math.random() < 0.18) {
+        const targetId = this._findHostileNpc(id, -10);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = -(Math.floor(Math.random() * 8) + 5); // -5 … -12
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者公開譴責了 ${targetName}，關係 ${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 公開譴責了我國，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `📢 ${nationName} 的 ${s.ruler.name} 公開譴責了 ${targetName}，兩國關係惡化 ${delta}。`,
+          });
+        }
+      }
+
+      // Warlike rulers issue threats to hostile neighbours.
+      if (p === PERSONALITY_WARLIKE && Math.random() < 0.18) {
+        const targetId = this._findHostileNpc(id, -10);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = -(Math.floor(Math.random() * 7) + 4); // -4 … -10
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者向 ${targetName} 發出戰爭威脅，關係 ${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 向我國發出戰爭威脅，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `⚠ ${nationName} 的 ${s.ruler.name} 向 ${targetName} 發出戰爭威脅，兩國關係緊張 ${delta}。`,
+          });
+        }
+      }
+
+      // Cunning rulers issue subtle insults toward rivals.
+      if (p === PERSONALITY_CUNNING && Math.random() < 0.12) {
+        const targetId = this._findHostileNpc(id, -5);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = -(Math.floor(Math.random() * 5) + 3); // -3 … -7
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者暗中侮辱了 ${targetName}，關係 ${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 暗中侮辱了我國，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `💬 ${nationName} 的 ${s.ruler.name} 暗中散播對 ${targetName} 的不利傳言，關係 ${delta}。`,
+          });
+        }
+      }
+
+      // Gentle rulers extend goodwill gestures toward neutral or friendly neighbours.
+      if (p === PERSONALITY_GENTLE && Math.random() < 0.15) {
+        const targetId = this._findFriendlyNpc(id, 0);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = Math.floor(Math.random() * 5) + 3; // +3 … +7
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者向 ${targetName} 釋出善意，關係 +${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 向我國釋出善意，關係 +${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `🕊 ${nationName} 的 ${s.ruler.name} 向 ${targetName} 遞出橄欖枝，兩國關係改善 +${delta}。`,
+          });
+        }
       }
 
       // Warlike / arrogant nations may launch NPC-NPC attacks
@@ -1037,13 +1108,53 @@ export class DiplomacySystem {
           events.push({
             nationId: id,
             delta:    0,
-            message:  `${s.ruler.name}（${s.ruler.role}）率兵進攻 ${nations[targetId]?.name ?? '鄰國'} 的 ${settlementName}！`,
+            message:  `⚔ ${s.ruler.name}（${s.ruler.role}）率兵進攻 ${nations[targetId]?.name ?? '鄰國'} 的 ${settlementName}！`,
           });
         }
       }
     });
 
     return events;
+  }
+
+  /**
+   * Find an NPC nation that `id` has a relation with at or below `maxRel`
+   * (the most hostile one).  Returns -1 if none found.
+   * @param {number} id
+   * @param {number} maxRel  Upper bound for hostility (e.g. -10 means "at least somewhat hostile").
+   * @returns {number}
+   */
+  _findHostileNpc(id, maxRel) {
+    const nations = this.nationSystem.nations;
+    let worstRel = maxRel;
+    let targetId = -1;
+    nations.forEach((n, tid) => {
+      if (!n) return;
+      if (tid === id) return;
+      const rel = this.getRelation(id, tid);
+      if (rel <= worstRel) { worstRel = rel; targetId = tid; }
+    });
+    return targetId;
+  }
+
+  /**
+   * Find an NPC nation that `id` has a relation with at or above `minRel`
+   * (the friendliest one), excluding the same nation.  Returns -1 if none found.
+   * @param {number} id
+   * @param {number} minRel  Lower bound for friendliness (e.g. 0 = at least neutral).
+   * @returns {number}
+   */
+  _findFriendlyNpc(id, minRel) {
+    const nations = this.nationSystem.nations;
+    let bestRel = minRel;
+    let targetId = -1;
+    nations.forEach((n, tid) => {
+      if (!n) return;
+      if (tid === id) return;
+      const rel = this.getRelation(id, tid);
+      if (rel >= bestRel) { bestRel = rel; targetId = tid; }
+    });
+    return targetId;
   }
 
   /**
