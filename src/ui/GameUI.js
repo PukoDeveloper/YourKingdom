@@ -155,6 +155,13 @@ export class GameUI {
     /** Callback invoked when the player confirms a game reset. */
     this.onReset = onReset;
 
+    /**
+     * Callback invoked after a settlement is captured by the player.
+     * The game can use this to rebuild map visuals.
+     * @type {(() => void)|null}
+     */
+    this.onCaptureSettlement = null;
+
     if (savedState) {
       this.loadState(savedState);
     } else {
@@ -911,6 +918,33 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
+  // Player nation helpers
+  // -------------------------------------------------------------------------
+
+  /** Build the player's flag appearance object from their current kingdom settings. */
+  _getPlayerFlagApp() {
+    return flagAppFromIndices({
+      bgIdx:          this._playerKingdom.flagBgIdx,
+      stripeStyleIdx: this._playerKingdom.flagStripeStyleIdx,
+      stripeColorIdx: this._playerKingdom.flagStripeColorIdx,
+      symbolIdx:      this._playerKingdom.flagSymbolIdx,
+    });
+  }
+
+  /**
+   * Return a nation-shaped object representing the player's kingdom.
+   * @returns {{ color: string, emblem: string, name: string, flagApp: object }}
+   */
+  getPlayerNation() {
+    return {
+      color:   '#e2c97e',
+      emblem:  '🏴',
+      name:    this._playerKingdom.name,
+      flagApp: this._getPlayerFlagApp(),
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // Nations panel
   // -------------------------------------------------------------------------
 
@@ -939,9 +973,9 @@ export class GameUI {
     const cardsHTML = settlements.map((s, i) => {
       const isPlayer = this.isPlayerSettlement(s);
       const nation   = isPlayer
-        ? { color: '#e2c97e', emblem: '🏴', name: this._playerKingdom.name, flagApp: null }
+        ? this.getPlayerNation()
         : this.nationSystem.getNation(s);
-      const flagHTML = !isPlayer && nation.flagApp
+      const flagHTML = nation.flagApp
         ? renderFlagHTML(nation.flagApp, 36)
         : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
       const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
@@ -1009,13 +1043,13 @@ export class GameUI {
   _openSettlementDetail(settlement) {
     const isPlayer  = this.isPlayerSettlement(settlement);
     const nation    = isPlayer
-      ? { color: '#e2c97e', emblem: '🏴', name: this._playerKingdom.name, flagApp: null }
+      ? this.getPlayerNation()
       : this.nationSystem.getNation(settlement);
     const ruler     = settlement.ruler;
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
-    const flagHTML  = !isPlayer && nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
+    const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
     const rulerTraitsHTML = ruler.traits.map(t =>
       `<span class="trait-tag${t === TRAIT_RULER ? ' trait-ruler' : ''}">${t}</span>`
@@ -1023,7 +1057,7 @@ export class GameUI {
 
     const playerBanner = isPlayer ? `
       <div class="sd-player-banner">
-        🏴 ${this._playerKingdom.name} · 已佔領
+        ${renderFlagHTML(nation.flagApp, 20)} ${nation.name} · 已佔領
       </div>` : '';
 
     document.getElementById('ui-settlement-detail-icon').innerHTML = flagHTML;
@@ -1624,8 +1658,10 @@ export class GameUI {
 
     let subtitle = '';
     if (s.type === 'castle' && this.nationSystem) {
-      const nation = this.nationSystem.getNation(s);
-      subtitle = `${nation.emblem} ${nation.name}`;
+      const nation = this.isPlayerSettlement(s)
+        ? this.getPlayerNation()
+        : this.nationSystem.getNation(s);
+      subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
     } else if (s.type === 'village') {
       subtitle = '村落';
     } else if (s.type === 'port') {
@@ -1642,7 +1678,12 @@ export class GameUI {
 
   /** Castle gate scene – player first encounters the guards. */
   _renderLocationGate(settlement) {
-    const nation = this.nationSystem ? this.nationSystem.getNation(settlement) : null;
+    let nation = null;
+    if (this.nationSystem) {
+      nation = this.isPlayerSettlement(settlement)
+        ? this.getPlayerNation()
+        : this.nationSystem.getNation(settlement);
+    }
     const nationName = nation ? nation.name : settlement.name;
 
     const content = document.getElementById('location-content');
@@ -2177,6 +2218,11 @@ export class GameUI {
 
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
+
+    // Notify the game so it can update map visuals.
+    if (typeof this.onCaptureSettlement === 'function') {
+      this.onCaptureSettlement();
+    }
 
     // Award gold based on economy level and type.
     const goldReward = settlement.type === 'castle'

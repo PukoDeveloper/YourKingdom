@@ -83,7 +83,15 @@ export class Game {
 
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
-    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem);
+    // getEffectiveNation is evaluated lazily (only during build/rebuild),
+    // so _gameUI will already exist by the time rebuilds are triggered.
+    const getEffectiveNation = (settlement) => {
+      if (this._gameUI?.isPlayerSettlement(settlement)) {
+        return this._gameUI.getPlayerNation();
+      }
+      return this._nationSystem.getNation(settlement);
+    };
+    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getEffectiveNation);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
     await this._yieldFrame();
@@ -157,6 +165,14 @@ export class Game {
       this._player,
     );
 
+    // Rebuild structures now that GameUI is ready (restores player flags from save).
+    if (savedState) {
+      this._structureRenderer.rebuild();
+    }
+
+    // Rebuild map structures whenever the player captures a new settlement.
+    this._gameUI.onCaptureSettlement = () => this._structureRenderer.rebuild();
+
     // -----------------------------------------------------------------------
     // Game loop
     // -----------------------------------------------------------------------
@@ -217,8 +233,14 @@ export class Game {
       const tileY = Math.floor(this._player.y / TILE_SIZE);
       const hit = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
       if (hit) {
-        const nation = this._nationSystem.getNation(hit.settlement);
-        label = `${nation.emblem} ${hit.settlement.name}`;
+        const isPlayer = this._gameUI.isPlayerSettlement(hit.settlement);
+        if (isPlayer) {
+          const pk = this._gameUI.getPlayerNation();
+          label = `🏴 ${pk.name} · ${hit.settlement.name}`;
+        } else {
+          const nation = this._nationSystem.getNation(hit.settlement);
+          label = `${nation.emblem} ${hit.settlement.name}`;
+        }
       }
       this._terrainLabel.textContent = label;
 
