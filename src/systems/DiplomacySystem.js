@@ -309,7 +309,8 @@ export class DiplomacySystem {
     );
 
     // Propagate to third-party nations
-    nations.forEach((_, cId) => {
+    nations.forEach((cNation, cId) => {
+      if (!cNation) return;
       if (cId === targetNationId) return;
       if (attackerNationId !== -1 && cId === attackerNationId) return;
 
@@ -464,7 +465,8 @@ export class DiplomacySystem {
         // Find the most hostile neighbour
         let worstRel = -20; // Only attack clearly hostile nations
         let targetId = -1;
-        nations.forEach((_, tid) => {
+        nations.forEach((tNation, tid) => {
+          if (!tNation) return;
           if (tid === id) return;
           const rel = this.getRelation(id, tid);
           if (rel < worstRel) { worstRel = rel; targetId = tid; }
