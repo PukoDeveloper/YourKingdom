@@ -154,6 +154,8 @@ export class Game {
     window.addEventListener('resize', () => this._onResize());
 
     this._prevDayTime = this._dayNight.time;
+    /** @type {string} Previous day/night phase (used to detect phase transitions for NPC AI). */
+    this._prevPhase   = this._dayNight.getPhaseName();
 
     // -----------------------------------------------------------------------
     // Game UI (Backpack + Team panels)
@@ -229,6 +231,13 @@ export class Game {
       this._gameUI.onDayPassed();
     }
     this._prevDayTime = currDayTime;
+
+    // Phase transitions trigger NPC AI phase actions.
+    const currPhase = this._dayNight.getPhaseName();
+    if (currPhase !== this._prevPhase) {
+      this._gameUI.onPhaseChanged(currPhase);
+      this._prevPhase = currPhase;
+    }
     const overlay = this._dayNight.getOverlay();
     const og = this._dayNightOverlay;
     og.clear();

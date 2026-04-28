@@ -1584,6 +1584,30 @@ export class GameUI {
     }
   }
 
+  /**
+   * Called when the day/night phase changes (清晨, 白天, 黃昏, 夜晚).
+   * Dispatches phase-specific NPC AI actions and optionally notifies the player.
+   * @param {'清晨'|'白天'|'黃昏'|'夜晚'} phase
+   */
+  onPhaseChanged(phase) {
+    if (!this.diplomacySystem) return;
+    const messages = this.diplomacySystem.onPhaseChanged(phase, this._tavernState);
+    if (messages.length > 0) {
+      // Find if any recruitment happened at a settlement the player is currently in.
+      const nearbyKey = this._nearbySettlement
+        ? this._settlementKey(this._nearbySettlement)
+        : null;
+      const nearby = messages.find(m => nearbyKey && m.settlementKey === nearbyKey);
+      if (nearby) {
+        this._toast(`🍺 競爭招募！${nearby.message.replace(/^🍺 /, '')}`);
+      } else if (phase === '白天') {
+        // Show a war event to the player if one occurred.
+        const warMsg = messages.find(m => m.message.includes('進攻'));
+        if (warMsg) this._toast(warMsg.message);
+      }
+    }
+  }
+
   _renderSquadDetail(squad) {
     const detail = document.getElementById('squad-detail');
     const captain = squad.captain;
@@ -2609,6 +2633,35 @@ export class GameUI {
     const econ  = settlement.economyLevel;
     const isCastle = settlement.type === 'castle';
 
+    // If the diplomacy system has garrison data for this settlement, derive
+    // the enemy force from the actual NPC armies (makes battles dynamic).
+    if (this.diplomacySystem) {
+      const key = this._settlementKey(settlement);
+      if (key) {
+        const armies = this.diplomacySystem.getNpcArmies(key);
+        const allUnits = armies.flatMap(sq => sq);
+        if (allUnits.length > 0) {
+          const totalAtk = allUnits.reduce((s, u) => s + u.stats.attack,  0);
+          const totalDef = allUnits.reduce((s, u) => s + u.stats.defense, 0);
+          const morSum   = allUnits.reduce((s, u) => s + u.stats.morale,  0);
+          const totalHp  = allUnits.reduce((s, u) => s + u.stats.hp,      0);
+          const maxHp    = allUnits.reduce((s, u) => s + u.stats.maxHp,   0);
+          return {
+            name:       ruler.name,
+            role:       ruler.role,
+            troopCount: allUnits.length,
+            attack:     totalAtk,
+            defense:    totalDef,
+            morale:     Math.round(morSum / allUnits.length),
+            hp:         Math.max(1, totalHp),
+            maxHp:      Math.max(1, maxHp),
+          };
+        }
+      }
+    }
+
+    // Fallback: generate based on ruler stats (used for player-owned settlements
+    // or settlements whose garrison has not been initialised yet).
     const troopCount = isCastle ? 4 + econ : 2 + Math.ceil(econ / 2);
     const multiplier = 1 + troopCount * 0.3 + econ * 0.05;
 
@@ -2945,6 +2998,12 @@ export class GameUI {
     if (state.finished && !state.diplomacyApplied) {
       state.diplomacyApplied = true;
       this._triggerBattleAttackDiplomacy(state.settlement, state.result === 'victory');
+      // Reduce the defeated settlement's garrison to reflect combat losses.
+      if ((state.result === 'victory' || state.result === 'draw') && this.diplomacySystem) {
+        const key   = this._settlementKey(state.settlement);
+        const losses = Math.max(1, Math.floor(state.enemy.troopCount * 0.6));
+        this.diplomacySystem.applyGarrisonLosses(key, losses);
+      }
     }
 
     this._renderBattleScene();
