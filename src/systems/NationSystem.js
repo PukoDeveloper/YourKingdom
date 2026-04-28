@@ -14,6 +14,7 @@
 import { Unit } from './Army.js';
 import { FLAG_STRIPE_STYLES, FLAG_STRIPE_COLORS } from './AppearanceSystem.js';
 import { ALL_PERSONALITIES } from './DiplomacySystem.js';
+import { BuildingSystem } from './BuildingSystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
@@ -113,10 +114,11 @@ export class Settlement {
    *   population:   number,
    *   economyLevel: number,
    *   resources:    string[],
-   *   ruler:        Unit
+   *   ruler:        Unit,
+   *   buildings:    import('./BuildingSystem.js').Building[]
    * }} opts
    */
-  constructor({ type, name, nationId, population, economyLevel, resources, ruler }) {
+  constructor({ type, name, nationId, population, economyLevel, resources, ruler, buildings = [] }) {
     /** @type {'castle'|'village'} */
     this.type = type;
     this.name = name;
@@ -135,6 +137,11 @@ export class Settlement {
     this.resources = resources;
     /** The ruling Unit – same class as army members, but with TRAIT_RULER. */
     this.ruler = ruler;
+    /**
+     * Buildings present in this settlement (government building first, then random ones).
+     * @type {import('./BuildingSystem.js').Building[]}
+     */
+    this.buildings = buildings;
     /**
      * True when the player has captured this settlement.
      * Derived from `controllingNationId === PLAYER_NATION_ID`; kept in sync by GameUI.
@@ -220,6 +227,7 @@ export class NationSystem {
         economyLevel: eco,
         resources,
         ruler,
+        buildings:    BuildingSystem.generate('castle', c.x, c.y, seed),
       }));
     });
 
@@ -256,6 +264,7 @@ export class NationSystem {
         economyLevel: eco,
         resources,
         ruler,
+        buildings:    BuildingSystem.generate('village', v.x, v.y, seed),
       }));
     });
   }
