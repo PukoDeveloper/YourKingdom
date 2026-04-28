@@ -242,15 +242,22 @@ export class Game {
   _startAutoSave() {
     this._autoSaveTimer = setInterval(() => this.save(), AUTO_SAVE_INTERVAL_MS);
 
-    document.addEventListener('visibilitychange', () => {
+    this._onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') this.save();
-    });
+    };
+    this._onBeforeUnload = () => this.save();
 
-    window.addEventListener('beforeunload', () => this.save());
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
+    window.addEventListener('beforeunload', this._onBeforeUnload);
   }
 
   /** Clear save data and reload for a fresh start. */
   _resetGame() {
+    // Remove auto-save listeners so they don't re-save during the reload.
+    clearInterval(this._autoSaveTimer);
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+    window.removeEventListener('beforeunload', this._onBeforeUnload);
+
     SaveManager.clear();
     window.location.reload();
   }
