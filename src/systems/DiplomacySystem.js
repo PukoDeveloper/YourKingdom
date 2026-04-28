@@ -13,7 +13,7 @@
  *   - Ruler personality         (arrogant/warlike → negative; gentle → positive)
  */
 
-import { MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
+import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
 import { BuildingSystem, BLDG_TAVERN } from './BuildingSystem.js';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,9 @@ export const GARRISON_TAX_PENALTY_PER_UNIT = 2;
 
 /** NPC gold cap. */
 const NPC_GOLD_CAP = 3000;
+
+/** World pixels per second for NPC army marches across the map. */
+const NPC_MARCH_SPEED_PX = 240;
 
 /**
  * Win-rate threshold for a single squad: if the estimated win chance using only
@@ -105,6 +108,39 @@ export const PERSONALITY_COLORS = {
 
 // Max possible tile distance on the 200×200 map.
 const MAX_MAP_DIST = Math.sqrt(MAP_WIDTH ** 2 + MAP_HEIGHT ** 2);
+
+/**
+ * Return the Chinese label for the number of squads dispatched in a march.
+ * @param {boolean} sendBoth
+ * @returns {string}
+ */
+function _squadLabel(sendBoth) {
+  return sendBoth ? '兩支部隊' : '一支部隊';
+}
+
+// ---------------------------------------------------------------------------
+// March pixel-position helpers (module-level so updateMarches can use them)
+// ---------------------------------------------------------------------------
+
+/**
+ * World-pixel centre of a castle (4×4 tiles).
+ * @param {{ x: number, y: number }|undefined} castle  MapData castle entry
+ * @returns {{ x: number, y: number }|null}
+ */
+function _marchCastlePx(castle) {
+  if (!castle) return null;
+  return { x: (castle.x + 2) * TILE_SIZE, y: (castle.y + 2) * TILE_SIZE };
+}
+
+/**
+ * World-pixel centre of a village (2×2 tiles).
+ * @param {{ x: number, y: number }|undefined} village  MapData village entry
+ * @returns {{ x: number, y: number }|null}
+ */
+function _marchVillagePx(village) {
+  if (!village) return null;
+  return { x: (village.x + 1) * TILE_SIZE, y: (village.y + 1) * TILE_SIZE };
+}
 
 // ---------------------------------------------------------------------------
 // DiplomacySystem
@@ -194,6 +230,31 @@ export class DiplomacySystem {
      * @type {Map<string, Array<Array<{name:string,role:string,traits:string[],stats:object}>>>}
      */
     this._npcArmies = new Map();
+
+    /**
+     * Active NPC army marches (armies moving toward a target settlement).
+     * Each entry holds everything needed to advance, render, and resolve the march.
+     * @type {Array<{
+     *   id: number,
+     *   attackerNationId: number,
+     *   attackerCastleIdx: number,
+     *   targetNationId: number,
+     *   targetType: 'castle'|'village',
+     *   targetIdx: number,
+     *   sendBoth: boolean,
+     *   victory: boolean,
+     *   atkLoss: number,
+     *   progress: number,
+     *   _atkKey: string,
+     *   _defKey: string,
+     *   _attackerName: string,
+     *   _targetSettlement: object
+     * }>}
+     */
+    this._pendingMarches = [];
+
+    /** Monotonically increasing id generator for marches. */
+    this._marchNextId = 0;
 
     this._build(mapData);
     this._initSovereignty();
@@ -621,9 +682,10 @@ export class DiplomacySystem {
   }
 
   /**
-   * Daytime phase: NPC nations assess enemies and may declare war, dispatching
-   * one or both of their garrison squads depending on the estimated win rate.
-   * A victorious attacker captures the settlement (changes controllingNationId).
+   * Daytime phase: NPC nations assess enemies and dispatch marching armies toward
+   * target settlements.  Combat is resolved later when the army arrives
+   * (see updateMarches).  Each nation may have at most one march in progress at
+   * a time.
    * @param {{ message: string }[]} messages
    */
   _npcWarPhase(messages) {
@@ -631,6 +693,9 @@ export class DiplomacySystem {
 
     castleSettlements.forEach((s, id) => {
       if (!s || s.controllingNationId !== id) return; // nation must hold its home castle
+
+      // Only one march at a time per nation.
+      if (this._pendingMarches.some(m => m.attackerNationId === id)) return;
 
       const personality = this._rulerPersonality(s);
       const threshold   = WAR_THRESHOLD[personality] ?? 55;
@@ -640,7 +705,7 @@ export class DiplomacySystem {
       const atkArmies = this._npcArmies.get(atkKey) ?? [];
       const squad1    = atkArmies[0] ?? [];
       const squad2    = atkArmies[1] ?? [];
-      if (squad1.length === 0 && squad2.length === 0) return; // no troops to attack with
+      if (squad1.length === 0 && squad2.length === 0) return; // no troops to dispatch
 
       // ── Find the best target settlement across all hostile nations ──────────
       let bestTarget  = null;
@@ -656,7 +721,6 @@ export class DiplomacySystem {
           if (!ts || ts.controllingNationId !== tid) return;
           const defStr   = this._settlementGarrisonStrength('castle', tidx);
           const eco      = ts.economyLevel;
-          // Score: low garrison = easy target; high economy = valuable target.
           const weakness = Math.max(0, (1 - defStr / 30) * 60) + eco * 4;
           if (weakness > bestWeakness) {
             bestWeakness = weakness;
@@ -683,7 +747,8 @@ export class DiplomacySystem {
       const s1Str    = this._squadStrength(squad1);
       const s2Str    = this._squadStrength(squad2);
       const defStr   = bestTarget.defStr;
-      const winRate1 = s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
+      // If squad1 is empty fall back to 0 win rate so we always commit squad2 when available.
+      const winRate1 = squad1.length > 0 && s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
       const totalStr = s1Str + s2Str;
       const winRate2 = totalStr > 0 ? totalStr / (totalStr + defStr + 1) : 0;
 
@@ -692,7 +757,7 @@ export class DiplomacySystem {
       const winRate  = sendBoth ? winRate2 : winRate1;
       const victory  = Math.random() < winRate;
 
-      // ── Apply attacker casualties ───────────────────────────────────────────
+      // ── Apply attacker casualties at dispatch (troops leave the garrison) ───
       // Victorious attackers lose fewer troops; defeat costs twice as many.
       // Committing both squads doubles the absolute loss in either outcome.
       const atkLoss = victory
@@ -700,46 +765,150 @@ export class DiplomacySystem {
         : (sendBoth ? 4 : 2);  // heavy losses on defeat
       this.applyGarrisonLosses(atkKey, atkLoss);
 
-      // Record diplomatic ripple effects.
+      // ── Queue the march ─────────────────────────────────────────────────────
       const attackerName = nations[id]?.name ?? s.name;
-      this.recordAttackEvent({
-        attackerNationId:    id,
-        targetNationId:      bestTarget.nationId,
-        settlementName:      bestTarget.settlement.name,
-        attackerDisplayName: attackerName,
+      const squadLabel   = _squadLabel(sendBoth);
+      this._pendingMarches.push({
+        id:                this._marchNextId++,
+        attackerNationId:  id,
+        attackerCastleIdx: id, // castle index mirrors nation id (one home castle per nation)
+        targetNationId:    bestTarget.nationId,
+        targetType:        bestTarget.type,
+        targetIdx:         bestTarget.idx,
+        sendBoth,
         victory,
+        atkLoss,
+        progress:          0,
+        _atkKey:           atkKey,
+        _defKey:           `${bestTarget.type}:${bestTarget.idx}`,
+        _attackerName:     attackerName,
+        _targetSettlement: bestTarget.settlement,
       });
 
-      const defKey = `${bestTarget.type}:${bestTarget.idx}`;
-      if (victory) {
-        // Capture: transfer control to the attacker.
-        bestTarget.settlement.controllingNationId = id;
-
-        // Clear the defeated garrison.
-        const defArmies = this._npcArmies.get(defKey);
-        if (defArmies) defArmies.forEach(sq => { sq.length = 0; });
-
-        // Check whether the defeated nation has been eliminated.
-        const defeatedId = bestTarget.nationId;
-        if (this.nationSystem.isNationExtinct(defeatedId)) {
-          this.handleNationExtinction(defeatedId);
-          const defeatedNation = nations[defeatedId];
-          if (defeatedNation) {
-            messages.push({
-              message: `💀 ${defeatedNation.name} 失去了所有領地，國家滅亡！所有主權移交給玩家。`,
-            });
-          }
-        }
-      } else {
-        // Failed assault – defender also takes a small loss.
-        this.applyGarrisonLosses(defKey, 1);
-      }
-
-      const squadLabel = sendBoth ? '兩支部隊' : '一支部隊';
       messages.push({
-        message: `⚔ ${attackerName} 派出${squadLabel}進攻 ${nations[bestTarget.nationId]?.name ?? '鄰國'} 的 ${bestTarget.settlement.name}！${victory ? '（勝利，已佔領）' : '（失敗）'}`,
+        message: `⚔ ${attackerName} 派出${squadLabel}向 ${nations[bestTarget.nationId]?.name ?? '鄰國'} 的 ${bestTarget.settlement.name} 進軍！`,
       });
     });
+  }
+
+  /**
+   * Resolve a completed march: record diplomatic effects, capture/apply losses.
+   * @param {object} march  A march entry from _pendingMarches.
+   * @returns {{ message: string }[]}  Messages to show the player.
+   */
+  _resolveMarch(march) {
+    const messages = [];
+    const { nations } = this.nationSystem;
+    const {
+      attackerNationId, targetNationId, victory, sendBoth,
+      _defKey, _attackerName, _targetSettlement,
+    } = march;
+
+    // ── Diplomatic ripple ───────────────────────────────────────────────────
+    this.recordAttackEvent({
+      attackerNationId,
+      targetNationId,
+      settlementName:      _targetSettlement.name,
+      attackerDisplayName: _attackerName,
+      victory,
+    });
+
+    if (victory) {
+      // Capture: transfer control to the attacker.
+      _targetSettlement.controllingNationId = attackerNationId;
+
+      // Clear the defeated garrison.
+      const defArmies = this._npcArmies.get(_defKey);
+      if (defArmies) defArmies.forEach(sq => { sq.length = 0; });
+
+      // Check whether the defeated nation has been eliminated.
+      if (this.nationSystem.isNationExtinct(targetNationId)) {
+        this.handleNationExtinction(targetNationId);
+        const defeatedNation = nations[targetNationId];
+        if (defeatedNation) {
+          messages.push({
+            message: `💀 ${defeatedNation.name} 失去了所有領地，國家滅亡！所有主權移交給玩家。`,
+          });
+        }
+      }
+    } else {
+      // Failed assault – defender also takes a small loss.
+      this.applyGarrisonLosses(_defKey, 1);
+    }
+
+    const squadLabel = _squadLabel(sendBoth);
+    const targetName = nations[targetNationId]?.name ?? '鄰國';
+    messages.push({
+      message: victory
+        ? `⚔ ${_attackerName} 的${squadLabel}成功佔領了 ${targetName} 的 ${_targetSettlement.name}！`
+        : `⚔ ${_attackerName} 的${squadLabel}進攻 ${targetName} 的 ${_targetSettlement.name} 失敗！`,
+      structureRebuild: victory, // hint to caller to rebuild structure visuals
+    });
+
+    return messages;
+  }
+
+  /**
+   * Advance all pending NPC marches by `dt` seconds and resolve any that
+   * have arrived at their target.
+   *
+   * Must be called every game-loop frame from Game.js.
+   *
+   * @param {number} dt  Delta-time in real seconds.
+   * @param {import('../world/MapData.js').MapData} mapData
+   * @returns {{ messages: { message: string, structureRebuild?: boolean }[], structureRebuildNeeded: boolean }}
+   */
+  updateMarches(dt, mapData) {
+    if (!mapData || this._pendingMarches.length === 0) {
+      return { messages: [], structureRebuildNeeded: false };
+    }
+
+    const messages = [];
+    let structureRebuildNeeded = false;
+    const resolved = [];
+
+    for (const march of this._pendingMarches) {
+      // Compute pixel positions for start and target.
+      const fromPx = _marchCastlePx(mapData.castles[march.attackerCastleIdx]);
+      const toPx = march.targetType === 'castle'
+        ? _marchCastlePx(mapData.castles[march.targetIdx])
+        : _marchVillagePx(mapData.villages[march.targetIdx]);
+
+      if (!fromPx || !toPx) {
+        // Invalid positions – resolve immediately without effect.
+        resolved.push(march);
+        continue;
+      }
+
+      const dist = Math.sqrt((toPx.x - fromPx.x) ** 2 + (toPx.y - fromPx.y) ** 2);
+      if (dist < 1) {
+        march.progress = 1;
+      } else {
+        march.progress = Math.min(1, march.progress + (NPC_MARCH_SPEED_PX * dt) / dist);
+      }
+
+      if (march.progress >= 1) {
+        resolved.push(march);
+        const resMessages = this._resolveMarch(march);
+        messages.push(...resMessages);
+        if (resMessages.some(m => m.structureRebuild)) structureRebuildNeeded = true;
+      }
+    }
+
+    if (resolved.length > 0) {
+      const resolvedSet = new Set(resolved);
+      this._pendingMarches = this._pendingMarches.filter(m => !resolvedSet.has(m));
+    }
+
+    return { messages, structureRebuildNeeded };
+  }
+
+  /**
+   * Return a read-only snapshot of currently pending marches for the renderer.
+   * @returns {ReadonlyArray<object>}
+   */
+  getPendingMarches() {
+    return this._pendingMarches;
   }
 
   /**

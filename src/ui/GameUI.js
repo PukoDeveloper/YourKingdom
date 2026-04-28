@@ -3278,6 +3278,24 @@ export class GameUI {
     this._toast(msg);
   }
 
+  /**
+   * Add a system/world-event message to the inbox with an explicit icon.
+   * Used by Game.js to surface NPC march events without going through onPhaseChanged.
+   * @param {string} icon
+   * @param {string} text
+   */
+  addSystemMessage(icon, text) {
+    this._addInboxMessage(icon, text);
+  }
+
+  /**
+   * Re-render the nations / diplomacy panel if it is currently visible.
+   * Call this after any external event that changes settlement ownership.
+   */
+  refreshNationsPanel() {
+    if (this._activePanel === 'nations') this._renderNations();
+  }
+
   // -------------------------------------------------------------------------
   // Toast helper
   // -------------------------------------------------------------------------
