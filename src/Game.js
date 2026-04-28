@@ -11,6 +11,7 @@ import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
 import { GameUI }           from './ui/GameUI.js';
 import { SaveManager }      from './systems/SaveManager.js';
+import { NationSystem }    from './systems/NationSystem.js';
 
 /** Auto-save interval in milliseconds. */
 const AUTO_SAVE_INTERVAL_MS = 60_000;
@@ -66,6 +67,9 @@ export class Game {
     this._mapData = new MapData(seed);
     this._reportLoading(15);
     await this._yieldFrame();
+
+    // Nation system (deterministic from seed – no separate save state needed)
+    this._nationSystem = new NationSystem(this._mapData);
 
     // Terrain chunks
     this._setLoadingStatus('繪製地形...');
@@ -146,6 +150,7 @@ export class Game {
     this._gameUI = new GameUI(
       savedState ?? null,
       () => this.save(),
+      this._nationSystem,
     );
 
     // -----------------------------------------------------------------------
@@ -193,10 +198,18 @@ export class Game {
     // Weather
     this._weather.update(dt);
 
-    // HUD: terrain name
+    // HUD: terrain name (+ nation when inside a settlement)
     if (this._terrainLabel) {
       const t = this._mapData.getTerrainAtWorld(this._player.x, this._player.y);
-      this._terrainLabel.textContent = TERRAIN_NAMES[t] ?? '';
+      let label = TERRAIN_NAMES[t] ?? '';
+      const tileX = Math.floor(this._player.x / TILE_SIZE);
+      const tileY = Math.floor(this._player.y / TILE_SIZE);
+      const hit = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
+      if (hit) {
+        const nation = this._nationSystem.getNation(hit.settlement);
+        label = `${nation.emblem} ${hit.settlement.name}`;
+      }
+      this._terrainLabel.textContent = label;
     }
 
     // HUD: time & weather
