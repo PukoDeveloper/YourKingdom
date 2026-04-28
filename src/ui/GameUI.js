@@ -2438,9 +2438,19 @@ export class GameUI {
   }
 
   /**
-   * Iterate `_capturedSettlements` and set `playerOwned = true` on the
-   * matching Settlement objects in NationSystem.
-   * Also clears `playerOwned` on settlements not in the set.
+   * Set the ownership state of a settlement, keeping `playerOwned` and
+   * `controllingNationId` in sync.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {boolean} isOwned  true = player owns it, false = restore to founding nation
+   */
+  _setSettlementOwnership(settlement, isOwned) {
+    settlement.playerOwned = isOwned;
+    settlement.controllingNationId = isOwned ? PLAYER_NATION_ID : settlement.nationId;
+  }
+
+  /**
+   * Iterate `_capturedSettlements` and set ownership on the matching
+   * Settlement objects in NationSystem. Clears ownership on all others.
    * Safe to call multiple times (idempotent).
    */
   _syncSettlementOwnership() {
@@ -2451,9 +2461,7 @@ export class GameUI {
     ];
     allSettlements.forEach(s => {
       const key = this._settlementKey(s);
-      const isOwned = key !== '' && this._capturedSettlements.has(key);
-      s.playerOwned = isOwned;
-      s.controllingNationId = isOwned ? PLAYER_NATION_ID : s.nationId;
+      this._setSettlementOwnership(s, key !== '' && this._capturedSettlements.has(key));
     });
   }
 
@@ -2497,8 +2505,7 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
-    settlement.playerOwned = true;
-    settlement.controllingNationId = PLAYER_NATION_ID;
+    this._setSettlementOwnership(settlement, true);
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
 
