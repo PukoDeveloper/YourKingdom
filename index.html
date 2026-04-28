@@ -1376,6 +1376,83 @@
         background: rgba(183,28,28,0.45);
         border-color: #ef9a9a;
       }
+      /* =====================================================================
+         Settlement card – flag badge (replaces emoji emblem)
+         ===================================================================== */
+      .sc-flag { flex-shrink: 0; line-height: 1; }
+      .sc-emblem-fallback { font-size: 20px; }
+
+      /* Settlement detail – composite flag in banner */
+      .sd-nation-flag { flex-shrink: 0; line-height: 1; }
+
+      /* =====================================================================
+         Compact unit card – character avatar
+         ===================================================================== */
+      .ucc-avatar { flex-shrink: 0; line-height: 1; margin-right: -2px; }
+
+      /* =====================================================================
+         Appearance customization panel
+         ===================================================================== */
+      .ap-preview-row {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 20px;
+        padding: 16px 0 12px;
+        border-bottom: 1px solid rgba(255,255,255,0.07);
+      }
+      .ap-preview-label {
+        color: rgba(255,255,255,0.4);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+      }
+      .ap-section {
+        margin-bottom: 16px;
+      }
+      .ap-section-title {
+        color: rgba(226,201,126,0.75);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+      }
+      .ap-swatches {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .ap-swatch {
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: transform 0.12s, border-color 0.12s;
+        touch-action: manipulation;
+      }
+      .ap-swatch:hover { transform: scale(1.15); }
+      .ap-swatch.selected { border-color: #fff; transform: scale(1.12); }
+      .ap-choices {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .ap-choice {
+        padding: 6px 12px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.22);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s, border-color 0.15s;
+        touch-action: manipulation;
+      }
+      .ap-choice.selected {
+        background: rgba(226,201,126,0.18);
+        border-color: #e2c97e;
+        color: #e2c97e;
+      }
+      .ap-choice:hover:not(.selected) { background: rgba(255,255,255,0.1); color: #eee; }
     </style>
   </head>
   <body>
