@@ -398,6 +398,7 @@ export class DiplomacySystem {
     }
     const delta = -(15 + Math.floor(Math.random() * 11)); // -15 … -25
     this.modifyPlayerRelation(nationId, delta);
+    this._addMemoryEntry(nationId, `玩家公開譴責了我國，關係 ${delta}`, delta);
     this._condemnedToday.add(nationId);
     return { success: true, delta, alreadyDone: false };
   }
