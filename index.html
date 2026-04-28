@@ -241,51 +241,8 @@
       }
 
       /* =====================================================================
-         Backpack – item grid
+         Backpack – category tabs, sub-tabs, compact item rows
          ===================================================================== */
-      .item-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-        gap: 10px;
-      }
-      .item-card {
-        background: rgba(255,255,255,0.06);
-        border: 1px solid rgba(226,201,126,0.18);
-        border-radius: 10px;
-        padding: 10px 10px 8px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 4px;
-        text-align: center;
-      }
-      .item-icon { font-size: 28px; line-height: 1; }
-      .item-name {
-        color: #eee;
-        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
-        font-size: 13px;
-        font-weight: 600;
-      }
-      .item-qty {
-        color: #e2c97e;
-        font-size: 12px;
-      }
-      .item-desc {
-        color: #90a4ae;
-        font-size: 11px;
-      }
-      .btn-use {
-        margin-top: 4px;
-        background: rgba(226,201,126,0.18);
-        border: 1px solid rgba(226,201,126,0.4);
-        color: #e2c97e;
-        border-radius: 6px;
-        padding: 3px 12px;
-        font-size: 12px;
-        cursor: pointer;
-        transition: background 0.15s;
-      }
-      .btn-use:hover { background: rgba(226,201,126,0.32); }
       .ui-empty {
         color: rgba(255,255,255,0.4);
         font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
@@ -293,6 +250,283 @@
         text-align: center;
         padding: 28px 0;
       }
+
+      /* Category tabs */
+      .bp-cat-tabs {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .bp-cat-btn {
+        flex: 1;
+        min-width: 56px;
+        padding: 6px 4px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.2);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.5);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+      }
+      .bp-cat-btn.active {
+        background: rgba(226,201,126,0.18);
+        border-color: #e2c97e;
+        color: #e2c97e;
+      }
+      .bp-cat-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: #eee; }
+
+      /* Equipment sub-tabs */
+      .bp-sub-tabs {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+        padding: 8px 10px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(226,201,126,0.12);
+        border-radius: 8px;
+      }
+      .bp-sub-btn {
+        flex: 1;
+        min-width: 46px;
+        padding: 5px 4px;
+        background: transparent;
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 6px;
+        color: rgba(255,255,255,0.45);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 11px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+      }
+      .bp-sub-btn.active {
+        background: rgba(226,201,126,0.15);
+        border-color: rgba(226,201,126,0.5);
+        color: #e2c97e;
+      }
+      .bp-sub-btn:hover:not(.active) { background: rgba(255,255,255,0.08); color: #eee; }
+
+      /* Count badge on tab buttons */
+      .bp-cnt {
+        background: rgba(226,201,126,0.25);
+        color: #e2c97e;
+        border-radius: 8px;
+        font-size: 10px;
+        padding: 0 5px;
+        min-width: 16px;
+        text-align: center;
+        line-height: 15px;
+      }
+
+      /* Compact item row list */
+      .item-rows { display: flex; flex-direction: column; gap: 5px; }
+      .item-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.15);
+        border-radius: 10px;
+        padding: 10px 14px;
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .item-row:hover { background: rgba(255,255,255,0.11); border-color: rgba(226,201,126,0.35); }
+      .ir-icon { font-size: 20px; flex-shrink: 0; width: 24px; text-align: center; }
+      .ir-name {
+        color: #eee;
+        font-size: 14px;
+        font-weight: 600;
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ir-type-tag {
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 8px;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.15);
+        color: rgba(255,255,255,0.45);
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
+      .ir-qty {
+        color: #e2c97e;
+        font-size: 13px;
+        flex-shrink: 0;
+      }
+      .ir-arrow {
+        color: rgba(255,255,255,0.3);
+        font-size: 18px;
+        flex-shrink: 0;
+        line-height: 1;
+      }
+
+      /* =====================================================================
+         Item detail overlay
+         ===================================================================== */
+      #ui-item-detail-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.65);
+        z-index: 300;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s;
+      }
+      #ui-item-detail-overlay.visible {
+        opacity: 1;
+        pointer-events: all;
+      }
+      #ui-item-detail-box {
+        background: #0d1b2a;
+        border: 1px solid rgba(226,201,126,0.35);
+        border-radius: 14px;
+        width: 90%;
+        max-width: 340px;
+        max-height: 75vh;
+        overflow-y: auto;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      #ui-item-detail-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px 12px;
+        border-bottom: 1px solid rgba(226,201,126,0.18);
+        position: sticky;
+        top: 0;
+        background: #0d1b2a;
+        z-index: 1;
+      }
+      #ui-item-detail-icon { font-size: 26px; flex-shrink: 0; }
+      #ui-item-detail-name {
+        color: #e2c97e;
+        font-size: 16px;
+        font-weight: bold;
+        letter-spacing: 1px;
+        flex: 1;
+      }
+      #ui-item-detail-close {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.55);
+        font-size: 18px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+        transition: color 0.15s;
+      }
+      #ui-item-detail-close:hover { color: #fff; }
+      #ui-item-detail-body { padding: 14px 16px 20px; }
+      .id-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .id-desc-row {
+        padding: 8px 10px;
+        background: rgba(255,255,255,0.04);
+        border-radius: 7px;
+        margin-bottom: 12px;
+      }
+      .id-label {
+        color: rgba(255,255,255,0.4);
+        font-size: 12px;
+        min-width: 36px;
+        flex-shrink: 0;
+      }
+      .id-value {
+        color: #eee;
+        font-size: 13px;
+        flex: 1;
+      }
+      .id-type-tag {
+        background: rgba(226,201,126,0.12);
+        border: 1px solid rgba(226,201,126,0.3);
+        color: #e2c97e;
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-size: 12px;
+        flex: 0;
+      }
+      .id-desc {
+        color: rgba(255,255,255,0.55);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .id-stats-row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .id-stat {
+        flex: 1;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(226,201,126,0.13);
+        border-radius: 8px;
+        padding: 8px 4px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+      }
+      .id-stat-label { color: rgba(255,255,255,0.4); font-size: 11px; }
+      .id-stat-val { color: #e2c97e; font-size: 17px; font-weight: bold; line-height: 1; }
+      .id-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,255,255,0.07);
+      }
+      .btn-item-use {
+        flex: 1;
+        padding: 8px 10px;
+        background: rgba(226,201,126,0.15);
+        border: 1px solid rgba(226,201,126,0.4);
+        color: #e2c97e;
+        border-radius: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .btn-item-use:hover { background: rgba(226,201,126,0.28); }
+      .btn-item-discard {
+        flex: 1;
+        padding: 8px 10px;
+        background: rgba(211,47,47,0.12);
+        border: 1px solid rgba(211,47,47,0.35);
+        color: #ef9a9a;
+        border-radius: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .btn-item-discard:hover { background: rgba(211,47,47,0.26); }
 
       /* =====================================================================
          Team – squad tabs

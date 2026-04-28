@@ -24,6 +24,10 @@ export class GameUI {
     this._activePanel  = null;
     this._activeSquad  = 0;
 
+    /** Active backpack category tab and equipment sub-tab. */
+    this._backpackTab  = 'all';
+    this._equipSubTab  = 'weapon';
+
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
 
@@ -44,13 +48,41 @@ export class GameUI {
   // -------------------------------------------------------------------------
 
   _seedDemo() {
-    this.inventory.addItem({ name: '金幣',     type: 'loot',        icon: '🪙', quantity: 50 });
-    this.inventory.addItem({ name: '木材',     type: 'loot',        icon: '🪵', quantity: 20 });
-    this.inventory.addItem({ name: '鐵礦石',   type: 'loot',        icon: '⛏️', quantity: 15 });
-    this.inventory.addItem({ name: '治療藥水', type: 'consumable',  icon: '🧪', quantity: 3,
+    // Loot
+    this.inventory.addItem({ name: '金幣',     type: 'loot',      icon: '🪙', quantity: 50 });
+    this.inventory.addItem({ name: '木材',     type: 'loot',      icon: '🪵', quantity: 20 });
+    this.inventory.addItem({ name: '鐵礦石',   type: 'loot',      icon: '⛏️', quantity: 15 });
+    // Equipment
+    this.inventory.addItem({ name: '長劍',     type: 'weapon',    icon: '🗡️', quantity: 1,
+      description: '鋒利的長劍，適合近戰。', stats: { attack: 12 } });
+    this.inventory.addItem({ name: '鐵頭盔',   type: 'helmet',    icon: '⛑️', quantity: 1,
+      description: '堅固的鐵製頭盔。', stats: { defense: 6 } });
+    this.inventory.addItem({ name: '鎖甲',     type: 'chest',     icon: '🥋', quantity: 1,
+      description: '由鐵環編織的護甲。', stats: { defense: 10 } });
+    this.inventory.addItem({ name: '護腿甲',   type: 'legs',      icon: '🦵', quantity: 1,
+      description: '保護腿部的金屬護甲。', stats: { defense: 4 } });
+    this.inventory.addItem({ name: '皮靴',     type: 'boots',     icon: '👢', quantity: 1,
+      description: '輕便耐用的皮革靴子。', stats: { speed: 2 } });
+    // Accessories
+    this.inventory.addItem({ name: '護身符',   type: 'accessory', icon: '📿', quantity: 1,
+      description: '帶有神秘魔力的護身符。', stats: { morale: 5 } });
+    this.inventory.addItem({ name: '玉佩',     type: 'accessory', icon: '💎', quantity: 1,
+      description: '溫潤的翡翠玉佩。' });
+    // Food
+    this.inventory.addItem({ name: '乾糧',     type: 'food',      icon: '🍱', quantity: 10,
+      description: '補充行軍所需的體力。' });
+    this.inventory.addItem({ name: '肉乾',     type: 'food',      icon: '🥩', quantity: 5,
+      description: '耐儲的高熱量食物。' });
+    // Potions
+    this.inventory.addItem({ name: '治療藥水', type: 'potion',    icon: '🧪', quantity: 3,
       description: '恢復生命值' });
-    this.inventory.addItem({ name: '速度符',   type: 'consumable',  icon: '💨', quantity: 1,
+    this.inventory.addItem({ name: '強化藥水', type: 'potion',    icon: '⚗️', quantity: 1,
+      description: '暫時大幅提升攻擊力' });
+    // Utility
+    this.inventory.addItem({ name: '速度符',   type: 'utility',   icon: '💨', quantity: 1,
       description: '短暫提升移動速度' });
+    this.inventory.addItem({ name: '偵察鷹',   type: 'utility',   icon: '🦅', quantity: 2,
+      description: '派出鷹隼偵察地形' });
 
     // Squad 0 – already has the hero; add three more members
     this.army.acquireUnit({ name: '趙一', role: '劍士',   traits: ['重步兵'],           stats: { attack: 8,  defense: 6  } }, 0);
@@ -108,6 +140,21 @@ export class GameUI {
     `;
     document.body.appendChild(unitDetail);
 
+    // Item detail overlay (shown when a backpack item is clicked)
+    const itemDetail = document.createElement('div');
+    itemDetail.id = 'ui-item-detail-overlay';
+    itemDetail.innerHTML = `
+      <div id="ui-item-detail-box">
+        <div id="ui-item-detail-header">
+          <span id="ui-item-detail-icon"></span>
+          <span id="ui-item-detail-name"></span>
+          <button id="ui-item-detail-close">✕</button>
+        </div>
+        <div id="ui-item-detail-body"></div>
+      </div>
+    `;
+    document.body.appendChild(itemDetail);
+
     // Acquire dialog
     const dlg = document.createElement('div');
     dlg.id = 'ui-acquire-overlay';
@@ -155,6 +202,12 @@ export class GameUI {
       if (e.target.id === 'ui-unit-detail-overlay') this._closeUnitDetail();
     });
     document.getElementById('ui-unit-detail-close').addEventListener('click', () => this._closeUnitDetail());
+
+    // Close item detail overlay when tapping backdrop or close button
+    document.getElementById('ui-item-detail-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'ui-item-detail-overlay') this._closeItemDetail();
+    });
+    document.getElementById('ui-item-detail-close').addEventListener('click', () => this._closeItemDetail());
   }
 
   // -------------------------------------------------------------------------
@@ -196,38 +249,186 @@ export class GameUI {
   // Backpack
   // -------------------------------------------------------------------------
 
+  // Category / sub-tab metadata
+  static get _BP_CATS() {
+    return [
+      { id: 'all',       label: '全部' },
+      { id: 'equipment', label: '裝備' },
+      { id: 'accessory', label: '飾品' },
+      { id: 'food',      label: '糧食' },
+      { id: 'potion',    label: '藥水' },
+      { id: 'utility',   label: '實用' },
+    ];
+  }
+  static get _EQUIP_SUBS() {
+    return [
+      { id: 'weapon', label: '武器' },
+      { id: 'helmet', label: '頭盔' },
+      { id: 'chest',  label: '胸甲' },
+      { id: 'legs',   label: '護腿' },
+      { id: 'boots',  label: '靴子' },
+    ];
+  }
+  static get _EQUIP_TYPES() {
+    return ['weapon', 'helmet', 'chest', 'legs', 'boots'];
+  }
+  static get _TYPE_LABEL() {
+    return {
+      weapon: '武器', helmet: '頭盔', chest: '胸甲', legs: '護腿', boots: '靴子',
+      accessory: '飾品', food: '糧食', potion: '藥水', utility: '實用',
+      loot: '資源', consumable: '消耗',
+    };
+  }
+
+  _filterItems(items) {
+    const tab = this._backpackTab;
+    const EQUIP = GameUI._EQUIP_TYPES;
+    if (tab === 'all')       return items;
+    if (tab === 'equipment') return items.filter(i => i.type === this._equipSubTab);
+    if (tab === 'potion')    return items.filter(i => i.type === 'potion' || i.type === 'consumable');
+    return items.filter(i => i.type === tab);
+  }
+
   _renderBackpack() {
-    const content = document.getElementById('ui-panel-content');
-    const items   = this.inventory.getItems();
+    const content  = document.getElementById('ui-panel-content');
+    const allItems = this.inventory.getItems();
+    const cats     = GameUI._BP_CATS;
+    const subs     = GameUI._EQUIP_SUBS;
+    const EQUIP    = GameUI._EQUIP_TYPES;
+    const LABEL    = GameUI._TYPE_LABEL;
 
-    if (items.length === 0) {
-      content.innerHTML = '<p class="ui-empty">背包是空的</p>';
-      return;
-    }
+    // Count per top-level tab (for badge visibility)
+    const countFor = (id) => {
+      if (id === 'all')       return allItems.length;
+      if (id === 'equipment') return allItems.filter(i => EQUIP.includes(i.type)).length;
+      if (id === 'potion')    return allItems.filter(i => i.type === 'potion' || i.type === 'consumable').length;
+      return allItems.filter(i => i.type === id).length;
+    };
 
-    content.innerHTML = `
-      <div class="item-grid">
-        ${items.map(it => `
-          <div class="item-card">
-            <span class="item-icon">${it.icon}</span>
-            <span class="item-name">${it.name}</span>
-            <span class="item-qty">×${it.quantity}</span>
-            ${it.description ? `<span class="item-desc">${it.description}</span>` : ''}
-            ${it.type === 'consumable'
-              ? `<button class="btn-use" data-id="${it.id}">使用</button>`
-              : ''}
-          </div>
-        `).join('')}
-      </div>
-    `;
+    const catTabsHTML = `
+      <div class="bp-cat-tabs">
+        ${cats.map(c => {
+          const cnt = countFor(c.id);
+          return `<button class="bp-cat-btn${this._backpackTab === c.id ? ' active' : ''}" data-cat="${c.id}">
+            ${c.label}${cnt > 0 ? `<span class="bp-cnt">${cnt}</span>` : ''}
+          </button>`;
+        }).join('')}
+      </div>`;
 
-    content.querySelectorAll('.btn-use').forEach(btn => {
+    const subTabsHTML = this._backpackTab === 'equipment' ? `
+      <div class="bp-sub-tabs">
+        ${subs.map(s => {
+          const cnt = allItems.filter(i => i.type === s.id).length;
+          return `<button class="bp-sub-btn${this._equipSubTab === s.id ? ' active' : ''}" data-sub="${s.id}">
+            ${s.label}${cnt > 0 ? `<span class="bp-cnt">${cnt}</span>` : ''}
+          </button>`;
+        }).join('')}
+      </div>` : '';
+
+    const filtered = this._filterItems(allItems);
+
+    const listHTML = filtered.length === 0
+      ? '<p class="ui-empty">此分類沒有物品</p>'
+      : `<div class="item-rows">
+          ${filtered.map(it => `
+            <div class="item-row" data-id="${it.id}" role="button" tabindex="0">
+              <span class="ir-icon">${it.icon}</span>
+              <span class="ir-name">${it.name}</span>
+              ${this._backpackTab === 'all'
+                ? `<span class="ir-type-tag">${LABEL[it.type] ?? it.type}</span>`
+                : ''}
+              ${it.quantity > 1 ? `<span class="ir-qty">×${it.quantity}</span>` : ''}
+              <span class="ir-arrow">›</span>
+            </div>`).join('')}
+        </div>`;
+
+    content.innerHTML = catTabsHTML + subTabsHTML + listHTML;
+
+    content.querySelectorAll('.bp-cat-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const desc = this.inventory.useItem(Number(btn.dataset.id));
-        if (desc) this._toast(desc);
+        this._backpackTab = btn.dataset.cat;
         this._renderBackpack();
       });
     });
+    content.querySelectorAll('.bp-sub-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._equipSubTab = btn.dataset.sub;
+        this._renderBackpack();
+      });
+    });
+    content.querySelectorAll('.item-row[data-id]').forEach(row => {
+      const open = () => {
+        const item = allItems.find(i => i.id === Number(row.dataset.id));
+        if (item) this._openItemDetail(item);
+      };
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Item detail overlay
+  // -------------------------------------------------------------------------
+
+  _openItemDetail(item) {
+    const LABEL   = GameUI._TYPE_LABEL;
+    const usable  = ['consumable', 'potion', 'utility'].includes(item.type);
+    const statsKeys = item.stats ? Object.keys(item.stats) : [];
+    const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
+
+    const statsHTML = statsKeys.length > 0
+      ? `<div class="id-stats-row">
+          ${statsKeys.map(k => `
+            <div class="id-stat">
+              <span class="id-stat-label">${STAT_LABEL[k] ?? k}</span>
+              <span class="id-stat-val">${item.stats[k] >= 0 ? '+' : ''}${item.stats[k]}</span>
+            </div>`).join('')}
+        </div>`
+      : '';
+
+    document.getElementById('ui-item-detail-icon').textContent = item.icon;
+    document.getElementById('ui-item-detail-name').textContent = item.name;
+    document.getElementById('ui-item-detail-body').innerHTML = `
+      <div class="id-row">
+        <span class="id-label">分類</span>
+        <span class="id-value id-type-tag">${LABEL[item.type] ?? item.type}</span>
+      </div>
+      ${item.quantity > 1 ? `
+      <div class="id-row">
+        <span class="id-label">數量</span>
+        <span class="id-value">×${item.quantity}</span>
+      </div>` : ''}
+      ${item.description ? `
+      <div class="id-row id-desc-row">
+        <span class="id-desc">${item.description}</span>
+      </div>` : ''}
+      ${statsHTML}
+      <div class="id-actions">
+        ${usable ? `<button class="btn-item-use" data-id="${item.id}">▶ 使用</button>` : ''}
+        <button class="btn-item-discard" data-id="${item.id}">🗑 丟棄</button>
+      </div>
+    `;
+
+    document.getElementById('ui-item-detail-overlay').classList.add('visible');
+
+    const detailBody = document.getElementById('ui-item-detail-body');
+    detailBody.querySelector('.btn-item-use')?.addEventListener('click', () => {
+      const desc = this.inventory.useItem(item.id);
+      if (desc) this._toast(desc);
+      this._closeItemDetail();
+      this._renderBackpack();
+    });
+
+    detailBody.querySelector('.btn-item-discard')?.addEventListener('click', () => {
+      this.inventory.removeItem(item.id, item.quantity);
+      this._toast(`已丟棄 ${item.name}`);
+      this._closeItemDetail();
+      this._renderBackpack();
+    });
+  }
+
+  _closeItemDetail() {
+    document.getElementById('ui-item-detail-overlay').classList.remove('visible');
   }
 
   // -------------------------------------------------------------------------
@@ -306,7 +507,7 @@ export class GameUI {
         if (unit) this._openUnitDetail(unit, squad);
       };
       card.addEventListener('click', open);
-      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') open(); });
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
     });
   }
 
