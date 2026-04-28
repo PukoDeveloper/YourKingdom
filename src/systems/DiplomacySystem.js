@@ -70,6 +70,14 @@ export class DiplomacySystem {
     this.nationSystem = nationSystem;
 
     /**
+     * Castle positions indexed by nation id, used for distance calculations.
+     * Index i corresponds to nation id i (mirrors the NationSystem convention
+     * where castles[i] is always assigned to nation id i during world generation).
+     * @type {{ x: number, y: number }[]}
+     */
+    this._castlePositions = (mapData.castles ?? []).map(c => ({ x: c.x, y: c.y }));
+
+    /**
      * NPC-NPC relations.
      * Key: "A:B" where A < B (both are nation IDs).
      * @type {Map<string, number>}
@@ -111,6 +119,15 @@ export class DiplomacySystem {
      * @type {Map<number, Set<string>>}
      */
     this._sovereigntyMap = new Map();
+
+    /**
+     * Surrender index per nation (0 – 100).
+     * A higher value indicates a nation is more likely to consider surrendering.
+     * Factors: enemy combined strength, occupied home territories, ruler traits, ally count.
+     * Maintained but not yet used for AI decision-making.
+     * @type {Map<number, number>}
+     */
+    this._surrenderIndex = new Map();
 
     this._build(mapData);
     this._initSovereignty();
@@ -196,6 +213,26 @@ export class DiplomacySystem {
   _rulerPersonality(settlement) {
     if (!settlement?.ruler) return PERSONALITY_CAUTIOUS;
     return settlement.ruler.traits.find(t => ALL_PERSONALITIES.includes(t)) ?? PERSONALITY_CAUTIOUS;
+  }
+
+  /**
+   * Distance-based multiplier for relation-change ripple effects.
+   * Nations farther from the conflict zone are less affected.
+   *
+   * @param {number} observerNationId  The third-party nation observing the conflict.
+   * @param {number} conflictNationId  The nation at the centre of the conflict (typically the target).
+   * @returns {number}  A value in [0.2, 1.0]; 1.0 = adjacent, 0.2 = opposite end of the map.
+   */
+  _distanceFactor(observerNationId, conflictNationId) {
+    const posO = this._castlePositions[observerNationId];
+    const posC = this._castlePositions[conflictNationId];
+    if (!posO || !posC) return 1.0;
+    const dx   = posO.x - posC.x;
+    const dy   = posO.y - posC.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    // Linearly interpolate: dist 0 → factor 1.0, dist MAX → factor 0.2
+    const factor = 1.0 - (dist / MAX_MAP_DIST) * 0.8;
+    return Math.max(0.2, Math.min(1.0, factor));
   }
 
   // -------------------------------------------------------------------------
@@ -320,12 +357,16 @@ export class DiplomacySystem {
 
       if (cToTarget >= 60) {
         // C is allied with the target → C dislikes the attacker
-        thirdDelta = -(5 + Math.floor(Math.random() * 10)); // -5 … -14
+        const baseDelta = -(5 + Math.floor(Math.random() * 10)); // -5 … -14
+        const distFactor = this._distanceFactor(cId, targetNationId);
+        thirdDelta = Math.round(baseDelta * distFactor);
         const thirdSign = `${thirdDelta}`;
         memDesc = `${attackerDisplayName} 攻打了我們的盟友 ${targetNation.name}（${settlementName}），關係 ${thirdSign}`;
       } else if (cToTarget <= -60) {
         // C is enemy of the target → C likes the attacker
-        thirdDelta = 5 + Math.floor(Math.random() * 10); // +5 … +14
+        const baseDelta = 5 + Math.floor(Math.random() * 10); // +5 … +14
+        const distFactor = this._distanceFactor(cId, targetNationId);
+        thirdDelta = Math.round(baseDelta * distFactor);
         memDesc = `${attackerDisplayName} 攻打了我們的敵人 ${targetNation.name}（${settlementName}），關係 +${thirdDelta}`;
       }
 
@@ -383,6 +424,82 @@ export class DiplomacySystem {
       this._sovereigntyMap.set(toNationId, new Set());
     }
     this._sovereigntyMap.get(toNationId).add(settlementKey);
+  }
+
+  // -------------------------------------------------------------------------
+  // Surrender index
+  // -------------------------------------------------------------------------
+
+  /**
+   * Compute and store the surrender index for a nation currently at war.
+   * The index (0 – 100) reflects how close the nation is to considering surrender.
+   * A higher value indicates greater pressure to capitulate.
+   *
+   * Factors (not yet used for AI decisions):
+   *   - Enemy combined strength  : sum of settlements held by all hostile nations (relation ≤ -60)
+   *   - Occupied home territory  : proportion of own settlements already lost
+   *   - Ruler trait              : warlike / arrogant rulers resist; gentle / cautious rulers yield more easily
+   *   - Ally support             : each allied nation (relation ≥ 60) reduces the index
+   *
+   * @param {number} nationId  Nation to evaluate (must be a valid NPC nation id).
+   */
+  updateSurrenderIndex(nationId) {
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+    if (nationId < 0 || nationId >= nations.length || !nations[nationId]) return;
+
+    const allSettlements = [...castleSettlements, ...villageSettlements];
+
+    // ── Occupied territory pressure (0 – 40) ──────────────────────────────
+    const ownTotal = allSettlements.filter(s => s.nationId === nationId).length;
+    const ownLost  = allSettlements.filter(
+      s => s.nationId === nationId && s.controllingNationId !== nationId,
+    ).length;
+    const occupationRatio   = ownTotal > 0 ? ownLost / ownTotal : 0;
+    const occupationPressure = Math.round(occupationRatio * 40);
+
+    // ── Enemy combined strength (0 – 30) ──────────────────────────────────
+    let enemySettlements = 0;
+    nations.forEach((_, eid) => {
+      if (eid === nationId) return;
+      const rel = this.getRelation(nationId, eid);
+      if (rel <= -60) {
+        enemySettlements += allSettlements.filter(s => s.controllingNationId === eid).length;
+      }
+    });
+    const maxExpectedEnemySettlements = Math.max(1, allSettlements.length / 2);
+    const enemyPressure = Math.round(
+      Math.min(enemySettlements / maxExpectedEnemySettlements, 1.0) * 30,
+    );
+
+    // ── Ruler trait modifier (-10 … +15) ──────────────────────────────────
+    const p = this._rulerPersonality(castleSettlements[nationId]);
+    let traitMod = 0;
+    if (p === PERSONALITY_WARLIKE)  traitMod = -10;
+    if (p === PERSONALITY_ARROGANT) traitMod = -5;
+    if (p === PERSONALITY_CAUTIOUS) traitMod = 5;
+    if (p === PERSONALITY_GENTLE)   traitMod = 15;
+
+    // ── Ally support (-20 … 0) ────────────────────────────────────────────
+    let allyCount = 0;
+    nations.forEach((_, aid) => {
+      if (aid === nationId) return;
+      const rel = this.getRelation(nationId, aid);
+      if (rel >= 60) allyCount++;
+    });
+    const allyReduction = Math.min(allyCount * 5, 20);
+
+    const raw = occupationPressure + enemyPressure + traitMod - allyReduction;
+    this._surrenderIndex.set(nationId, Math.max(0, Math.min(100, raw)));
+  }
+
+  /**
+   * Return the current surrender index for a nation.
+   * Returns 0 for unknown or player-owned nations.
+   * @param {number} nationId
+   * @returns {number}  Value in [0, 100].
+   */
+  getSurrenderIndex(nationId) {
+    return this._surrenderIndex.get(nationId) ?? 0;
   }
 
   /**
@@ -518,19 +635,20 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number }} */
+  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][] }} */
   getState() {
     return {
       playerRelations: [...this._playerRelations.entries()],
       npcRelations:    [...this._npcRelations.entries()],
       nationMemory:    [...this._nationMemory.entries()],
       currentDay:      this._currentDay,
+      surrenderIndex:  [...this._surrenderIndex.entries()],
     };
   }
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number }|null} state
+   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number, surrenderIndex?: [number, number][] }|null} state
    */
   loadState(state) {
     if (!state) return;
@@ -555,6 +673,11 @@ export class DiplomacySystem {
     }
     if (typeof state.currentDay === 'number') {
       this._currentDay = state.currentDay;
+    }
+    if (Array.isArray(state.surrenderIndex)) {
+      state.surrenderIndex.forEach(([id, value]) => {
+        this._surrenderIndex.set(Number(id), Math.max(0, Math.min(100, Number(value))));
+      });
     }
   }
 }
