@@ -5,12 +5,40 @@ import {
   renderFlagHTML,
   renderCharHTML,
   charAppearanceFromIndices,
+  flagAppFromIndices,
   CHAR_BODY_COLORS_CSS,
   CHAR_HEADGEAR_TYPES,
   CHAR_HEADGEAR_LABELS,
   CHAR_ARMOR_COLORS_CSS,
   CHAR_MARK_COLORS_CSS,
+  FLAG_BG_COLORS,
+  FLAG_STRIPE_COLORS,
+  FLAG_STRIPE_STYLES,
+  FLAG_SYMBOLS,
 } from '../systems/AppearanceSystem.js';
+
+/** Display labels for FLAG_STRIPE_STYLES (same order). */
+const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形'];
+
+/** Kingdom type definitions. requiresSettlement = true means locked until the player controls a settlement. */
+const _KINGDOM_TYPES = [
+  { id: '騎士團', requiresSettlement: false },
+  { id: '王國',   requiresSettlement: true  },
+  { id: '公國',   requiresSettlement: true  },
+  { id: '帝國',   requiresSettlement: true  },
+  { id: '聯邦',   requiresSettlement: true  },
+  { id: '部落',   requiresSettlement: true  },
+];
+
+/** Default player kingdom state. */
+const DEFAULT_KINGDOM = {
+  name:               '我的騎士團',
+  type:               '騎士團',
+  flagBgIdx:          0,
+  flagStripeStyleIdx: 0,
+  flagStripeColorIdx: 0,
+  flagSymbolIdx:      0,
+};
 
 /** Default appearance indices used when no player is available. */
 const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 };
@@ -56,6 +84,15 @@ export class GameUI {
 
     /** Active team panel main tab: 'squads' | 'info' */
     this._teamInfoTab = 'squads';
+
+    /** Active appearance panel tab: 'character' | 'kingdom' */
+    this._appearanceTab = 'character';
+
+    /** Player's custom kingdom state (flag, name, type). */
+    this._playerKingdom = { ...DEFAULT_KINGDOM };
+
+    /** Number of settlements (castles + villages) the player currently controls. */
+    this._playerSettlementCount = 0;
 
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
@@ -558,6 +595,32 @@ export class GameUI {
 
   _renderAppearance() {
     const content = document.getElementById('ui-panel-content');
+    const tab = this._appearanceTab;
+
+    content.innerHTML = `
+      <div class="ap-main-tabs">
+        <button class="ap-main-tab-btn${tab === 'character' ? ' active' : ''}" data-ap-tab="character">👤 角色</button>
+        <button class="ap-main-tab-btn${tab === 'kingdom'   ? ' active' : ''}" data-ap-tab="kingdom">🏴 王國</button>
+      </div>
+      <div id="ap-tab-content"></div>
+    `;
+
+    content.querySelectorAll('.ap-main-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._appearanceTab = btn.dataset.apTab;
+        this._renderAppearance();
+      });
+    });
+
+    if (tab === 'kingdom') {
+      this._renderAppearanceKingdom();
+    } else {
+      this._renderAppearanceCharacter();
+    }
+  }
+
+  _renderAppearanceCharacter() {
+    const content = document.getElementById('ap-tab-content');
 
     const app = this.player
       ? this.player.appearance
@@ -648,6 +711,130 @@ export class GameUI {
     _wireSwatches('headgear','headgearIdx');
     _wireSwatches('armor',   'armorColorIdx');
     _wireSwatches('mark',    'markColorIdx');
+  }
+
+  _renderAppearanceKingdom() {
+    const content = document.getElementById('ap-tab-content');
+    const k = this._playerKingdom;
+    const hasSettlements = this._playerSettlementCount > 0;
+
+    const _flagApp = () => flagAppFromIndices({
+      bgIdx:          this._playerKingdom.flagBgIdx,
+      stripeStyleIdx: this._playerKingdom.flagStripeStyleIdx,
+      stripeColorIdx: this._playerKingdom.flagStripeColorIdx,
+      symbolIdx:      this._playerKingdom.flagSymbolIdx,
+    });
+
+    const bgSwatchesHTML = FLAG_BG_COLORS.map((c, i) =>
+      `<button class="ap-swatch${i === k.flagBgIdx ? ' selected' : ''}" data-flag-bg="${i}"
+               style="background:${c};width:28px;height:28px;border-radius:50%;cursor:pointer"></button>`
+    ).join('');
+
+    const stripeStyleHTML = FLAG_STRIPE_STYLES.map((s, i) =>
+      `<button class="ap-choice${i === k.flagStripeStyleIdx ? ' selected' : ''}" data-flag-stripe-style="${i}">${_STRIPE_STYLE_LABELS[i]}</button>`
+    ).join('');
+
+    const stripeColorHTML = FLAG_STRIPE_COLORS.map((c, i) =>
+      `<button class="ap-swatch${i === k.flagStripeColorIdx ? ' selected' : ''}" data-flag-stripe-color="${i}"
+               style="background:${c};width:28px;height:28px;border-radius:50%;cursor:pointer"></button>`
+    ).join('');
+
+    const symbolHTML = FLAG_SYMBOLS.map((s, i) =>
+      `<button class="ap-choice${i === k.flagSymbolIdx ? ' selected' : ''}" data-flag-symbol="${i}">${s}</button>`
+    ).join('');
+
+    const kingdomTypeHTML = _KINGDOM_TYPES.map(t => {
+      const locked = t.requiresSettlement && !hasSettlements;
+      return `<button class="ap-choice${k.type === t.id ? ' selected' : ''}${locked ? ' kp-locked' : ''}"
+                      data-kingdom-type="${t.id}" ${locked ? 'disabled title="需要控制城堡或村落才能解鎖"' : ''}>${t.id}</button>`;
+    }).join('');
+
+    content.innerHTML = `
+      <div class="ap-preview-row kp-preview-row">
+        <div id="kp-flag-preview">${renderFlagHTML(_flagApp(), 64)}</div>
+        <div class="kp-preview-info">
+          <span class="kp-preview-name" id="kp-name-display">${k.name}</span>
+          <span class="kp-preview-type" id="kp-type-display">${k.type}</span>
+        </div>
+      </div>
+
+      <div class="ap-section">
+        <div class="ap-section-title">國名</div>
+        <input type="text" id="kp-name-input" class="kp-name-input"
+               value="${k.name}" maxlength="20" placeholder="輸入國名…">
+      </div>
+
+      <div class="ap-section">
+        <div class="ap-section-title">國體</div>
+        <div class="ap-choices">${kingdomTypeHTML}</div>
+        ${!hasSettlements ? '<div class="kp-lock-hint">⚠ 控制城堡或村落後可解鎖更多國體</div>' : ''}
+      </div>
+
+      <div class="ap-section">
+        <div class="ap-section-title">旗幟底色</div>
+        <div class="ap-swatches">${bgSwatchesHTML}</div>
+      </div>
+
+      <div class="ap-section">
+        <div class="ap-section-title">紋路樣式</div>
+        <div class="ap-choices">${stripeStyleHTML}</div>
+      </div>
+
+      <div class="ap-section">
+        <div class="ap-section-title">紋路顏色</div>
+        <div class="ap-swatches">${stripeColorHTML}</div>
+      </div>
+
+      <div class="ap-section">
+        <div class="ap-section-title">旗幟符號</div>
+        <div class="ap-choices">${symbolHTML}</div>
+      </div>
+    `;
+
+    const _refreshFlagPreview = () => {
+      document.getElementById('kp-flag-preview').innerHTML = renderFlagHTML(_flagApp(), 64);
+    };
+
+    // Kingdom name input
+    const nameInput = content.querySelector('#kp-name-input');
+    const nameDisplay = document.getElementById('kp-name-display');
+    nameInput.addEventListener('input', () => {
+      this._playerKingdom.name = nameInput.value || DEFAULT_KINGDOM.name;
+      nameDisplay.textContent = this._playerKingdom.name;
+    });
+
+    // Kingdom type buttons
+    content.querySelectorAll('[data-kingdom-type]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._playerKingdom.type = btn.dataset.kingdomType;
+        content.querySelectorAll('[data-kingdom-type]').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        document.getElementById('kp-type-display').textContent = this._playerKingdom.type;
+      });
+    });
+
+    /**
+     * Wire flag-swatch/choice buttons for one flag property.
+     * @param {string} dataAttr   data-* attribute (e.g. 'flag-bg')
+     * @param {string} kingdomKey key to update in `this._playerKingdom`
+     */
+    const _wireFlagPart = (dataAttr, kingdomKey) => {
+      const btns = content.querySelectorAll(`[data-${dataAttr}]`);
+      const camel = dataAttr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      btns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          this._playerKingdom[kingdomKey] = Number(btn.dataset[camel]);
+          btns.forEach(b => b.classList.remove('selected'));
+          btn.classList.add('selected');
+          _refreshFlagPreview();
+        });
+      });
+    };
+
+    _wireFlagPart('flag-bg',           'flagBgIdx');
+    _wireFlagPart('flag-stripe-style', 'flagStripeStyleIdx');
+    _wireFlagPart('flag-stripe-color', 'flagStripeColorIdx');
+    _wireFlagPart('flag-symbol',       'flagSymbolIdx');
   }
 
   // -------------------------------------------------------------------------
@@ -1203,22 +1390,41 @@ export class GameUI {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ inventory: object, army: object }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object }} serialisable snapshot */
   getState() {
     return {
-      inventory: this.inventory.getState(),
-      army:      this.army.getState(),
+      inventory:     this.inventory.getState(),
+      army:          this.army.getState(),
+      playerKingdom: { ...this._playerKingdom },
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object }} state
    */
   loadState(state) {
     if (!state) return;
-    if (state.inventory) this.inventory.loadState(state.inventory);
-    if (state.army)      this.army.loadState(state.army);
+    if (state.inventory)     this.inventory.loadState(state.inventory);
+    if (state.army)          this.army.loadState(state.army);
+    if (state.playerKingdom) this._playerKingdom = { ...DEFAULT_KINGDOM, ...state.playerKingdom };
+  }
+
+  /**
+   * Update the number of settlements the player currently controls.
+   * Call this from the game whenever castles/villages are captured or lost.
+   * @param {number} count
+   */
+  setPlayerSettlementCount(count) {
+    this._playerSettlementCount = count;
+    // If the player no longer controls any settlements and the current type
+    // requires settlements, fall back to 騎士團.
+    if (count === 0) {
+      const typeInfo = _KINGDOM_TYPES.find(t => t.id === this._playerKingdom.type);
+      if (typeInfo?.requiresSettlement) {
+        this._playerKingdom.type = DEFAULT_KINGDOM.type;
+      }
+    }
   }
 
   /** Public helper – display a toast notification. */
