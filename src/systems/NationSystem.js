@@ -13,6 +13,7 @@
 
 import { Unit } from './Army.js';
 import { generateFlagAppearance } from './AppearanceSystem.js';
+import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
