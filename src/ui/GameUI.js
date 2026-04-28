@@ -6,6 +6,7 @@ import {
   PERSONALITY_COLORS,
   PERSONALITY_ARROGANT, PERSONALITY_WARLIKE, PERSONALITY_GENTLE,
   PERSONALITY_CUNNING,  PERSONALITY_CAUTIOUS, ALL_PERSONALITIES,
+  GARRISON_TAX_PENALTY_PER_UNIT,
 } from '../systems/DiplomacySystem.js';
 import {
   renderFlagHTML,
@@ -2583,14 +2584,27 @@ export class GameUI {
       else                          { satLabel = '激憤';   satColor = '#e53935'; }
     }
 
-    // Tax yield: economyLevel × 20 + floor(population / 100), then scaled by satisfaction
+    // Tax yield: economyLevel × 20 + floor(population / 100),
+    // scaled by satisfaction, then reduced by garrison maintenance cost.
     let taxYield = 0;
     let taxHTML  = '';
     if (isOwnedByPlayer) {
       const baseTax  = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
       // Satisfaction factor: -100 → 10 %, 0 → 100 % (capped at 100 %)
-      const factor   = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
-      taxYield       = Math.max(1, Math.round(baseTax * factor));
+      const factor          = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
+      const afterSat        = Math.round(baseTax * factor);
+      // Garrison penalty: every active soldier you maintain reduces tax income.
+      const playerUnits     = this.army.getSquads()
+        .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
+      const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+      taxYield              = Math.max(1, afterSat - garrisonPenalty);
+
+      const penaltyHTML = garrisonPenalty > 0
+        ? `<div class="gov-stat-row-small">
+             <span class="gov-stat-label">駐軍維持（${playerUnits} 人）</span>
+             <span class="gov-stat-val" style="color:#ef6c00">-🪙${garrisonPenalty}</span>
+           </div>`
+        : '';
 
       taxHTML = `
         <div class="gov-tax-section">
@@ -2599,6 +2613,7 @@ export class GameUI {
             <span class="gov-stat-label">民心滿意度</span>
             <span class="gov-sat-val" style="color:${satColor}">${satLabel}（${satisfaction >= 0 ? '+' : ''}${satisfaction}）</span>
           </div>
+          ${penaltyHTML}
           <div class="gov-stat-row-small">
             <span class="gov-stat-label">預期稅收</span>
             <span class="gov-stat-val">🪙${taxYield}</span>

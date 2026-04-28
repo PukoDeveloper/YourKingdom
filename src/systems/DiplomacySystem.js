@@ -40,6 +40,13 @@ const WAR_THRESHOLD = {
 const TAX_PER_ECON_CASTLE  = 15;
 const TAX_PER_ECON_VILLAGE = 5;
 
+/**
+ * Gold deducted from a settlement's tax income for each garrisoned soldier.
+ * Represents the economic burden of maintaining a standing army.
+ * Exported so GameUI can apply the same penalty to player-collected taxes.
+ */
+export const GARRISON_TAX_PENALTY_PER_UNIT = 2;
+
 /** NPC gold cap. */
 const NPC_GOLD_CAP = 3000;
 
@@ -580,15 +587,21 @@ export class DiplomacySystem {
       if (!nation) return;
       let income = 0;
 
-      castleSettlements.forEach(s => {
-        if (s.controllingNationId === id) {
-          income += s.economyLevel * TAX_PER_ECON_CASTLE;
-        }
+      castleSettlements.forEach((s, idx) => {
+        if (s.controllingNationId !== id) return;
+        const gross   = s.economyLevel * TAX_PER_ECON_CASTLE;
+        const garrisonUnits = (this._npcArmies.get(`castle:${idx}`) ?? [])
+          .reduce((sum, sq) => sum + sq.length, 0);
+        const penalty = garrisonUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+        income += Math.max(0, gross - penalty);
       });
-      villageSettlements.forEach(s => {
-        if (s.controllingNationId === id) {
-          income += s.economyLevel * TAX_PER_ECON_VILLAGE;
-        }
+      villageSettlements.forEach((s, idx) => {
+        if (s.controllingNationId !== id) return;
+        const gross   = s.economyLevel * TAX_PER_ECON_VILLAGE;
+        const garrisonUnits = (this._npcArmies.get(`village:${idx}`) ?? [])
+          .reduce((sum, sq) => sum + sq.length, 0);
+        const penalty = garrisonUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+        income += Math.max(0, gross - penalty);
       });
 
       if (income > 0) {
