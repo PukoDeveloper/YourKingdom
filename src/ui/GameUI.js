@@ -615,6 +615,11 @@ export class GameUI {
 
     const _apply = () => {
       if (this.player) this.player.setAppearance(pending);
+      // Sync the hero Unit in the army so the party screen reflects the new look.
+      const heroUnit = this.army.squads
+        .flatMap(s => s.members)
+        .find(m => m.role === 'hero');
+      if (heroUnit) heroUnit.appearance = charAppearanceFromIndices(pending);
     };
 
     /**
