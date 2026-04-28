@@ -9,6 +9,7 @@ import { VirtualJoystick }  from './controls/VirtualJoystick.js';
 import { TILE_SIZE, TERRAIN_NAMES } from './world/constants.js';
 import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
+import { GameUI }           from './ui/GameUI.js';
 
 export class Game {
   async init() {
@@ -113,6 +114,11 @@ export class Game {
     // Resize handler
     // -----------------------------------------------------------------------
     window.addEventListener('resize', () => this._onResize());
+
+    // -----------------------------------------------------------------------
+    // Game UI (Backpack + Team panels)
+    // -----------------------------------------------------------------------
+    this._gameUI = new GameUI();
 
     // -----------------------------------------------------------------------
     // Game loop

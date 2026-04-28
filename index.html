@@ -130,6 +130,361 @@
         font-size: 11px;
         pointer-events: none;
       }
+
+      /* =====================================================================
+         Tab buttons – top-right, stacked below the weather label
+         ===================================================================== */
+      #ui-tab-bar {
+        position: fixed;
+        top: 54px;
+        right: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 100;
+      }
+      .ui-tab-btn {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 2px solid rgba(226,201,126,0.5);
+        background: rgba(13,27,42,0.82);
+        color: #e2c97e;
+        font-size: 20px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.18s, border-color 0.18s, transform 0.12s;
+        touch-action: manipulation;
+      }
+      .ui-tab-btn:hover,
+      .ui-tab-btn.active {
+        background: rgba(226,201,126,0.22);
+        border-color: #e2c97e;
+        transform: scale(1.08);
+      }
+
+      /* =====================================================================
+         Slide-in panel backdrop + drawer
+         ===================================================================== */
+      #ui-panel {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0);
+        z-index: 200;
+        display: flex;
+        align-items: flex-end;
+        pointer-events: none;
+        transition: background 0.25s;
+      }
+      #ui-panel.visible {
+        background: rgba(0,0,0,0.52);
+        pointer-events: all;
+      }
+      #ui-panel-inner {
+        width: 100%;
+        max-width: 520px;
+        margin: 0 auto;
+        background: #0d1b2a;
+        border: 1px solid rgba(226,201,126,0.25);
+        border-bottom: none;
+        border-radius: 18px 18px 0 0;
+        max-height: 72vh;
+        display: flex;
+        flex-direction: column;
+        transform: translateY(100%);
+        transition: transform 0.28s cubic-bezier(.4,0,.2,1);
+        overflow: hidden;
+      }
+      #ui-panel.visible #ui-panel-inner {
+        transform: translateY(0);
+      }
+      #ui-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 18px 10px;
+        border-bottom: 1px solid rgba(226,201,126,0.18);
+        flex-shrink: 0;
+      }
+      #ui-panel-title {
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 17px;
+        font-weight: bold;
+        letter-spacing: 1px;
+      }
+      #ui-panel-close {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.55);
+        font-size: 18px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+        transition: color 0.15s;
+      }
+      #ui-panel-close:hover { color: #fff; }
+      #ui-panel-content {
+        overflow-y: auto;
+        padding: 14px 16px 24px;
+        flex: 1;
+      }
+
+      /* =====================================================================
+         Backpack – item grid
+         ===================================================================== */
+      .item-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        gap: 10px;
+      }
+      .item-card {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.18);
+        border-radius: 10px;
+        padding: 10px 10px 8px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        text-align: center;
+      }
+      .item-icon { font-size: 28px; line-height: 1; }
+      .item-name {
+        color: #eee;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .item-qty {
+        color: #e2c97e;
+        font-size: 12px;
+      }
+      .item-desc {
+        color: #90a4ae;
+        font-size: 11px;
+      }
+      .btn-use {
+        margin-top: 4px;
+        background: rgba(226,201,126,0.18);
+        border: 1px solid rgba(226,201,126,0.4);
+        color: #e2c97e;
+        border-radius: 6px;
+        padding: 3px 12px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .btn-use:hover { background: rgba(226,201,126,0.32); }
+      .ui-empty {
+        color: rgba(255,255,255,0.4);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        text-align: center;
+        padding: 28px 0;
+      }
+
+      /* =====================================================================
+         Team – squad tabs
+         ===================================================================== */
+      .squad-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .squad-tab-btn {
+        flex: 1;
+        padding: 8px 4px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.22);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        line-height: 1.35;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+      }
+      .squad-tab-btn small { font-size: 11px; color: #e2c97e; }
+      .squad-tab-btn.active {
+        background: rgba(226,201,126,0.18);
+        border-color: #e2c97e;
+        color: #e2c97e;
+      }
+      .squad-stat {
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        color: rgba(255,255,255,0.45);
+        margin-bottom: 10px;
+      }
+      .unit-section { margin-bottom: 14px; }
+      .section-label {
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        color: rgba(226,201,126,0.7);
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+        text-transform: uppercase;
+      }
+      .unit-card {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.18);
+        border-radius: 10px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .unit-card.empty {
+        opacity: 0.4;
+        border-style: dashed;
+      }
+      .unit-card.general { border-color: rgba(226,201,126,0.45); }
+      .unit-badge {
+        font-size: 12px;
+        color: rgba(255,255,255,0.5);
+        min-width: 48px;
+      }
+      .unit-name {
+        color: #eee;
+        font-size: 14px;
+        font-weight: 600;
+        flex: 1;
+      }
+      .unit-role {
+        color: #90a4ae;
+        font-size: 12px;
+      }
+      .unit-stats {
+        color: rgba(255,255,255,0.45);
+        font-size: 11px;
+      }
+      .unit-empty {
+        color: rgba(255,255,255,0.35);
+        font-size: 12px;
+      }
+      .btn-remove-gen,
+      .btn-remove-sol {
+        margin-left: auto;
+        background: rgba(211,47,47,0.18);
+        border: 1px solid rgba(211,47,47,0.4);
+        color: #ef9a9a;
+        border-radius: 6px;
+        padding: 3px 10px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .btn-remove-gen:hover,
+      .btn-remove-sol:hover { background: rgba(211,47,47,0.35); }
+      .soldier-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+      .soldier-grid .unit-card {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 3px;
+        margin-bottom: 0;
+      }
+      .soldier-grid .btn-remove-sol { margin-left: 0; align-self: flex-end; }
+
+      /* =====================================================================
+         Acquire dialog
+         ===================================================================== */
+      #ui-acquire-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.65);
+        z-index: 400;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s;
+      }
+      #ui-acquire-overlay.visible {
+        opacity: 1;
+        pointer-events: all;
+      }
+      #ui-acquire-box {
+        background: #0d1b2a;
+        border: 1px solid rgba(226,201,126,0.35);
+        border-radius: 14px;
+        padding: 24px 28px;
+        max-width: 320px;
+        width: 90%;
+        text-align: center;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      #ui-acquire-title {
+        color: #e2c97e;
+        font-size: 16px;
+        font-weight: bold;
+        margin-bottom: 10px;
+      }
+      #ui-acquire-desc {
+        color: rgba(255,255,255,0.6);
+        font-size: 13px;
+        margin-bottom: 18px;
+        line-height: 1.5;
+      }
+      #ui-acquire-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+      }
+      #ui-acquire-actions button {
+        flex: 1;
+        padding: 9px 6px;
+        border-radius: 8px;
+        border: 1px solid rgba(226,201,126,0.35);
+        background: rgba(255,255,255,0.07);
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      #ui-acquire-actions button:hover { background: rgba(226,201,126,0.18); }
+      #ui-acquire-actions button:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+
+      /* =====================================================================
+         Toast notification
+         ===================================================================== */
+      #ui-toast {
+        position: fixed;
+        bottom: 90px;
+        left: 50%;
+        transform: translateX(-50%) translateY(12px);
+        background: rgba(13,27,42,0.92);
+        border: 1px solid rgba(226,201,126,0.3);
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        padding: 8px 20px;
+        border-radius: 20px;
+        white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s, transform 0.25s;
+        z-index: 500;
+      }
+      #ui-toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+      }
     </style>
   </head>
   <body>
