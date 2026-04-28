@@ -17,15 +17,16 @@ export class GameUI {
    *   If provided the UI is initialised from the save instead of the demo seed.
    * @param {() => void} [onSave]  Called when the player presses the save button.
    * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
+   * @param {() => void} [onReset] Called when the player confirms a game reset.
    */
-  constructor(savedState = null, onSave = null, nationSystem = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
     /** @type {import('../systems/NationSystem.js').NationSystem|null} */
     this.nationSystem = nationSystem;
 
-    /** @type {'backpack'|'team'|'nations'|null} */
+    /** @type {'backpack'|'team'|'nations'|'settings'|null} */
     this._activePanel  = null;
     this._activeSquad  = 0;
 
@@ -41,6 +42,9 @@ export class GameUI {
 
     /** Callback invoked when the player manually triggers a save. */
     this.onSave = onSave;
+
+    /** Callback invoked when the player confirms a game reset. */
+    this.onReset = onReset;
 
     if (savedState) {
       this.loadState(savedState);
@@ -123,6 +127,7 @@ export class GameUI {
       <button id="btn-team"     class="ui-tab-btn" title="隊伍">⚔️</button>
       <button id="btn-nations"  class="ui-tab-btn" title="王國">🏰</button>
       <button id="btn-save"     class="ui-tab-btn" title="儲存">💾</button>
+      <button id="btn-settings" class="ui-tab-btn" title="設定">⚙️</button>
     `;
     document.body.appendChild(tabBar);
 
@@ -214,6 +219,7 @@ export class GameUI {
     document.getElementById('btn-backpack').addEventListener('click', () => this._togglePanel('backpack'));
     document.getElementById('btn-team').addEventListener('click',     () => this._togglePanel('team'));
     document.getElementById('btn-nations').addEventListener('click',  () => this._togglePanel('nations'));
+    document.getElementById('btn-settings').addEventListener('click', () => this._togglePanel('settings'));
     document.getElementById('ui-panel-close').addEventListener('click', () => this._closePanel());
 
     document.getElementById('btn-save').addEventListener('click', () => {
@@ -265,6 +271,7 @@ export class GameUI {
     document.getElementById('btn-backpack').classList.toggle('active', type === 'backpack');
     document.getElementById('btn-team').classList.toggle('active',     type === 'team');
     document.getElementById('btn-nations').classList.toggle('active',  type === 'nations');
+    document.getElementById('btn-settings').classList.toggle('active', type === 'settings');
 
     if (type === 'backpack') {
       document.getElementById('ui-panel-title').textContent = '🎒 背包';
@@ -272,6 +279,9 @@ export class GameUI {
     } else if (type === 'nations') {
       document.getElementById('ui-panel-title').textContent = '🏰 王國';
       this._renderNations();
+    } else if (type === 'settings') {
+      document.getElementById('ui-panel-title').textContent = '⚙️ 設定';
+      this._renderSettings();
     } else {
       document.getElementById('ui-panel-title').textContent = '⚔️ 隊伍';
       this._renderTeam();
@@ -284,6 +294,7 @@ export class GameUI {
     document.getElementById('btn-backpack').classList.remove('active');
     document.getElementById('btn-team').classList.remove('active');
     document.getElementById('btn-nations').classList.remove('active');
+    document.getElementById('btn-settings').classList.remove('active');
   }
 
   // -------------------------------------------------------------------------
@@ -482,6 +493,36 @@ export class GameUI {
 
   _closeItemDetail() {
     document.getElementById('ui-item-detail-overlay').classList.remove('visible');
+  }
+
+  // -------------------------------------------------------------------------
+  // Settings panel
+  // -------------------------------------------------------------------------
+
+  _renderSettings() {
+    const content = document.getElementById('ui-panel-content');
+    content.innerHTML = `
+      <div class="settings-section">
+        <div class="settings-row">
+          <div class="settings-row-label">
+            <span class="settings-row-icon">🔄</span>
+            <div>
+              <div class="settings-row-title">重置遊戲</div>
+              <div class="settings-row-desc">清除所有存檔，重新開始全新的冒險</div>
+            </div>
+          </div>
+          <button id="btn-reset-game" class="btn-danger">重置</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-reset-game').addEventListener('click', () => {
+      if (window.confirm('確定要重置遊戲嗎？\n所有存檔將被清除，無法復原。')) {
+        if (typeof this.onReset === 'function') {
+          this.onReset();
+        }
+      }
+    });
   }
 
   // -------------------------------------------------------------------------

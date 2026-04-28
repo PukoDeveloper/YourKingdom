@@ -8,21 +8,40 @@ import { drawCastleBuilding, drawVillageBuilding, drawPortBuilding } from './Til
 export class StructureRenderer {
   /**
    * @param {import('./MapData.js').MapData} mapData
+   * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
    */
-  constructor(mapData) {
+  constructor(mapData, nationSystem = null) {
     this.container = new Container();
-    this._build(mapData);
+    this._build(mapData, nationSystem);
   }
 
-  _build(mapData) {
+  _build(mapData, nationSystem) {
     const g = new Graphics();
 
-    for (const { x, y } of mapData.castles) {
-      drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
+    for (let i = 0; i < mapData.castles.length; i++) {
+      const { x, y } = mapData.castles[i];
+      let flagColor = 0xE53935;
+      if (nationSystem) {
+        const settlement = nationSystem.castleSettlements[i];
+        if (settlement) {
+          const nation = nationSystem.getNation(settlement);
+          flagColor = parseInt(nation.color.slice(1), 16);
+        }
+      }
+      drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
     }
 
-    for (const { x, y } of mapData.villages) {
-      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
+    for (let i = 0; i < mapData.villages.length; i++) {
+      const { x, y } = mapData.villages[i];
+      let flagColor = 0xBF360C;
+      if (nationSystem) {
+        const settlement = nationSystem.villageSettlements[i];
+        if (settlement) {
+          const nation = nationSystem.getNation(settlement);
+          flagColor = parseInt(nation.color.slice(1), 16);
+        }
+      }
+      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
     }
 
     for (const { x, y } of mapData.ports) {
