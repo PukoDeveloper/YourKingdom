@@ -799,9 +799,9 @@ export class GameUI {
         <div class="ud-stat"><span class="ud-stat-label">防禦</span><span class="ud-stat-val">${unit.stats.defense}</span></div>
         <div class="ud-stat"><span class="ud-stat-label">士氣</span><span class="ud-stat-val">${unit.stats.morale}</span></div>
       </div>
+      ${captainBtn ? `<div class="ud-actions">${captainBtn}</div>` : ''}
       ${!isHero ? `
       <div class="ud-actions">
-        ${captainBtn}
         <div class="ud-move-section">
           <span class="ud-label">移至小隊</span>
           <div class="move-targets">${moveTargetsHTML}</div>
