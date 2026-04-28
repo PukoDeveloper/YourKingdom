@@ -3,6 +3,7 @@ import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
 import { TRAIT_RULER }                     from '../systems/NationSystem.js';
 import {
   RELATION_LEVELS,
+  PERSONALITY_COLORS,
   PERSONALITY_ARROGANT, PERSONALITY_WARLIKE, PERSONALITY_GENTLE,
   PERSONALITY_CUNNING,  PERSONALITY_CAUTIOUS, ALL_PERSONALITIES,
 } from '../systems/DiplomacySystem.js';
@@ -1071,15 +1072,9 @@ export class GameUI {
 
     const _personalityLabel = (traits) => {
       const p = traits.find(t => ALL_PERSONALITIES.includes(t));
-      const colors = {
-        [PERSONALITY_GENTLE]:   '#66bb6a',
-        [PERSONALITY_CAUTIOUS]: '#9e9e9e',
-        [PERSONALITY_CUNNING]:  '#ce93d8',
-        [PERSONALITY_ARROGANT]: '#ef6c00',
-        [PERSONALITY_WARLIKE]:  '#e53935',
-      };
       if (!p) return '';
-      return `<span class="dipl-personality" style="color:${colors[p] ?? '#fff'}">${p}</span>`;
+      const color = PERSONALITY_COLORS[p] ?? '#fff';
+      return `<span class="dipl-personality" style="color:${color}">${p}</span>`;
     };
 
     const rowsHTML = nations.map((nation, id) => {
@@ -1087,7 +1082,7 @@ export class GameUI {
       const val   = this.diplomacySystem.getPlayerRelation(id);
       const level = this.diplomacySystem.getRelationLevel(val);
       const flagH = nation.flagApp ? renderFlagHTML(nation.flagApp, 28) : `<span>${nation.emblem}</span>`;
-      const alreadyCondemned = this.diplomacySystem._condemnedToday.has(id);
+      const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
       const isOwned = s?.playerOwned;
 
       return `
@@ -1151,15 +1146,8 @@ export class GameUI {
     const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
     // Colour-code personality traits
-    const _PERSONALITY_COLORS = {
-      [PERSONALITY_GENTLE]:   '#66bb6a',
-      [PERSONALITY_CAUTIOUS]: '#9e9e9e',
-      [PERSONALITY_CUNNING]:  '#ce93d8',
-      [PERSONALITY_ARROGANT]: '#ef6c00',
-      [PERSONALITY_WARLIKE]:  '#e53935',
-    };
     const rulerTraitsHTML = ruler.traits.map(t => {
-      const persColor = _PERSONALITY_COLORS[t];
+      const persColor = PERSONALITY_COLORS[t];
       const cls = t === TRAIT_RULER
         ? 'trait-ruler'
         : persColor ? 'trait-personality' : '';

@@ -44,6 +44,15 @@ export const RELATION_LEVELS = [
   { min: -101, label: '敵對',  color: '#e53935', icon: '⚔️' },
 ];
 
+/** CSS colours for each personality trait. */
+export const PERSONALITY_COLORS = {
+  [PERSONALITY_GENTLE]:   '#66bb6a',
+  [PERSONALITY_CAUTIOUS]: '#9e9e9e',
+  [PERSONALITY_CUNNING]:  '#ce93d8',
+  [PERSONALITY_ARROGANT]: '#ef6c00',
+  [PERSONALITY_WARLIKE]:  '#e53935',
+};
+
 // Max possible tile distance on the 200×200 map.
 const MAX_MAP_DIST = Math.sqrt(MAP_WIDTH ** 2 + MAP_HEIGHT ** 2);
 
@@ -221,7 +230,7 @@ export class DiplomacySystem {
   /** Call once per in-game day to reset daily limits and process NPC events. */
   onDayPassed() {
     this._condemnedToday.clear();
-    this._processNpcDailyEvents();
+    return this._processNpcDailyEvents();
   }
 
   /**
@@ -268,6 +277,15 @@ export class DiplomacySystem {
     });
 
     return events;
+  }
+
+  /**
+   * Returns true when the player has already condemned this nation today.
+   * @param {number} nationId
+   * @returns {boolean}
+   */
+  hasCondemnedToday(nationId) {
+    return this._condemnedToday.has(nationId);
   }
 
   /**
