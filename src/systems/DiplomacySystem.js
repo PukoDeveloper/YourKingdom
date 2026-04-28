@@ -43,6 +43,12 @@ const TAX_PER_ECON_VILLAGE = 5;
 /** NPC gold cap. */
 const NPC_GOLD_CAP = 3000;
 
+/** Probability that the attacker wins an NPC-initiated war action. */
+const NPC_WAR_VICTORY_CHANCE = 0.45;
+
+/** Number of garrison units removed from the defeated settlement per NPC war victory. */
+const NPC_WAR_CASUALTY_COUNT = 2;
+
 // ---------------------------------------------------------------------------
 // Public constants
 // ---------------------------------------------------------------------------
@@ -626,7 +632,7 @@ export class DiplomacySystem {
       const targetSettlement = castleSettlements[bestTargetId];
       if (!targetSettlement) return;
 
-      const victory = Math.random() < 0.45;
+      const victory = Math.random() < NPC_WAR_VICTORY_CHANCE;
       const attackerName = nations[id]?.name ?? s.name;
       this.recordAttackEvent({
         attackerNationId:    id,
@@ -641,9 +647,9 @@ export class DiplomacySystem {
         const defKey    = `castle:${bestTargetId}`;
         const defArmies = this._npcArmies.get(defKey);
         if (defArmies) {
-          // Remove up to 2 units from the last occupied squad.
+          // Remove up to NPC_WAR_CASUALTY_COUNT units from the last occupied squad.
           for (let sq = defArmies.length - 1; sq >= 0; sq--) {
-            const losses = Math.min(2, defArmies[sq].length);
+            const losses = Math.min(NPC_WAR_CASUALTY_COUNT, defArmies[sq].length);
             defArmies[sq].splice(defArmies[sq].length - losses, losses);
             if (losses > 0) break;
           }
@@ -778,13 +784,14 @@ export class DiplomacySystem {
     const ecoWeakness = Math.max(0, (5 - avgEco) / 5 * 30);
 
     // Army size across all controlled settlements.
+    const castleSet = new Set(castleSettlements);
     let armySize = 0;
-    allSettlements.forEach((s, localIdx) => {
+    allSettlements.forEach(s => {
       if (s.controllingNationId !== targetId) return;
-      const sType = castleSettlements.includes(s) ? 'castle' : 'village';
-      const sIdx  = sType === 'castle'
-        ? castleSettlements.indexOf(s)
-        : villageSettlements.indexOf(s);
+      const isCastle = castleSet.has(s);
+      const sType = isCastle ? 'castle' : 'village';
+      const sArr  = isCastle ? castleSettlements : villageSettlements;
+      const sIdx  = sArr.indexOf(s);
       const key     = `${sType}:${sIdx}`;
       const armies  = this._npcArmies.get(key);
       if (armies) armySize += armies.reduce((sum, sq) => sum + sq.length, 0);

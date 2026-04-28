@@ -1580,8 +1580,14 @@ export class GameUI {
     // Diplomacy: NPC daily events (arrogant rulers condemn, gentle rulers show goodwill, etc.)
     if (this.diplomacySystem) {
       const events = this.diplomacySystem.onDayPassed();
-      // Add all events to inbox; show one random event as toast.
-      events.forEach(ev => this._addInboxMessage('📜', ev.message));
+      // Add all events to inbox with contextual icon extracted from the message.
+      events.forEach(ev => {
+        const firstChar = ev.message.codePointAt(0);
+        // Check if the message starts with an emoji (surrogate range or high codepoint).
+        const icon = (firstChar > 0x2000) ? String.fromCodePoint(firstChar) : '📜';
+        const text = ev.message.replace(/^\S+ /, '');
+        this._addInboxMessage(icon, text);
+      });
     }
 
     // Satisfaction drift: each player-owned settlement moves ±2/day toward 0.
