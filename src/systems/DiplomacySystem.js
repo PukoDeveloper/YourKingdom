@@ -90,7 +90,30 @@ export class DiplomacySystem {
      */
     this._condemnedToday = new Set();
 
+    /**
+     * Per-nation memory log of recent events that affected their relations.
+     * Key: nationId; Value: array of { desc, delta, day }.
+     * @type {Map<number, Array<{desc: string, delta: number, day: number}>>}
+     */
+    this._nationMemory = new Map();
+
+    /**
+     * Current in-game day counter (incremented in onDayPassed).
+     * @type {number}
+     */
+    this._currentDay = 0;
+
+    /**
+     * Sovereignty map – internal only, not shown to the player.
+     * Each nation records the settlement keys it claims as its own territory.
+     * Key: nationId; Value: Set of settlement keys ("castle:0", "village:3").
+     * Only changes when a treaty is signed.
+     * @type {Map<number, Set<string>>}
+     */
+    this._sovereigntyMap = new Map();
+
     this._build(mapData);
+    this._initSovereignty();
   }
 
   // -------------------------------------------------------------------------
@@ -211,6 +234,157 @@ export class DiplomacySystem {
   }
 
   /**
+   * Shift a NPC-NPC relation between two nations (clamped to ±100).
+   * @param {number} idA
+   * @param {number} idB
+   * @param {number} delta
+   */
+  modifyNpcRelation(idA, idB, delta) {
+    if (idA === idB) return;
+    const key = idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
+    const cur = this._npcRelations.get(key) ?? 0;
+    this._npcRelations.set(key, Math.max(-100, Math.min(100, cur + delta)));
+  }
+
+  /**
+   * Add an event entry to a nation's memory log (keeps the latest 10).
+   * @param {number} nationId
+   * @param {string} desc   Human-readable description of the event.
+   * @param {number} delta  Relation change caused by this event.
+   */
+  _addMemoryEntry(nationId, desc, delta) {
+    if (!this._nationMemory.has(nationId)) {
+      this._nationMemory.set(nationId, []);
+    }
+    const log = this._nationMemory.get(nationId);
+    log.push({ desc, delta, day: this._currentDay });
+    if (log.length > 10) log.splice(0, log.length - 10);
+  }
+
+  /**
+   * Return the memory log for a nation (most recent last).
+   * @param {number} nationId
+   * @returns {Array<{desc: string, delta: number, day: number}>}
+   */
+  getNationMemory(nationId) {
+    return this._nationMemory.get(nationId) ?? [];
+  }
+
+  /**
+   * Record an attack event and propagate relation changes to all nations.
+   *
+   * Direct effect   – attacker ↔ target relation decreases significantly.
+   * Allied ripple   – nations allied with the target (relation ≥ 60) grow hostile to the attacker.
+   * Enemy ripple    – nations hostile toward the target (relation ≤ -60) warm up to the attacker.
+   *
+   * @param {object} opts
+   * @param {number}  opts.attackerNationId     Attacker's nation id; use -1 for the player.
+   * @param {number}  opts.targetNationId       Target nation id.
+   * @param {string}  opts.settlementName       Name of the attacked settlement.
+   * @param {string}  opts.attackerDisplayName  Human-readable name of the attacker.
+   * @param {boolean} [opts.victory=false]      Whether the attack was a victory.
+   */
+  recordAttackEvent({ attackerNationId, targetNationId, settlementName, attackerDisplayName, victory = false }) {
+    const nations = this.nationSystem.nations;
+    const targetNation = nations[targetNationId];
+    if (!targetNation) return;
+
+    // Direct relation delta for the attacked nation
+    const directDelta = victory
+      ? -(30 + Math.floor(Math.random() * 20)) // -30 … -49
+      : -(10 + Math.floor(Math.random() * 10)); // -10 … -19
+
+    if (attackerNationId === -1) {
+      this.modifyPlayerRelation(targetNationId, directDelta);
+    } else {
+      this.modifyNpcRelation(attackerNationId, targetNationId, directDelta);
+    }
+
+    // Target records the event in its memory
+    const sign = directDelta >= 0 ? `+${directDelta}` : `${directDelta}`;
+    this._addMemoryEntry(
+      targetNationId,
+      `${attackerDisplayName} 攻打了我國的 ${settlementName}，關係 ${sign}`,
+      directDelta,
+    );
+
+    // Propagate to third-party nations
+    nations.forEach((_, cId) => {
+      if (cId === targetNationId) return;
+      if (attackerNationId !== -1 && cId === attackerNationId) return;
+
+      const cToTarget = this.getRelation(cId, targetNationId);
+      let thirdDelta = 0;
+      let memDesc = '';
+
+      if (cToTarget >= 60) {
+        // C is allied with the target → C dislikes the attacker
+        thirdDelta = -(5 + Math.floor(Math.random() * 10)); // -5 … -14
+        const thirdSign = `${thirdDelta}`;
+        memDesc = `${attackerDisplayName} 攻打了我們的盟友 ${targetNation.name}（${settlementName}），關係 ${thirdSign}`;
+      } else if (cToTarget <= -60) {
+        // C is enemy of the target → C likes the attacker
+        thirdDelta = 5 + Math.floor(Math.random() * 10); // +5 … +14
+        memDesc = `${attackerDisplayName} 攻打了我們的敵人 ${targetNation.name}（${settlementName}），關係 +${thirdDelta}`;
+      }
+
+      if (thirdDelta !== 0) {
+        if (attackerNationId === -1) {
+          this.modifyPlayerRelation(cId, thirdDelta);
+        } else {
+          this.modifyNpcRelation(attackerNationId, cId, thirdDelta);
+        }
+        this._addMemoryEntry(cId, memDesc, thirdDelta);
+      }
+    });
+  }
+
+  /**
+   * Initialise the sovereignty map from the current NationSystem state.
+   * Each nation initially claims all settlements assigned to it.
+   * This is called once in the constructor and does not need to be persisted
+   * because it is deterministic from the world seed.
+   */
+  _initSovereignty() {
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+    nations.forEach((_, id) => {
+      this._sovereigntyMap.set(id, new Set());
+    });
+    castleSettlements.forEach((s, idx) => {
+      const set = this._sovereigntyMap.get(s.nationId);
+      if (set) set.add(`castle:${idx}`);
+    });
+    villageSettlements.forEach((s, idx) => {
+      const set = this._sovereigntyMap.get(s.nationId);
+      if (set) set.add(`village:${idx}`);
+    });
+  }
+
+  /**
+   * Return the settlement keys this nation claims sovereignty over.
+   * @param {number} nationId
+   * @returns {string[]}
+   */
+  getSovereigntyList(nationId) {
+    return [...(this._sovereigntyMap.get(nationId) ?? [])];
+  }
+
+  /**
+   * Transfer sovereignty of a settlement from one nation to another
+   * (call this when a treaty formally cedes territory).
+   * @param {string} settlementKey   e.g. "castle:0" or "village:3"
+   * @param {number} fromNationId
+   * @param {number} toNationId
+   */
+  transferSovereignty(settlementKey, fromNationId, toNationId) {
+    this._sovereigntyMap.get(fromNationId)?.delete(settlementKey);
+    if (!this._sovereigntyMap.has(toNationId)) {
+      this._sovereigntyMap.set(toNationId, new Set());
+    }
+    this._sovereigntyMap.get(toNationId).add(settlementKey);
+  }
+
+  /**
    * Player issues a condemnation against a nation.
    * Limited to once per in-game day per nation.
    *
@@ -229,6 +403,7 @@ export class DiplomacySystem {
 
   /** Call once per in-game day to reset daily limits and process NPC events. */
   onDayPassed() {
+    this._currentDay++;
     this._condemnedToday.clear();
     return this._processNpcDailyEvents();
   }
@@ -236,21 +411,24 @@ export class DiplomacySystem {
   /**
    * NPC rulers with certain personalities may spontaneously change their
    * relation to the player each day.
+   * Warlike / arrogant nations may also launch attacks against hostile neighbours.
    * @returns {{ nationId: number, delta: number, message: string }[]}
    */
   _processNpcDailyEvents() {
     const events = [];
     const settlements = this.nationSystem.castleSettlements;
+    const nations     = this.nationSystem.nations;
 
     settlements.forEach((s, id) => {
       const p          = this._rulerPersonality(s);
       const roll       = Math.random();
-      const nationName = this.nationSystem.nations[id]?.name ?? s.name;
+      const nationName = nations[id]?.name ?? s.name;
 
       if (p === PERSONALITY_ARROGANT && roll < 0.3) {
         // Arrogant ruler condemns the player
         const delta = -(Math.floor(Math.random() * 10) + 8); // -8 … -17
         this.modifyPlayerRelation(id, delta);
+        this._addMemoryEntry(id, `我方統治者傲慢地對玩家發出譴責，關係 ${delta}`, delta);
         events.push({
           nationId: id,
           delta,
@@ -260,6 +438,7 @@ export class DiplomacySystem {
         // Warlike ruler threatens the player
         const delta = -(Math.floor(Math.random() * 8) + 5); // -5 … -12
         this.modifyPlayerRelation(id, delta);
+        this._addMemoryEntry(id, `我方統治者向玩家發出戰爭威脅，關係 ${delta}`, delta);
         events.push({
           nationId: id,
           delta,
@@ -269,11 +448,45 @@ export class DiplomacySystem {
         // Gentle ruler sends goodwill
         const delta = Math.floor(Math.random() * 6) + 3; // +3 … +8
         this.modifyPlayerRelation(id, delta);
+        this._addMemoryEntry(id, `我方統治者主動向玩家釋出善意，關係 +${delta}`, delta);
         events.push({
           nationId: id,
           delta,
           message: `${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
         });
+      }
+
+      // Warlike / arrogant nations may launch NPC-NPC attacks
+      const attackRoll = Math.random();
+      const willAttack = (p === PERSONALITY_WARLIKE  && attackRoll < 0.10) ||
+                         (p === PERSONALITY_ARROGANT && attackRoll < 0.05);
+      if (willAttack) {
+        // Find the most hostile neighbour
+        let worstRel = -20; // Only attack clearly hostile nations
+        let targetId = -1;
+        nations.forEach((_, tid) => {
+          if (tid === id) return;
+          const rel = this.getRelation(id, tid);
+          if (rel < worstRel) { worstRel = rel; targetId = tid; }
+        });
+
+        if (targetId >= 0) {
+          const targetSettlement = this.nationSystem.castleSettlements[targetId];
+          const settlementName   = targetSettlement?.name ?? nations[targetId]?.name ?? '未知';
+          const victory          = Math.random() < 0.5;
+          this.recordAttackEvent({
+            attackerNationId:    id,
+            targetNationId:      targetId,
+            settlementName,
+            attackerDisplayName: nationName,
+            victory,
+          });
+          events.push({
+            nationId: id,
+            delta:    0,
+            message:  `${s.ruler.name}（${s.ruler.role}）率兵進攻 ${nations[targetId]?.name ?? '鄰國'} 的 ${settlementName}！`,
+          });
+        }
       }
     });
 
@@ -302,16 +515,18 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][] }} */
+  /** @returns {{ playerRelations: [number, number][], nationMemory: [number, object[]][], currentDay: number }} */
   getState() {
     return {
       playerRelations: [...this._playerRelations.entries()],
+      nationMemory:    [...this._nationMemory.entries()],
+      currentDay:      this._currentDay,
     };
   }
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][] }|null} state
+   * @param {{ playerRelations?: [number, number][], nationMemory?: [number, object[]][], currentDay?: number }|null} state
    */
   loadState(state) {
     if (!state) return;
@@ -319,6 +534,16 @@ export class DiplomacySystem {
       state.playerRelations.forEach(([id, value]) => {
         this._playerRelations.set(Number(id), Math.max(-100, Math.min(100, Number(value))));
       });
+    }
+    if (Array.isArray(state.nationMemory)) {
+      state.nationMemory.forEach(([id, entries]) => {
+        if (Array.isArray(entries)) {
+          this._nationMemory.set(Number(id), entries);
+        }
+      });
+    }
+    if (typeof state.currentDay === 'number') {
+      this._currentDay = state.currentDay;
     }
   }
 }
