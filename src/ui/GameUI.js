@@ -88,6 +88,15 @@ export class GameUI {
     /** Active appearance panel tab: 'character' | 'kingdom' */
     this._appearanceTab = 'character';
 
+    /** The settlement the player is currently standing on, or null. */
+    this._nearbySettlement = null;
+
+    /** Location screen stage: 'gate' (castle entrance) | 'inside' (facility list). */
+    this._locationStage = 'gate';
+
+    /** Settlement currently displayed in the location overlay, or null. */
+    this._locationSettlement = null;
+
     /** Player's custom kingdom state (flag, name, type). */
     this._playerKingdom = { ...DEFAULT_KINGDOM };
 
@@ -285,6 +294,17 @@ export class GameUI {
       if (typeof this.onSave === 'function') {
         this.onSave();
       }
+    });
+
+    // Enter-facility button
+    document.getElementById('enter-facility-btn').addEventListener('click', () => {
+      if (this._nearbySettlement) this._openLocationScreen(this._nearbySettlement);
+    });
+
+    // Close location overlay
+    document.getElementById('location-close').addEventListener('click', () => this._closeLocationScreen());
+    document.getElementById('location-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'location-overlay') this._closeLocationScreen();
     });
 
     // Close panel when tapping the backdrop
@@ -1384,6 +1404,196 @@ export class GameUI {
       this._toast(`${unitData.name} 已被流放`);
       close();
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Enter-facility button / Location screen
+  // -------------------------------------------------------------------------
+
+  /**
+   * Called every frame from Game._update() with the settlement the player
+   * is currently standing on (or null if outside any settlement).
+   * Shows / hides the "enter facility" floating button accordingly.
+   *
+   * @param {import('../systems/NationSystem.js').Settlement|null} settlement
+   * @param {'castle'|'village'|'port'|null} [terrainType] Used for ports which have no Settlement object.
+   */
+  setNearbySettlement(settlement, terrainType = null) {
+    const btn = document.getElementById('enter-facility-btn');
+    if (!btn) return;
+
+    const prev = this._nearbySettlement;
+    this._nearbySettlement = settlement ?? (terrainType === 'port' ? { type: 'port', name: '港口' } : null);
+
+    const visible = this._nearbySettlement !== null;
+    btn.classList.toggle('visible', visible);
+
+    if (visible) {
+      const name = this._nearbySettlement.name ?? '設施';
+      btn.textContent = `🚪 進入 ${name}`;
+    }
+
+    // Hide the enter button if the player walked away while the screen is open
+    if (prev && !this._nearbySettlement) {
+      this._closeLocationScreen();
+    }
+  }
+
+  /**
+   * Open the location screen for a settlement (or port placeholder).
+   * @param {import('../systems/NationSystem.js').Settlement|{type:'port',name:string}} settlement
+   */
+  _openLocationScreen(settlement) {
+    const overlay = document.getElementById('location-overlay');
+    if (!overlay) return;
+
+    // Castle shows gate first; villages and ports go straight to facilities.
+    if (settlement.type === 'castle') {
+      this._locationStage = 'gate';
+    } else {
+      this._locationStage = 'inside';
+    }
+
+    this._locationSettlement = settlement;
+    this._renderLocationScreen();
+    overlay.classList.add('visible');
+  }
+
+  _closeLocationScreen() {
+    document.getElementById('location-overlay')?.classList.remove('visible');
+    this._locationSettlement = null;
+  }
+
+  _renderLocationScreen() {
+    const s = this._locationSettlement;
+    if (!s) return;
+
+    // Header
+    const icons = { castle: '🏰', village: '🏘️', port: '⚓' };
+    document.getElementById('location-icon').textContent = icons[s.type] ?? '🏠';
+    document.getElementById('location-title').textContent = s.name;
+
+    let subtitle = '';
+    if (s.type === 'castle' && this.nationSystem) {
+      const nation = this.nationSystem.getNation(s);
+      subtitle = `${nation.emblem} ${nation.name}`;
+    } else if (s.type === 'village') {
+      subtitle = '村落';
+    } else if (s.type === 'port') {
+      subtitle = '沿岸港口';
+    }
+    document.getElementById('location-subtitle').textContent = subtitle;
+
+    if (this._locationStage === 'gate') {
+      this._renderLocationGate(s);
+    } else {
+      this._renderLocationFacilities(s);
+    }
+  }
+
+  /** Castle gate scene – player first encounters the guards. */
+  _renderLocationGate(settlement) {
+    const nation = this.nationSystem ? this.nationSystem.getNation(settlement) : null;
+    const nationName = nation ? nation.name : settlement.name;
+
+    const content = document.getElementById('location-content');
+    content.innerHTML = `
+      <div class="loc-gate-scene">
+        <div class="loc-gate-art">🛡️⚔️🛡️</div>
+        <div class="loc-gate-msg">
+          兩名身著銀甲的守衛持槍攔下了你。<br>
+          「<em>停！這裡是 ${nationName} 的城門。</em>」<br>
+          「<em>說明來意，方可入城。</em>」
+        </div>
+        <div class="loc-gate-actions">
+          <button class="btn-loc-enter" id="btn-city-enter">進城 →</button>
+          <button class="btn-loc-leave" id="btn-city-leave">離開</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-city-enter').addEventListener('click', () => {
+      this._locationStage = 'inside';
+      this._renderLocationScreen();
+    });
+    document.getElementById('btn-city-leave').addEventListener('click', () => {
+      this._closeLocationScreen();
+    });
+  }
+
+  /** Facility list for the current settlement. */
+  _renderLocationFacilities(settlement) {
+    const content = document.getElementById('location-content');
+
+    let facilities;
+    let sectionTitle;
+
+    if (settlement.type === 'castle') {
+      sectionTitle = '城內設施';
+      facilities = [
+        { icon: '🏯', name: '王宮',  desc: '國王接見廳\n覲見統治者' },
+        { icon: '🏨', name: '旅店',  desc: '安心休憩之所\n恢復體力' },
+        { icon: '🍺', name: '酒館',  desc: '打聽情報\n招募夥伴' },
+        { icon: '🏪', name: '雜貨店', desc: '買賣物資\n補充補給' },
+        { icon: '⚒️', name: '鐵匠',  desc: '鍛造武器\n強化裝備' },
+        { icon: '🛡️', name: '守衛所', desc: '城衛指揮所\n申請護衛' },
+      ];
+    } else if (settlement.type === 'village') {
+      sectionTitle = '村內設施';
+      facilities = [
+        { icon: '🏠', name: '村長家', desc: '委託任務\n了解近況' },
+        { icon: '🛒', name: '市集',   desc: '交易物資\n農產買賣' },
+        { icon: '🛏️', name: '旅舍',   desc: '歇腳休息\n補充體力' },
+        { icon: '🏪', name: '雜貨鋪', desc: '日常用品\n基本補給' },
+      ];
+    } else {
+      // port
+      sectionTitle = '港口設施';
+      facilities = [
+        { icon: '⚓', name: '碼頭',  desc: '船運服務\n乘船出行' },
+        { icon: '📦', name: '倉庫',  desc: '存放貨物\n物資管理' },
+        { icon: '🍺', name: '酒館',  desc: '水手常聚\n打聽消息' },
+        { icon: '🏪', name: '雜貨店', desc: '海貨特產\n補給物資' },
+      ];
+    }
+
+    const backRow = settlement.type === 'castle' ? `
+      <div class="loc-back-row">
+        <button class="btn-loc-back" id="btn-loc-back">← 返回城門</button>
+      </div>` : '';
+
+    const facilityCards = facilities.map((f, i) => `
+      <div class="facility-card" data-facility-idx="${i}" role="button" tabindex="0">
+        <div class="fc-icon">${f.icon}</div>
+        <div class="fc-name">${f.name}</div>
+        <div class="fc-desc">${f.desc.replace(/\n/g, '<br>')}</div>
+      </div>
+    `).join('');
+
+    content.innerHTML = `
+      ${backRow}
+      <div class="loc-facilities-title">${sectionTitle}</div>
+      <div class="loc-facilities-grid">${facilityCards}</div>
+    `;
+
+    if (settlement.type === 'castle') {
+      document.getElementById('btn-loc-back')?.addEventListener('click', () => {
+        this._locationStage = 'gate';
+        this._renderLocationScreen();
+      });
+    }
+
+    content.querySelectorAll('.facility-card[data-facility-idx]').forEach(card => {
+      const open = () => {
+        const idx = Number(card.dataset.facilityIdx);
+        const f   = facilities[idx];
+        this._toast(`${f.icon} ${f.name}：功能開發中…`);
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    });
   }
 
   // -------------------------------------------------------------------------

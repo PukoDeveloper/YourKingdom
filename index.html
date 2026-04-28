@@ -1609,6 +1609,236 @@
         font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
         font-size: 11px;
       }
+
+      /* =====================================================================
+         Enter-facility floating button
+         ===================================================================== */
+      #enter-facility-btn {
+        position: fixed;
+        bottom: 160px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(226,201,126,0.18);
+        border: 1.5px solid rgba(226,201,126,0.7);
+        border-radius: 24px;
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 1px;
+        padding: 10px 28px;
+        cursor: pointer;
+        white-space: nowrap;
+        z-index: 200;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s, transform 0.25s, background 0.15s;
+        touch-action: manipulation;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+      }
+      #enter-facility-btn.visible {
+        opacity: 1;
+        pointer-events: all;
+      }
+      #enter-facility-btn:active {
+        background: rgba(226,201,126,0.32);
+        transform: translateX(-50%) scale(0.96);
+      }
+
+      /* =====================================================================
+         Location screen overlay
+         ===================================================================== */
+      #location-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.75);
+        z-index: 400;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s;
+      }
+      #location-overlay.visible {
+        opacity: 1;
+        pointer-events: all;
+      }
+      #location-box {
+        background: #0d1b2a;
+        border: 1px solid rgba(226,201,126,0.35);
+        border-bottom: none;
+        border-radius: 18px 18px 0 0;
+        width: 100%;
+        max-width: 480px;
+        max-height: 85vh;
+        display: flex;
+        flex-direction: column;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        transform: translateY(30px);
+        transition: transform 0.25s;
+      }
+      #location-overlay.visible #location-box {
+        transform: translateY(0);
+      }
+      #location-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 16px 18px 14px;
+        border-bottom: 1px solid rgba(226,201,126,0.18);
+        flex-shrink: 0;
+      }
+      #location-icon { font-size: 26px; flex-shrink: 0; line-height: 1; }
+      #location-title {
+        flex: 1;
+        color: #e2c97e;
+        font-size: 17px;
+        font-weight: bold;
+        letter-spacing: 1px;
+      }
+      #location-subtitle {
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        letter-spacing: 0.5px;
+        margin-top: 2px;
+      }
+      #location-close {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.5);
+        font-size: 20px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+        transition: color 0.15s;
+        touch-action: manipulation;
+      }
+      #location-close:hover { color: #fff; }
+      #location-content {
+        overflow-y: auto;
+        flex: 1;
+        padding: 16px 16px 24px;
+      }
+
+      /* Gate scene */
+      .loc-gate-scene {
+        text-align: center;
+        padding: 10px 0 8px;
+      }
+      .loc-gate-art {
+        font-size: 56px;
+        line-height: 1;
+        margin-bottom: 14px;
+        filter: drop-shadow(0 2px 8px rgba(0,0,0,0.6));
+      }
+      .loc-gate-msg {
+        color: rgba(255,255,255,0.75);
+        font-size: 14px;
+        line-height: 1.7;
+        margin-bottom: 20px;
+        padding: 0 8px;
+      }
+      .loc-gate-msg em {
+        color: #e2c97e;
+        font-style: normal;
+        font-weight: 600;
+      }
+      .loc-gate-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      .btn-loc-enter {
+        padding: 11px 28px;
+        background: rgba(226,201,126,0.18);
+        border: 1.5px solid rgba(226,201,126,0.7);
+        border-radius: 10px;
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s;
+        touch-action: manipulation;
+      }
+      .btn-loc-enter:hover { background: rgba(226,201,126,0.3); }
+      .btn-loc-leave {
+        padding: 11px 20px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 10px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.15s;
+        touch-action: manipulation;
+      }
+      .btn-loc-leave:hover { background: rgba(255,255,255,0.12); color: #eee; }
+
+      /* Facilities grid */
+      .loc-back-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .btn-loc-back {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.45);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 4px 0;
+        touch-action: manipulation;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .btn-loc-back:hover { color: #e2c97e; }
+      .loc-facilities-title {
+        color: rgba(255,255,255,0.45);
+        font-size: 12px;
+        letter-spacing: 1px;
+        margin-bottom: 12px;
+      }
+      .loc-facilities-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+      }
+      .facility-card {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(226,201,126,0.18);
+        border-radius: 12px;
+        padding: 16px 12px 14px;
+        cursor: pointer;
+        text-align: center;
+        transition: background 0.15s, border-color 0.15s, transform 0.1s;
+        touch-action: manipulation;
+      }
+      .facility-card:hover {
+        background: rgba(255,255,255,0.09);
+        border-color: rgba(226,201,126,0.4);
+      }
+      .facility-card:active { transform: scale(0.97); }
+      .fc-icon { font-size: 32px; line-height: 1; margin-bottom: 8px; }
+      .fc-name {
+        color: #eee;
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .fc-desc {
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        line-height: 1.4;
+      }
     </style>
   </head>
   <body>
@@ -1626,6 +1856,24 @@
     <div id="time-label">清晨  06:28</div>
     <div id="weather-label">☀ 晴天</div>
     <div id="hint">WASD / 搖桿 移動</div>
+
+    <!-- Enter-facility floating button -->
+    <button id="enter-facility-btn">進入設施</button>
+
+    <!-- Location screen overlay -->
+    <div id="location-overlay">
+      <div id="location-box">
+        <div id="location-header">
+          <span id="location-icon">🏰</span>
+          <div style="flex:1;min-width:0">
+            <div id="location-title"></div>
+            <div id="location-subtitle"></div>
+          </div>
+          <button id="location-close">✕</button>
+        </div>
+        <div id="location-content"></div>
+      </div>
+    </div>
 
     <script type="module" src="/src/main.js"></script>
   </body>
