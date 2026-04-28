@@ -175,6 +175,9 @@ export class Game {
     // Rebuild map structures whenever the player captures a new settlement.
     this._gameUI.onCaptureSettlement = () => this._structureRenderer.rebuild();
 
+    // Rebuild map structures whenever the player changes their kingdom flag or name.
+    this._gameUI.onPlayerKingdomChanged = () => this._structureRenderer.rebuild();
+
     // -----------------------------------------------------------------------
     // Game loop
     // -----------------------------------------------------------------------
