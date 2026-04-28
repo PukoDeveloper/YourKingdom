@@ -18,6 +18,12 @@ import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
 
+/**
+ * Special nation ID assigned to the player's kingdom.
+ * Settlement.controllingNationId is set to this value when the player captures a settlement.
+ */
+export const PLAYER_NATION_ID = -1;
+
 // ---------------------------------------------------------------------------
 // Static data tables
 // ---------------------------------------------------------------------------
@@ -107,8 +113,14 @@ export class Settlement {
     /** @type {'castle'|'village'} */
     this.type = type;
     this.name = name;
-    /** Index into NationSystem.nations (≥ 0). */
+    /** Index into NationSystem.nations (≥ 0) – the founding/original nation. */
     this.nationId = nationId;
+    /**
+     * The nation that currently controls this settlement.
+     * Initially equals `nationId`; changes to PLAYER_NATION_ID when the player captures it,
+     * or to another nation's id if future NPC conquest is implemented.
+     */
+    this.controllingNationId = nationId;
     this.population = population;
     /** 1 – 5 stars. */
     this.economyLevel = economyLevel;
@@ -118,7 +130,7 @@ export class Settlement {
     this.ruler = ruler;
     /**
      * True when the player has captured this settlement.
-     * Mutable at runtime; persisted via the captured-settlements save key.
+     * Derived from `controllingNationId === PLAYER_NATION_ID`; kept in sync by GameUI.
      */
     this.playerOwned = false;
   }
@@ -291,5 +303,37 @@ export class NationSystem {
       };
     }
     return this.nations[settlement.nationId];
+  }
+
+  /**
+   * Return the nation that currently controls a settlement.
+   * Returns null when controlled by the player (controllingNationId = PLAYER_NATION_ID).
+   * @param {Settlement} settlement
+   * @returns {{ id: number, name: string, color: string, emblem: string, flagApp: object }|null}
+   */
+  getControllingNation(settlement) {
+    if (settlement.controllingNationId < 0) return null; // player-owned
+    if (settlement.controllingNationId >= this.nations.length) {
+      return {
+        id:      -1,
+        name:    '中立',
+        color:   '#9E9E9E',
+        emblem:  '⚑',
+        flagApp: { bgColor: '#9E9E9E', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '⚑', symbolShape: 'circle' },
+      };
+    }
+    return this.nations[settlement.controllingNationId];
+  }
+
+  /**
+   * Returns true when every settlement originally belonging to this nation
+   * has been captured (i.e., no settlement still has controllingNationId === nationId).
+   * @param {number} nationId
+   * @returns {boolean}
+   */
+  isNationExtinct(nationId) {
+    if (nationId < 0) return false;
+    return ![...this.castleSettlements, ...this.villageSettlements]
+      .some(s => s.controllingNationId === nationId);
   }
 }

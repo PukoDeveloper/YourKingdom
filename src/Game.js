@@ -240,7 +240,7 @@ export class Game {
       if (hit) {
         const settlIcon = hit.settlement.type === 'castle' ? '🏰' : '🏘️';
         let nationLine, regionLine;
-        if (hit.settlement.playerOwned) {
+        if (hit.settlement.controllingNationId < 0) {
           const pk = this._gameUI.getPlayerNation();
           nationLine = `🏴 ${pk.name}`;
         } else {

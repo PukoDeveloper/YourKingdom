@@ -1,6 +1,6 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
-import { TRAIT_RULER }                     from '../systems/NationSystem.js';
+import { TRAIT_RULER, PLAYER_NATION_ID }   from '../systems/NationSystem.js';
 import {
   RELATION_LEVELS,
   PERSONALITY_COLORS,
@@ -1008,11 +1008,20 @@ export class GameUI {
 
     const { nations, castleSettlements, villageSettlements } = this.nationSystem;
 
-    // Group villages by nationId for quick lookup
-    const villagesByNation = {};
+    // Group villages by controllingNationId for quick lookup
+    const villagesByController = {};
     villageSettlements.forEach((v, idx) => {
-      if (!villagesByNation[v.nationId]) villagesByNation[v.nationId] = [];
-      villagesByNation[v.nationId].push({ s: v, idx });
+      const cid = v.controllingNationId;
+      if (!villagesByController[cid]) villagesByController[cid] = [];
+      villagesByController[cid].push({ s: v, idx });
+    });
+
+    // Group castles by controllingNationId
+    const castlesByController = {};
+    castleSettlements.forEach((c, idx) => {
+      const cid = c.controllingNationId;
+      if (!castlesByController[cid]) castlesByController[cid] = [];
+      castlesByController[cid].push({ s: c, idx });
     });
 
     const _personalityLabel = (traits) => {
@@ -1022,29 +1031,73 @@ export class GameUI {
       return `<span class="dipl-personality" style="color:${color}">${p}</span>`;
     };
 
+    // -----------------------------------------------------------------------
+    // Player nation card (shown when the player controls any settlement)
+    // -----------------------------------------------------------------------
+    const pk = this.getPlayerNation();
+    const playerCastles  = castlesByController[PLAYER_NATION_ID]  ?? [];
+    const playerVillages = villagesByController[PLAYER_NATION_ID] ?? [];
+    let playerSectionHTML = '';
+
+    if (playerCastles.length > 0 || playerVillages.length > 0) {
+      const flagH = pk.flagApp ? renderFlagHTML(pk.flagApp, 32) : '🏴';
+      const pCastleRows = playerCastles.map(({ s, idx }) => `
+        <div class="dn-settlement-row" data-ns-type="castle" data-ns-idx="${idx}" role="button" tabindex="0">
+          <span class="dn-s-icon">🏰</span>
+          <span class="dn-s-name">${s.name}</span>
+          <span class="dn-s-pop">👥 ${s.population.toLocaleString()}</span>
+          <span class="dn-s-eco">${'⭐'.repeat(s.economyLevel)}</span>
+          <span class="dn-s-res">${s.resources.join('、')}</span>
+          <span class="dn-s-arrow">›</span>
+        </div>`).join('');
+      const pVillageRows = playerVillages.map(({ s, idx }) => `
+        <div class="dn-settlement-row" data-ns-type="village" data-ns-idx="${idx}" role="button" tabindex="0">
+          <span class="dn-s-icon">🏘️</span>
+          <span class="dn-s-name">${s.name}</span>
+          <span class="dn-s-pop">👥 ${s.population.toLocaleString()}</span>
+          <span class="dn-s-eco">${'⭐'.repeat(s.economyLevel)}</span>
+          <span class="dn-s-res">${s.resources.join('、')}</span>
+          <span class="dn-s-arrow">›</span>
+        </div>`).join('');
+
+      playerSectionHTML = `
+        <div class="dipl-nation-card dipl-player-card" style="--nc-color:${pk.color};border-color:${pk.color}44">
+          <div class="dn-header">
+            <span class="dn-flag">${flagH}</span>
+            <div class="dn-title-col">
+              <div class="dn-name">${pk.name} <span class="sc-player-badge">我方</span></div>
+              <div class="dn-ruler-line">${this._playerKingdom.type}</div>
+            </div>
+          </div>
+          <div class="dn-settlements">${pCastleRows}${pVillageRows}</div>
+        </div>`;
+    }
+
+    // -----------------------------------------------------------------------
+    // NPC nation cards
+    // -----------------------------------------------------------------------
     const nationCardsHTML = nations.map((nation, id) => {
-      const castle  = castleSettlements[id];
+      const castle = castleSettlements[id];
+      const castleControlled = castle?.controllingNationId === id;
+      const villages = villagesByController[id] ?? [];
+      const isExtinct = !castleControlled && villages.length === 0;
+
       const val     = this.diplomacySystem.getPlayerRelation(id);
       const level   = this.diplomacySystem.getRelationLevel(val);
       const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
-      const isOwned = castle?.playerOwned;
-      const villages = villagesByNation[id] ?? [];
 
-      // When the player owns this castle, show the player's kingdom identity.
-      const displayNation = isOwned ? this.getPlayerNation() : nation;
-      const flagH = displayNation.flagApp
-        ? renderFlagHTML(displayNation.flagApp, 32)
-        : `<span>${displayNation.emblem}</span>`;
+      const flagH = nation.flagApp
+        ? renderFlagHTML(nation.flagApp, 32)
+        : `<span>${nation.emblem}</span>`;
 
-      // Relation bar + level header
       const relVal = val > 0 ? `+${val}` : `${val}`;
       const headerHTML = `
         <div class="dn-header">
           <span class="dn-flag">${flagH}</span>
           <div class="dn-title-col">
             <div class="dn-name">
-              ${displayNation.name}
-              ${isOwned ? '<span class="sc-player-badge">我方</span>' : ''}
+              ${nation.name}
+              ${isExtinct ? '<span class="sc-extinct-badge">已滅亡</span>' : ''}
             </div>
             <div class="dn-ruler-line">
               ${castle ? `${castle.ruler.name}（${castle.ruler.role}） ${_personalityLabel(castle.ruler.traits)}` : ''}
@@ -1054,7 +1107,7 @@ export class GameUI {
             <div class="dn-level" style="color:${level.color}">${level.icon} ${level.label}</div>
             <div class="dn-val" style="color:${level.color}">${relVal}</div>
           </div>
-          ${!isOwned ? `<button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
+          ${!isExtinct ? `<button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
                    ${alreadyCondemned ? 'disabled title="今日已譴責"' : ''}>
               ${alreadyCondemned ? '✓ 已譴責' : '📢 譴責'}
             </button>` : ''}
@@ -1063,21 +1116,37 @@ export class GameUI {
           <div class="dn-bar" style="width:${(val + 100) / 2}%;background:${level.color}"></div>
         </div>`;
 
-      // Settlement rows
-      const castleRow = castle ? `
-        <div class="dn-settlement-row" data-ns-type="castle" data-ns-idx="${id}" role="button" tabindex="0">
-          <span class="dn-s-icon">🏰</span>
-          <span class="dn-s-name">${castle.name}</span>
-          <span class="dn-s-pop">👥 ${castle.population.toLocaleString()}</span>
-          <span class="dn-s-eco">${'⭐'.repeat(castle.economyLevel)}</span>
-          <span class="dn-s-res">${castle.resources.join('、')}</span>
-          <span class="dn-s-arrow">›</span>
-        </div>` : '';
+      // Castle row: show if still controlled by this nation, or mark as captured
+      let castleRowHTML = '';
+      if (castle) {
+        if (castleControlled) {
+          castleRowHTML = `
+            <div class="dn-settlement-row" data-ns-type="castle" data-ns-idx="${id}" role="button" tabindex="0">
+              <span class="dn-s-icon">🏰</span>
+              <span class="dn-s-name">${castle.name}</span>
+              <span class="dn-s-pop">👥 ${castle.population.toLocaleString()}</span>
+              <span class="dn-s-eco">${'⭐'.repeat(castle.economyLevel)}</span>
+              <span class="dn-s-res">${castle.resources.join('、')}</span>
+              <span class="dn-s-arrow">›</span>
+            </div>`;
+        } else {
+          // Castle has been captured by the player
+          castleRowHTML = `
+            <div class="dn-settlement-row dn-captured-row" data-ns-type="castle" data-ns-idx="${id}" role="button" tabindex="0">
+              <span class="dn-s-icon">🏰</span>
+              <span class="dn-s-name">${castle.name}
+                <span class="sc-player-badge">已佔領</span>
+              </span>
+              <span class="dn-s-pop">👥 ${castle.population.toLocaleString()}</span>
+              <span class="dn-s-arrow">›</span>
+            </div>`;
+        }
+      }
 
       const villageRows = villages.map(({ s, idx }) => `
         <div class="dn-settlement-row" data-ns-type="village" data-ns-idx="${idx}" role="button" tabindex="0">
           <span class="dn-s-icon">🏘️</span>
-          <span class="dn-s-name">${s.name}${s.playerOwned ? '<span class="sc-player-badge">我方</span>' : ''}</span>
+          <span class="dn-s-name">${s.name}</span>
           <span class="dn-s-pop">👥 ${s.population.toLocaleString()}</span>
           <span class="dn-s-eco">${'⭐'.repeat(s.economyLevel)}</span>
           <span class="dn-s-res">${s.resources.join('、')}</span>
@@ -1103,10 +1172,11 @@ export class GameUI {
         </div>`;
       }
 
+      const extStyle = isExtinct ? 'opacity:0.5' : '';
       return `
-        <div class="dipl-nation-card" style="--nc-color:${displayNation.color};border-color:${displayNation.color}44">
+        <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44;${extStyle}">
           ${headerHTML}
-          <div class="dn-settlements">${castleRow}${villageRows}</div>
+          <div class="dn-settlements">${castleRowHTML}${villageRows}</div>
           ${memoryHTML}
         </div>`;
     }).join('');
@@ -1115,6 +1185,7 @@ export class GameUI {
       <div class="dipl-intro">各國外交關係受距離、資源競爭及統治者性格影響。<br>
         <span style="color:#ef6c00">傲慢</span>、<span style="color:#e53935">好戰</span>的統治者可能自發惡化關係；
         <span style="color:#66bb6a">溫和</span>的統治者會主動釋出善意。</div>
+      ${playerSectionHTML}
       <div class="dipl-nation-list">${nationCardsHTML}</div>`;
 
     // Condemn buttons
@@ -1157,7 +1228,7 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const isPlayer  = settlement.playerOwned;
+    const isPlayer  = settlement.controllingNationId < 0;
     const nation    = isPlayer
       ? this.getPlayerNation()
       : this.nationSystem.getNation(settlement);
@@ -1757,7 +1828,7 @@ export class GameUI {
       if (attackBtn) {
         const s = this._nearbySettlement;
         const isAttackable = (s.type === 'castle' || s.type === 'village')
-          && !s.playerOwned;
+          && s.controllingNationId !== PLAYER_NATION_ID;
         attackBtn.classList.toggle('visible', isAttackable);
       }
     }
@@ -1804,7 +1875,7 @@ export class GameUI {
 
     let subtitle = '';
     if (s.type === 'castle' && this.nationSystem) {
-      const nation = s.playerOwned
+      const nation = s.controllingNationId < 0
         ? this.getPlayerNation()
         : this.nationSystem.getNation(s);
       subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
@@ -1826,13 +1897,13 @@ export class GameUI {
   _renderLocationGate(settlement) {
     let nation = null;
     if (this.nationSystem) {
-      nation = settlement.playerOwned
+      nation = settlement.controllingNationId < 0
         ? this.getPlayerNation()
         : this.nationSystem.getNation(settlement);
     }
     const nationName = nation ? nation.name : settlement.name;
 
-    const isPlayerOwned = this.isPlayerSettlement(settlement);
+    const isPlayerOwned = settlement.controllingNationId < 0;
     const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : '🛡️⚔️🛡️';
     const gateMsg = isPlayerOwned
       ? `兩名身著你方盔甲的士兵立正行禮。<br>
@@ -2021,7 +2092,7 @@ export class GameUI {
     const selectedIds = this._selectedSquadIds;
 
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
-    const nation    = this.nationSystem ? this.nationSystem.getNation(settlement) : null;
+    const nation    = this.nationSystem ? this.nationSystem.getControllingNation(settlement) : null;
     const nationBadge = nation
       ? `<span class="bpv-nation" style="color:${nation.color}">${nation.emblem} ${nation.name}</span>`
       : '';
@@ -2304,7 +2375,7 @@ export class GameUI {
     if (!this.diplomacySystem || !this.nationSystem) return;
     const nation = this.nationSystem.getNation(settlement);
     // Do not fire for already-owned or neutral settlements
-    if (!nation || nation.id < 0 || settlement.playerOwned) return;
+    if (!nation || nation.id < 0 || settlement.controllingNationId !== settlement.nationId) return;
     const pk = this.getPlayerNation();
     this.diplomacySystem.recordAttackEvent({
       attackerNationId:    -1,
@@ -2367,9 +2438,19 @@ export class GameUI {
   }
 
   /**
-   * Iterate `_capturedSettlements` and set `playerOwned = true` on the
-   * matching Settlement objects in NationSystem.
-   * Also clears `playerOwned` on settlements not in the set.
+   * Set the ownership state of a settlement, keeping `playerOwned` and
+   * `controllingNationId` in sync.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {boolean} isOwned  true = player owns it, false = restore to founding nation
+   */
+  _setSettlementOwnership(settlement, isOwned) {
+    settlement.playerOwned = isOwned;
+    settlement.controllingNationId = isOwned ? PLAYER_NATION_ID : settlement.nationId;
+  }
+
+  /**
+   * Iterate `_capturedSettlements` and set ownership on the matching
+   * Settlement objects in NationSystem. Clears ownership on all others.
    * Safe to call multiple times (idempotent).
    */
   _syncSettlementOwnership() {
@@ -2380,7 +2461,7 @@ export class GameUI {
     ];
     allSettlements.forEach(s => {
       const key = this._settlementKey(s);
-      s.playerOwned = key !== '' && this._capturedSettlements.has(key);
+      this._setSettlementOwnership(s, key !== '' && this._capturedSettlements.has(key));
     });
   }
 
@@ -2409,7 +2490,7 @@ export class GameUI {
    * @returns {boolean}
    */
   isPlayerSettlement(settlement) {
-    return settlement?.playerOwned === true;
+    return settlement?.controllingNationId === PLAYER_NATION_ID;
   }
 
   /**
@@ -2424,7 +2505,7 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
-    settlement.playerOwned = true;
+    this._setSettlementOwnership(settlement, true);
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
 
@@ -2450,6 +2531,14 @@ export class GameUI {
         name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: 5,
       });
     });
+
+    // Check if the original nation has been completely wiped out
+    if (this.nationSystem && settlement.nationId >= 0) {
+      const foundingNation = this.nationSystem.nations[settlement.nationId];
+      if (foundingNation && this.nationSystem.isNationExtinct(settlement.nationId)) {
+        this._toast(`🏴 ${foundingNation.name} 失去了所有領地，國家滅亡！`);
+      }
+    }
   }
 
   /**

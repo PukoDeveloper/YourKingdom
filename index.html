@@ -1255,6 +1255,26 @@
         flex-shrink: 0;
         white-space: nowrap;
       }
+      /* "已滅亡" badge for extinct nations */
+      .sc-extinct-badge {
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: rgba(120,120,120,0.2);
+        border: 1px solid rgba(180,180,180,0.35);
+        color: #aaa;
+        flex-shrink: 0;
+        white-space: nowrap;
+        margin-left: 4px;
+      }
+      /* Settlement row for a captured (player-owned) territory */
+      .dn-captured-row {
+        opacity: 0.55;
+      }
+      /* Player nation card highlight */
+      .dipl-player-card {
+        background: rgba(226,201,126,0.05) !important;
+      }
       .settlement-card:hover {
         background: rgba(255,255,255,0.09);
         border-color: var(--ns-color, rgba(226,201,126,0.5));
