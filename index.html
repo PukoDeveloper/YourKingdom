@@ -353,6 +353,8 @@
         opacity: 0.4;
         border-style: dashed;
       }
+      .unit-card.captain { border-color: rgba(226,201,126,0.65); background: rgba(226,201,126,0.08); }
+      .unit-card.inactive { opacity: 0.5; }
       .unit-card.general { border-color: rgba(226,201,126,0.45); }
       .unit-badge {
         font-size: 12px;
@@ -378,7 +380,8 @@
         font-size: 12px;
       }
       .btn-remove-gen,
-      .btn-remove-sol {
+      .btn-remove-sol,
+      .btn-remove-member {
         margin-left: auto;
         background: rgba(211,47,47,0.18);
         border: 1px solid rgba(211,47,47,0.4);
@@ -390,7 +393,8 @@
         transition: background 0.15s;
       }
       .btn-remove-gen:hover,
-      .btn-remove-sol:hover { background: rgba(211,47,47,0.35); }
+      .btn-remove-sol:hover,
+      .btn-remove-member:hover { background: rgba(211,47,47,0.35); }
       .soldier-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -403,6 +407,101 @@
         margin-bottom: 0;
       }
       .soldier-grid .btn-remove-sol { margin-left: 0; align-self: flex-end; }
+
+      /* Member list (replaces soldier-grid for unified member view) */
+      .member-list { display: flex; flex-direction: column; gap: 6px; }
+      .member-list .unit-card.member {
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      /* Trait tags */
+      .unit-traits {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        width: 100%;
+        margin-top: 2px;
+      }
+      .trait-tag {
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+        color: rgba(255,255,255,0.7);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 11px;
+      }
+      .trait-tag.trait-captain {
+        background: rgba(226,201,126,0.18);
+        border-color: rgba(226,201,126,0.5);
+        color: #e2c97e;
+      }
+
+      /* Unit card action row */
+      .unit-card-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        width: 100%;
+        margin-top: 4px;
+      }
+      .unit-card-actions button {
+        border-radius: 6px;
+        padding: 3px 8px;
+        font-size: 11px;
+        cursor: pointer;
+        transition: background 0.15s;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .btn-set-captain {
+        background: rgba(226,201,126,0.15);
+        border: 1px solid rgba(226,201,126,0.4);
+        color: #e2c97e;
+      }
+      .btn-set-captain:hover { background: rgba(226,201,126,0.3); }
+      .btn-toggle-active {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        color: rgba(255,255,255,0.55);
+      }
+      .btn-toggle-active.is-active {
+        background: rgba(56,142,60,0.2);
+        border-color: rgba(56,142,60,0.5);
+        color: #a5d6a7;
+      }
+      .btn-toggle-active:hover { filter: brightness(1.2); }
+      .btn-move {
+        background: rgba(25,118,210,0.15);
+        border: 1px solid rgba(25,118,210,0.4);
+        color: #90caf9;
+      }
+      .btn-move.active {
+        background: rgba(25,118,210,0.3);
+        border-color: #90caf9;
+      }
+      .btn-move:hover { background: rgba(25,118,210,0.28); }
+
+      /* Move target panel */
+      .move-targets {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        width: 100%;
+        padding: 6px 0 2px;
+      }
+      .btn-move-to {
+        background: rgba(25,118,210,0.18);
+        border: 1px solid rgba(25,118,210,0.45);
+        color: #90caf9;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        transition: background 0.15s;
+      }
+      .btn-move-to:hover { background: rgba(25,118,210,0.32); }
+      .btn-move-to:disabled { opacity: 0.4; cursor: not-allowed; }
 
       /* =====================================================================
          Acquire dialog
