@@ -1056,10 +1056,30 @@ export class GameUI {
           <span class="dn-s-arrow">›</span>
         </div>`).join('');
 
+      // Memory log (most recent entries, shown newest first)
+      const memory = this.diplomacySystem.getNationMemory(id);
+      let memoryHTML = '';
+      if (memory.length > 0) {
+        const entries = memory.slice(-5).reverse();
+        const rows = entries.map(e => {
+          const sign  = e.delta >= 0 ? `+${e.delta}` : `${e.delta}`;
+          const color = e.delta >= 0 ? '#43a047' : '#e53935';
+          return `<div class="dn-memory-entry">
+            <span class="dn-mem-desc">${e.desc}</span>
+            <span class="dn-mem-delta" style="color:${color}">${sign}</span>
+          </div>`;
+        }).join('');
+        memoryHTML = `<div class="dn-memory">
+          <div class="dn-memory-title">📋 近期記憶</div>
+          ${rows}
+        </div>`;
+      }
+
       return `
         <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44">
           ${headerHTML}
           <div class="dn-settlements">${castleRow}${villageRows}</div>
+          ${memoryHTML}
         </div>`;
     }).join('');
 
@@ -2074,10 +2094,11 @@ export class GameUI {
       settlement,
       player,
       enemy,
-      round:    0,
-      log:      ['⚔ 戰鬥開始！雙方列陣，準備開戰…'],
-      finished: false,
-      result:   null,
+      round:            0,
+      log:              ['⚔ 戰鬥開始！雙方列陣，準備開戰…'],
+      finished:         false,
+      result:           null,
+      diplomacyApplied: false,
     };
 
     const overlay = document.getElementById('battle-scene-overlay');
@@ -2236,7 +2257,38 @@ export class GameUI {
       state.log.push('💀 我方全軍覆沒，撤出戰場。');
     }
 
+    // Apply diplomacy effects once when the battle concludes
+    if (state.finished && !state.diplomacyApplied) {
+      state.diplomacyApplied = true;
+      this._triggerBattleAttackDiplomacy(state.settlement, state.result === 'victory');
+    }
+
     this._renderBattleScene();
+  }
+
+  /**
+   * Notify the diplomacy system that the player attacked a settlement.
+   * Propagates relation changes to allied / hostile third-party nations.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {boolean} victory
+   */
+  _triggerBattleAttackDiplomacy(settlement, victory) {
+    if (!this.diplomacySystem || !this.nationSystem) return;
+    const nation = this.nationSystem.getNation(settlement);
+    // Do not fire for already-owned or neutral settlements
+    if (!nation || nation.id < 0 || settlement.playerOwned) return;
+    const pk = this.getPlayerNation();
+    this.diplomacySystem.recordAttackEvent({
+      attackerNationId:    -1,
+      targetNationId:      nation.id,
+      settlementName:      settlement.name,
+      attackerDisplayName: pk.name,
+      victory,
+    });
+    // Refresh diplomacy panel if it's open
+    if (this._activePanel === 'nations') {
+      this._renderDiplomacy();
+    }
   }
 
   _closeBattleScene() {

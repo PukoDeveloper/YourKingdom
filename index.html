@@ -1652,6 +1652,41 @@
       .dn-s-arrow { color: rgba(255,255,255,0.25); font-size: 14px; flex-shrink: 0; }
       .sd-diplomacy-row { margin-top: 4px; }
 
+      /* Nation memory log */
+      .dn-memory {
+        border-top: 1px solid rgba(255,255,255,0.07);
+        padding: 8px 12px 10px;
+      }
+      .dn-memory-title {
+        font-size: 11px;
+        color: rgba(255,255,255,0.4);
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        margin-bottom: 5px;
+      }
+      .dn-memory-entry {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 6px;
+        padding: 3px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+        font-size: 11px;
+      }
+      .dn-memory-entry:last-child { border-bottom: none; }
+      .dn-mem-desc {
+        flex: 1;
+        color: rgba(255,255,255,0.55);
+        line-height: 1.4;
+        min-width: 0;
+      }
+      .dn-mem-delta {
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
       /* =====================================================================
          Settings panel
          ===================================================================== */
