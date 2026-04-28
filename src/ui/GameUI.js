@@ -54,6 +54,9 @@ export class GameUI {
     /** Active nations sub-tab: 'castles' | 'villages' */
     this._nationsTab = 'castles';
 
+    /** Active team panel main tab: 'squads' | 'info' */
+    this._teamInfoTab = 'squads';
+
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
 
@@ -797,6 +800,31 @@ export class GameUI {
 
   _renderTeam() {
     const content = document.getElementById('ui-panel-content');
+
+    content.innerHTML = `
+      <div class="team-main-tabs">
+        <button class="team-main-tab-btn${this._teamInfoTab === 'squads' ? ' active' : ''}" data-tab="squads">⚔️ 隊伍</button>
+        <button class="team-main-tab-btn${this._teamInfoTab === 'info'   ? ' active' : ''}" data-tab="info">📊 資訊</button>
+      </div>
+      <div id="team-tab-content"></div>
+    `;
+
+    content.querySelectorAll('.team-main-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._teamInfoTab = btn.dataset.tab;
+        this._renderTeam();
+      });
+    });
+
+    if (this._teamInfoTab === 'info') {
+      this._renderTeamInfo();
+    } else {
+      this._renderTeamSquads();
+    }
+  }
+
+  _renderTeamSquads() {
+    const content = document.getElementById('team-tab-content');
     const squads  = this.army.getSquads();
 
     content.innerHTML = `
@@ -821,6 +849,126 @@ export class GameUI {
     });
 
     this._renderSquadDetail(squads[this._activeSquad]);
+  }
+
+  _renderTeamInfo() {
+    const content = document.getElementById('team-tab-content');
+    if (!content) return;
+
+    const squads = this.army.getSquads();
+
+    // Per-squad stats
+    const squadStats = squads.map(sq => {
+      const activeMembers = sq.members.filter(m => m.active);
+      const totalAttack  = activeMembers.reduce((s, m) => s + m.stats.attack,  0);
+      const totalDefense = activeMembers.reduce((s, m) => s + m.stats.defense, 0);
+      const totalMorale  = activeMembers.reduce((s, m) => s + m.stats.morale,  0);
+      const avgMorale    = activeMembers.length > 0 ? Math.round(totalMorale / activeMembers.length) : 0;
+      return {
+        id:           sq.id,
+        totalMembers: sq.members.length,
+        activeCount:  activeMembers.length,
+        totalAttack,
+        totalDefense,
+        combatPower:  totalAttack + totalDefense,
+        avgMorale,
+      };
+    });
+
+    const totalMembers  = squadStats.reduce((s, sq) => s + sq.totalMembers, 0);
+    const totalActive   = squadStats.reduce((s, sq) => s + sq.activeCount,  0);
+    const totalCombat   = squadStats.reduce((s, sq) => s + sq.combatPower,  0);
+
+    // Food stats
+    const foodItems      = this.inventory.getItems().filter(i => i.type === 'food');
+    const totalFood      = foodItems.reduce((s, i) => s + i.quantity, 0);
+    const dailyConsume   = totalActive; // 1 food per active member per day
+
+    let daysLeftText;
+    if (dailyConsume === 0) {
+      daysLeftText = '∞（無人參戰）';
+    } else if (totalFood === 0) {
+      daysLeftText = '已斷糧！';
+    } else {
+      daysLeftText = `約 ${Math.floor(totalFood / dailyConsume)} 天`;
+    }
+    const foodWarn = totalFood === 0 && dailyConsume > 0;
+
+    content.innerHTML = `
+      <div class="team-info-section">
+        <div class="team-info-title">📋 總覽</div>
+        <div class="team-info-row">
+          <span class="team-info-label">總人數</span>
+          <span class="team-info-value">${totalMembers} 人</span>
+        </div>
+        <div class="team-info-row">
+          <span class="team-info-label">參戰人數</span>
+          <span class="team-info-value">${totalActive} 人</span>
+        </div>
+        <div class="team-info-row">
+          <span class="team-info-label">總戰力</span>
+          <span class="team-info-value">${totalCombat}</span>
+        </div>
+      </div>
+
+      <div class="team-info-section">
+        <div class="team-info-title">⚔️ 各小隊概況</div>
+        ${squadStats.map(sq => `
+          <div class="team-info-squad-row">
+            <span class="team-info-squad-name">小隊${sq.id + 1}</span>
+            <span class="team-info-squad-stat">${sq.activeCount}/${sq.totalMembers} 人</span>
+            <span class="team-info-squad-stat">攻 ${sq.totalAttack}</span>
+            <span class="team-info-squad-stat">防 ${sq.totalDefense}</span>
+            <span class="team-info-squad-stat">士氣 ${sq.avgMorale}</span>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="team-info-section">
+        <div class="team-info-title">🍱 糧食概況</div>
+        <div class="team-info-row">
+          <span class="team-info-label">現有糧食</span>
+          <span class="team-info-value">${totalFood} 份</span>
+        </div>
+        <div class="team-info-row">
+          <span class="team-info-label">每日消耗</span>
+          <span class="team-info-value">${dailyConsume} 份（每人 1 份）</span>
+        </div>
+        <div class="team-info-row">
+          <span class="team-info-label">預計耗盡</span>
+          <span class="team-info-value${foodWarn ? ' warn' : ''}">${daysLeftText}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Called once per in-game day to consume food for all active members.
+   * Each active member consumes 1 food unit per day.
+   */
+  onDayPassed() {
+    const squads = this.army.getSquads();
+    const totalActive = squads.reduce((sum, sq) =>
+      sum + sq.members.filter(m => m.active).length, 0);
+
+    if (totalActive === 0) return;
+
+    let toConsume = totalActive;
+    const foodItems = this.inventory.getItems().filter(i => i.type === 'food');
+    for (const item of foodItems) {
+      if (toConsume <= 0) break;
+      const deduct = Math.min(item.quantity, toConsume);
+      this.inventory.removeItem(item.id, deduct);
+      toConsume -= deduct;
+    }
+
+    if (toConsume > 0) {
+      this._toast(`⚠ 糧食不足！缺少 ${toConsume} 份糧食`);
+    }
+
+    if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
+      this._renderTeamInfo();
+    }
   }
 
   _renderSquadDetail(squad) {
