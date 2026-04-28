@@ -518,10 +518,11 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], nationMemory: [number, object[]][], currentDay: number }} */
+  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number }} */
   getState() {
     return {
       playerRelations: [...this._playerRelations.entries()],
+      npcRelations:    [...this._npcRelations.entries()],
       nationMemory:    [...this._nationMemory.entries()],
       currentDay:      this._currentDay,
     };
@@ -529,13 +530,20 @@ export class DiplomacySystem {
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][], nationMemory?: [number, object[]][], currentDay?: number }|null} state
+   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number }|null} state
    */
   loadState(state) {
     if (!state) return;
     if (Array.isArray(state.playerRelations)) {
       state.playerRelations.forEach(([id, value]) => {
         this._playerRelations.set(Number(id), Math.max(-100, Math.min(100, Number(value))));
+      });
+    }
+    if (Array.isArray(state.npcRelations)) {
+      state.npcRelations.forEach(([key, value]) => {
+        if (typeof key === 'string' && /^\d+:\d+$/.test(key)) {
+          this._npcRelations.set(key, Math.max(-100, Math.min(100, Number(value))));
+        }
       });
     }
     if (Array.isArray(state.nationMemory)) {
