@@ -71,14 +71,14 @@ export class Player {
       const step      = SPEED * speedMult * dt;
 
       // Attempt X and Y movement independently so the player can slide along
-      // mountain edges rather than being stopped completely.
+      // mountain / water edges rather than being stopped completely.
       const nextX = this.x + nx * step;
-      if (!mapData || !this._touchesMountain(mapData, nextX, this.y)) {
+      if (!mapData || (!this._touchesMountain(mapData, nextX, this.y) && !this._touchesWater(mapData, nextX, this.y))) {
         this.x = nextX;
       }
 
       const nextY = this.y + ny * step;
-      if (!mapData || !this._touchesMountain(mapData, this.x, nextY)) {
+      if (!mapData || (!this._touchesMountain(mapData, this.x, nextY) && !this._touchesWater(mapData, this.x, nextY))) {
         this.y = nextY;
       }
 
@@ -112,6 +112,25 @@ export class Player {
       isMtn(worldX - RADIUS, worldY         ) ||
       isMtn(worldX,          worldY + RADIUS) ||
       isMtn(worldX,          worldY - RADIUS)
+    );
+  }
+
+  /**
+   * Returns true if the player's body (centre + cardinal-edge probe points)
+   * would overlap a WATER tile at the given world position.
+   *
+   * @param {MapData} mapData
+   * @param {number}  worldX
+   * @param {number}  worldY
+   */
+  _touchesWater(mapData, worldX, worldY) {
+    const isWater = (wx, wy) => mapData.getTerrainAtWorld(wx, wy) === TERRAIN.WATER;
+    return (
+      isWater(worldX,          worldY         ) ||
+      isWater(worldX + RADIUS, worldY         ) ||
+      isWater(worldX - RADIUS, worldY         ) ||
+      isWater(worldX,          worldY + RADIUS) ||
+      isWater(worldX,          worldY - RADIUS)
     );
   }
 }
