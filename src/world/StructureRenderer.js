@@ -18,13 +18,25 @@ export class StructureRenderer {
   /**
    * @param {import('./MapData.js').MapData} mapData
    * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
+   * @param {((settlement: import('../systems/NationSystem.js').Settlement) => { color: string, flagApp: object|null })|null} [getEffectiveNation]
+   *   Optional override: given a settlement, returns the nation info to use for rendering.
+   *   If omitted, `nationSystem.getNation` is used directly.
    */
-  constructor(mapData, nationSystem = null) {
+  constructor(mapData, nationSystem = null, getEffectiveNation = null) {
+    this._mapData          = mapData;
+    this._nationSystem     = nationSystem;
+    this._getEffectiveNation = getEffectiveNation;
     this.container = new Container();
-    this._build(mapData, nationSystem);
+    this._build();
   }
 
-  _build(mapData, nationSystem) {
+  _build() {
+    const { _mapData: mapData, _nationSystem: nationSystem } = this;
+    const _nation = (settlement) =>
+      this._getEffectiveNation
+        ? this._getEffectiveNation(settlement)
+        : nationSystem.getNation(settlement);
+
     const g = new Graphics();
 
     for (let i = 0; i < mapData.castles.length; i++) {
@@ -34,7 +46,7 @@ export class StructureRenderer {
       if (nationSystem) {
         const settlement = nationSystem.castleSettlements[i];
         if (settlement) {
-          const nation = nationSystem.getNation(settlement);
+          const nation = _nation(settlement);
           const parsed = _hexToNum(nation.color);
           if (parsed !== null) flagColor = parsed;
           flagApp = nation.flagApp ?? null;
@@ -50,7 +62,7 @@ export class StructureRenderer {
       if (nationSystem) {
         const settlement = nationSystem.villageSettlements[i];
         if (settlement) {
-          const nation = nationSystem.getNation(settlement);
+          const nation = _nation(settlement);
           const parsed = _hexToNum(nation.color);
           if (parsed !== null) flagColor = parsed;
           flagApp = nation.flagApp ?? null;
@@ -64,5 +76,17 @@ export class StructureRenderer {
     }
 
     this.container.addChild(g);
+  }
+
+  /**
+   * Destroy the current graphics and redraw all structures.
+   * Call this whenever the effective nation for any settlement changes
+   * (e.g. after the player captures a settlement).
+   */
+  rebuild() {
+    while (this.container.children.length) {
+      this.container.removeChildAt(0).destroy();
+    }
+    this._build();
   }
 }
