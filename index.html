@@ -1611,13 +1611,26 @@
       }
 
       /* =====================================================================
-         Enter-facility floating button
+         Settlement action buttons (enter + attack)
          ===================================================================== */
-      #enter-facility-btn {
+      #facility-action-wrap {
         position: fixed;
         bottom: 160px;
         left: 50%;
         transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        z-index: 200;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s;
+      }
+      #facility-action-wrap.visible {
+        opacity: 1;
+        pointer-events: all;
+      }
+      #enter-facility-btn {
         background: rgba(226,201,126,0.18);
         border: 1.5px solid rgba(226,201,126,0.7);
         border-radius: 24px;
@@ -1629,23 +1642,387 @@
         padding: 10px 28px;
         cursor: pointer;
         white-space: nowrap;
-        z-index: 200;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.25s, transform 0.25s, background 0.15s;
         touch-action: manipulation;
         backdrop-filter: blur(4px);
         -webkit-backdrop-filter: blur(4px);
         box-shadow: 0 4px 16px rgba(0,0,0,0.45);
-      }
-      #enter-facility-btn.visible {
-        opacity: 1;
-        pointer-events: all;
+        transition: background 0.15s, transform 0.12s;
       }
       #enter-facility-btn:active {
         background: rgba(226,201,126,0.32);
-        transform: translateX(-50%) scale(0.96);
+        transform: scale(0.96);
       }
+      #attack-facility-btn {
+        background: rgba(183,28,28,0.25);
+        border: 1.5px solid rgba(229,57,53,0.65);
+        border-radius: 24px;
+        color: #ef9a9a;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 1px;
+        padding: 10px 16px;
+        cursor: pointer;
+        white-space: nowrap;
+        touch-action: manipulation;
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+        transition: background 0.15s, transform 0.12s;
+        display: none;
+      }
+      #attack-facility-btn.visible { display: block; }
+      #attack-facility-btn:active {
+        background: rgba(183,28,28,0.45);
+        transform: scale(0.96);
+      }
+
+      /* =====================================================================
+         Battle preview overlay
+         ===================================================================== */
+      #battle-preview-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.72);
+        z-index: 450;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.22s;
+      }
+      #battle-preview-overlay.visible { opacity: 1; pointer-events: all; }
+      #battle-preview-box {
+        background: #0d1b2a;
+        border: 1px solid rgba(229,57,53,0.45);
+        border-radius: 14px;
+        width: 92%;
+        max-width: 380px;
+        max-height: 84vh;
+        overflow-y: auto;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      #battle-preview-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 18px 12px;
+        border-bottom: 1px solid rgba(229,57,53,0.22);
+        position: sticky;
+        top: 0;
+        background: #0d1b2a;
+        z-index: 1;
+      }
+      #battle-preview-title {
+        color: #ef9a9a;
+        font-size: 16px;
+        font-weight: bold;
+        letter-spacing: 1px;
+      }
+      #battle-preview-close {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.55);
+        font-size: 18px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+        transition: color 0.15s;
+      }
+      #battle-preview-close:hover { color: #fff; }
+      #battle-preview-body { padding: 14px 16px 20px; }
+      .bpv-section { margin-bottom: 16px; }
+      .bpv-section-title {
+        color: rgba(239,154,154,0.85);
+        font-size: 12px;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+      }
+      .bpv-enemy-banner {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        background: rgba(183,28,28,0.1);
+        border: 1px solid rgba(229,57,53,0.22);
+        border-radius: 10px;
+        margin-bottom: 8px;
+      }
+      .bpv-enemy-icon { font-size: 26px; flex-shrink: 0; }
+      .bpv-enemy-name {
+        color: #eee;
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+      .bpv-enemy-role { color: #90a4ae; font-size: 12px; font-weight: 400; margin-left: 5px; }
+      .bpv-enemy-meta { font-size: 12px; color: rgba(255,255,255,0.45); }
+      .bpv-nation { font-size: 12px; }
+      .bpv-enemy-stats { display: flex; gap: 6px; }
+      .bpv-stat {
+        flex: 1;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 7px 4px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+      }
+      .bpv-stat span { color: rgba(255,255,255,0.4); font-size: 10px; }
+      .bpv-stat strong { color: #ef9a9a; font-size: 15px; font-weight: bold; line-height: 1; }
+      .bpv-squad-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 8px; }
+      .bpv-squad-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        transition: background 0.15s, border-color 0.15s;
+        touch-action: manipulation;
+      }
+      .bpv-squad-row:hover { background: rgba(255,255,255,0.09); }
+      .bpv-squad-row.selected {
+        background: rgba(226,201,126,0.1);
+        border-color: rgba(226,201,126,0.4);
+      }
+      .bpv-sq-check { font-size: 16px; flex-shrink: 0; }
+      .bpv-sq-name { color: #eee; font-weight: 600; flex: 1; }
+      .bpv-sq-count { color: rgba(255,255,255,0.45); font-size: 12px; }
+      .bpv-sq-power { color: #e2c97e; font-size: 12px; white-space: nowrap; }
+      .bpv-player-summary { color: rgba(255,255,255,0.5); font-size: 12px; padding: 6px 0 0; }
+      .bpv-actions { display: flex; gap: 10px; padding-top: 4px; }
+      .btn-bpv-cancel {
+        flex: 1;
+        padding: 10px 6px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 10px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.15s;
+        touch-action: manipulation;
+      }
+      .btn-bpv-cancel:hover { background: rgba(255,255,255,0.12); color: #eee; }
+      .btn-bpv-start {
+        flex: 2;
+        padding: 10px 6px;
+        background: rgba(183,28,28,0.22);
+        border: 1.5px solid rgba(229,57,53,0.65);
+        border-radius: 10px;
+        color: #ef9a9a;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 15px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: background 0.15s;
+        letter-spacing: 1px;
+        touch-action: manipulation;
+      }
+      .btn-bpv-start:hover { background: rgba(183,28,28,0.38); }
+      .btn-bpv-start:disabled { opacity: 0.35; cursor: not-allowed; }
+
+      /* =====================================================================
+         Battle scene overlay (full screen)
+         ===================================================================== */
+      #battle-scene-overlay {
+        position: fixed;
+        inset: 0;
+        background: var(--battle-bg, linear-gradient(180deg, #112a14 0%, #0d2210 55%, #1a3a14 100%));
+        z-index: 500;
+        display: flex;
+        align-items: stretch;
+        justify-content: center;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+      }
+      #battle-scene-overlay.visible { opacity: 1; pointer-events: all; }
+      #battle-scene-inner {
+        width: 100%;
+        max-width: 520px;
+        display: flex;
+        flex-direction: column;
+        padding: 16px 16px 28px;
+        gap: 10px;
+      }
+      #battle-scene-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 2px 6px;
+        border-bottom: 1px solid rgba(255,255,255,0.14);
+        flex-shrink: 0;
+      }
+      #battle-scene-terrain-name {
+        color: #e2c97e;
+        font-size: 16px;
+        font-weight: bold;
+        letter-spacing: 1px;
+      }
+      #battle-scene-round-label { color: rgba(255,255,255,0.5); font-size: 13px; }
+      #battle-scene-field {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-evenly;
+        gap: 6px;
+        overflow: hidden;
+      }
+      #battle-enemy-row, #battle-player-row {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+      }
+      .btl-row-label {
+        color: rgba(255,255,255,0.42);
+        font-size: 11px;
+        letter-spacing: 1px;
+      }
+      .btl-unit-row {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: flex-end;
+      }
+      .btl-unit-enemy {
+        font-size: 22px;
+        line-height: 1;
+        filter: drop-shadow(0 1px 3px rgba(0,0,0,0.6));
+        transition: opacity 0.3s;
+      }
+      .btl-leader { font-size: 28px; }
+      .btl-unit-player {
+        display: inline-block;
+        filter: drop-shadow(0 1px 4px rgba(0,0,0,0.7));
+        transition: opacity 0.3s;
+      }
+      .btl-fallen {
+        opacity: 0.2;
+        filter: grayscale(100%) drop-shadow(0 1px 3px rgba(0,0,0,0.5));
+      }
+      #battle-scene-vs-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 2px 0;
+        flex-shrink: 0;
+      }
+      #battle-enemy-hp-bar-wrap, #battle-player-hp-bar-wrap {
+        flex: 1;
+        height: 8px;
+        background: rgba(255,255,255,0.12);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      #battle-enemy-hp-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #b71c1c, #ef5350);
+        border-radius: 4px;
+        transition: width 0.45s ease;
+        width: 100%;
+      }
+      #battle-player-hp-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #1565c0, #42a5f5);
+        border-radius: 4px;
+        transition: width 0.45s ease;
+        width: 100%;
+      }
+      #battle-scene-vs {
+        color: rgba(255,255,255,0.55);
+        font-size: 11px;
+        white-space: nowrap;
+        flex-shrink: 0;
+        text-align: center;
+        min-width: 110px;
+      }
+      #battle-scene-log {
+        background: rgba(0,0,0,0.38);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 9px 13px;
+        min-height: 58px;
+        flex-shrink: 0;
+      }
+      .btl-log-line { color: rgba(255,255,255,0.6); font-size: 12px; line-height: 1.65; }
+      .btl-log-line:last-child { color: #eee; font-weight: 600; }
+      #battle-scene-actions {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .btn-battle-cmd {
+        flex: 1;
+        padding: 13px 6px;
+        background: rgba(255,255,255,0.09);
+        border: 1px solid rgba(255,255,255,0.22);
+        border-radius: 12px;
+        color: #eee;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s, transform 0.1s;
+        touch-action: manipulation;
+        letter-spacing: 1px;
+      }
+      .btn-battle-cmd:hover { background: rgba(255,255,255,0.18); }
+      .btn-battle-cmd:active { transform: scale(0.96); }
+      #btn-battle-attack {
+        background: rgba(183,28,28,0.22);
+        border-color: rgba(229,57,53,0.55);
+        color: #ef9a9a;
+      }
+      #btn-battle-attack:hover { background: rgba(183,28,28,0.38); }
+      #btn-battle-defend {
+        background: rgba(25,118,210,0.18);
+        border-color: rgba(25,118,210,0.45);
+        color: #90caf9;
+      }
+      #btn-battle-defend:hover { background: rgba(25,118,210,0.32); }
+      #btn-battle-retreat { color: rgba(255,255,255,0.58); }
+      #btn-battle-retreat:hover { color: #eee; }
+      .btl-result {
+        flex: 1;
+        padding: 13px;
+        border-radius: 12px;
+        font-size: 18px;
+        font-weight: bold;
+        text-align: center;
+        letter-spacing: 2px;
+      }
+      .btl-result-victory { background: rgba(56,142,60,0.25); border: 1px solid rgba(56,142,60,0.55); color: #a5d6a7; }
+      .btl-result-defeat  { background: rgba(183,28,28,0.22); border: 1px solid rgba(229,57,53,0.55); color: #ef9a9a; }
+      .btl-result-draw    { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #eee; }
+      .btl-result-retreat { background: rgba(255,152,0,0.14); border: 1px solid rgba(255,152,0,0.4); color: #ffcc02; }
+      .btn-battle-exit {
+        flex: 1;
+        padding: 13px 6px;
+        background: rgba(255,255,255,0.09);
+        border: 1px solid rgba(255,255,255,0.28);
+        border-radius: 12px;
+        color: #eee;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s;
+        touch-action: manipulation;
+        letter-spacing: 1px;
+      }
+      .btn-battle-exit:hover { background: rgba(255,255,255,0.18); }
 
       /* =====================================================================
          Location screen overlay
@@ -1857,8 +2234,47 @@
     <div id="weather-label">☀ 晴天</div>
     <div id="hint">WASD / 搖桿 移動</div>
 
-    <!-- Enter-facility floating button -->
-    <button id="enter-facility-btn">進入設施</button>
+    <!-- Settlement action buttons (enter + attack) -->
+    <div id="facility-action-wrap">
+      <button id="enter-facility-btn">進入設施</button>
+      <button id="attack-facility-btn">⚔ 進攻</button>
+    </div>
+
+    <!-- Battle preview overlay -->
+    <div id="battle-preview-overlay">
+      <div id="battle-preview-box">
+        <div id="battle-preview-header">
+          <span id="battle-preview-title">⚔ 戰前部署</span>
+          <button id="battle-preview-close">✕</button>
+        </div>
+        <div id="battle-preview-body"></div>
+      </div>
+    </div>
+
+    <!-- Battle scene overlay -->
+    <div id="battle-scene-overlay">
+      <div id="battle-scene-inner">
+        <div id="battle-scene-header">
+          <span id="battle-scene-terrain-name"></span>
+          <span id="battle-scene-round-label"></span>
+        </div>
+        <div id="battle-scene-field">
+          <div id="battle-enemy-row"></div>
+          <div id="battle-scene-vs-bar">
+            <div id="battle-enemy-hp-bar-wrap"><div id="battle-enemy-hp-bar"></div></div>
+            <span id="battle-scene-vs">⚔</span>
+            <div id="battle-player-hp-bar-wrap"><div id="battle-player-hp-bar"></div></div>
+          </div>
+          <div id="battle-player-row"></div>
+        </div>
+        <div id="battle-scene-log"></div>
+        <div id="battle-scene-actions">
+          <button class="btn-battle-cmd" id="btn-battle-attack">⚔ 進攻</button>
+          <button class="btn-battle-cmd" id="btn-battle-defend">🛡 防守</button>
+          <button class="btn-battle-cmd" id="btn-battle-retreat">🏃 後退</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Location screen overlay -->
     <div id="location-overlay">

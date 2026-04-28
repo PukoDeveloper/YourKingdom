@@ -43,6 +43,26 @@ const DEFAULT_KINGDOM = {
 /** Default appearance indices used when no player is available. */
 const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 };
 
+/** Terrain themes applied to the battle scene background. */
+const _BATTLE_THEMES = {
+  castle:  {
+    name:   '🏰 城堡攻防戰',
+    bg:     'linear-gradient(180deg, #0d1020 0%, #1a1a2a 55%, #2a2a1a 100%)',
+  },
+  village: {
+    name:   '🏘 村落爭奪戰',
+    bg:     'linear-gradient(180deg, #0d2010 0%, #122a14 55%, #1a3a10 100%)',
+  },
+  port:    {
+    name:   '⚓ 港口爭奪戰',
+    bg:     'linear-gradient(180deg, #091a2a 0%, #0d2030 55%, #0d2820 100%)',
+  },
+  grass:   {
+    name:   '🌿 草原野戰',
+    bg:     'linear-gradient(180deg, #182a14 0%, #0d2410 55%, #1a3a10 100%)',
+  },
+};
+
 /**
  * GameUI – manages the Backpack and Team DOM panels.
  *
@@ -90,6 +110,13 @@ export class GameUI {
 
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
+
+    /** Settlement targeted for battle (set when battle preview opens). */
+    this._battleSettlement = null;
+    /** Squads selected for dispatch in the battle preview. */
+    this._selectedSquadIds = [];
+    /** Active battle state, or null when no battle is in progress. */
+    this._battleState = null;
 
     /** Location screen stage: 'gate' (castle entrance) | 'inside' (facility list). */
     this._locationStage = 'gate';
@@ -276,11 +303,10 @@ export class GameUI {
       </div>
     `;
     document.body.appendChild(settlementDetail);
-  }
 
-  // -------------------------------------------------------------------------
-  // Listeners
-  // -------------------------------------------------------------------------
+    // NOTE: Battle preview overlay and battle scene overlay are declared in index.html
+    // (static HTML) so they are always available when _attachListeners() runs.
+  }
 
   _attachListeners() {
     document.getElementById('btn-backpack').addEventListener('click', () => this._togglePanel('backpack'));
@@ -300,6 +326,17 @@ export class GameUI {
     document.getElementById('enter-facility-btn').addEventListener('click', () => {
       if (this._nearbySettlement) this._openLocationScreen(this._nearbySettlement);
     });
+
+    // Attack-facility button
+    document.getElementById('attack-facility-btn').addEventListener('click', () => {
+      if (this._nearbySettlement) this._openBattlePreview(this._nearbySettlement);
+    });
+
+    // Battle preview overlay – close via backdrop or close button
+    document.getElementById('battle-preview-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'battle-preview-overlay') this._closeBattlePreview();
+    });
+    document.getElementById('battle-preview-close').addEventListener('click', () => this._closeBattlePreview());
 
     // Close location overlay
     document.getElementById('location-close').addEventListener('click', () => this._closeLocationScreen());
@@ -1419,18 +1456,26 @@ export class GameUI {
    * @param {'castle'|'village'|'port'|null} [terrainType] Used for ports which have no Settlement object.
    */
   setNearbySettlement(settlement, terrainType = null) {
-    const btn = document.getElementById('enter-facility-btn');
-    if (!btn) return;
+    const wrap = document.getElementById('facility-action-wrap');
+    if (!wrap) return;
 
     const prev = this._nearbySettlement;
     this._nearbySettlement = settlement ?? (terrainType === 'port' ? { type: 'port', name: '港口' } : null);
 
     const visible = this._nearbySettlement !== null;
-    btn.classList.toggle('visible', visible);
+    wrap.classList.toggle('visible', visible);
 
     if (visible) {
       const name = this._nearbySettlement.name ?? '設施';
-      btn.textContent = `🚪 進入 ${name}`;
+      const enterBtn = document.getElementById('enter-facility-btn');
+      if (enterBtn) enterBtn.textContent = `🚪 進入 ${name}`;
+
+      // Show attack button only for castle/village settlements (not port)
+      const attackBtn = document.getElementById('attack-facility-btn');
+      if (attackBtn) {
+        const s = this._nearbySettlement;
+        attackBtn.classList.toggle('visible', s.type === 'castle' || s.type === 'village');
+      }
     }
 
     // Hide the enter button if the player walked away while the screen is open
@@ -1597,8 +1642,331 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
-  // Persistence
+  // Battle preview
   // -------------------------------------------------------------------------
+
+  /**
+   * Generate enemy force stats from a settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _generateEnemyForce(settlement) {
+    const ruler = settlement.ruler;
+    const econ  = settlement.economyLevel;
+    const isCastle = settlement.type === 'castle';
+
+    const troopCount = isCastle ? 4 + econ : 2 + Math.ceil(econ / 2);
+    const multiplier = 1 + troopCount * 0.3 + econ * 0.05;
+
+    const attack  = Math.floor(ruler.stats.attack  * multiplier);
+    const defense = Math.floor(ruler.stats.defense * multiplier);
+    const maxHp   = Math.floor((ruler.stats.defense + troopCount * 4) * 10 + econ * 15);
+
+    return {
+      name:  ruler.name,
+      role:  ruler.role,
+      troopCount,
+      attack,
+      defense,
+      morale: ruler.stats.morale,
+      hp:     maxHp,
+      maxHp,
+    };
+  }
+
+  /**
+   * Calculate player force from a set of squad IDs.
+   * @param {number[]} squadIds
+   */
+  _calculatePlayerForce(squadIds) {
+    const squads  = this.army.getSquads().filter(s => squadIds.includes(s.id));
+    const members = squads.flatMap(s => s.members.filter(m => m.active));
+
+    const totalAtk = members.reduce((sum, m) => sum + m.stats.attack,  0);
+    const totalDef = members.reduce((sum, m) => sum + m.stats.defense, 0);
+    const moraleSum = members.reduce((sum, m) => sum + m.stats.morale, 0);
+    const avgMor = members.length > 0
+      ? Math.round(moraleSum / members.length)
+      : 0;
+    const maxHp = Math.max(1, Math.floor(totalDef * 5 + members.length * 20));
+
+    return {
+      memberCount: members.length,
+      attack:  totalAtk,
+      defense: totalDef,
+      morale:  avgMor,
+      hp:      maxHp,
+      maxHp,
+      members,
+    };
+  }
+
+  /** Open the battle preview dialog for a settlement. */
+  _openBattlePreview(settlement) {
+    if (!settlement || (settlement.type !== 'castle' && settlement.type !== 'village')) return;
+
+    this._battleSettlement = settlement;
+    this._selectedSquadIds = [0]; // default: squad 0 selected
+
+    const overlay = document.getElementById('battle-preview-overlay');
+    if (!overlay) return;
+    this._renderBattlePreview();
+    overlay.classList.add('visible');
+  }
+
+  _renderBattlePreview() {
+    const settlement = this._battleSettlement;
+    if (!settlement) return;
+
+    const enemy      = this._generateEnemyForce(settlement);
+    const squads     = this.army.getSquads();
+    const selectedIds = this._selectedSquadIds;
+
+    const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
+    const nation    = this.nationSystem ? this.nationSystem.getNation(settlement) : null;
+    const nationBadge = nation
+      ? `<span class="bpv-nation" style="color:${nation.color}">${nation.emblem} ${nation.name}</span>`
+      : '';
+
+    const squadSelHTML = squads.map(sq => {
+      const active   = sq.members.filter(m => m.active);
+      const totalPow = active.reduce((s, m) => s + m.stats.attack + m.stats.defense, 0);
+      const sel      = selectedIds.includes(sq.id);
+      return `
+        <div class="bpv-squad-row${sel ? ' selected' : ''}" data-squad-id="${sq.id}" role="button" tabindex="0">
+          <span class="bpv-sq-check">${sel ? '✅' : '⬜'}</span>
+          <span class="bpv-sq-name">小隊 ${sq.id + 1}${sq.isPlayerSquad ? ' (主角)' : ''}</span>
+          <span class="bpv-sq-count">${active.length} 名參戰</span>
+          <span class="bpv-sq-power">戰力 ${totalPow}</span>
+        </div>`;
+    }).join('');
+
+    const playerForce = this._calculatePlayerForce(selectedIds);
+
+    const body = document.getElementById('battle-preview-body');
+    body.innerHTML = `
+      <div class="bpv-section">
+        <div class="bpv-section-title">👁 敵軍情報</div>
+        <div class="bpv-enemy-banner">
+          <div class="bpv-enemy-icon">🏴</div>
+          <div class="bpv-enemy-info">
+            <div class="bpv-enemy-name">${enemy.name}<span class="bpv-enemy-role">${enemy.role}</span></div>
+            <div class="bpv-enemy-meta">${typeLabel} ${nationBadge}</div>
+          </div>
+        </div>
+        <div class="bpv-enemy-stats">
+          <div class="bpv-stat"><span>兵力</span><strong>${enemy.troopCount} 隊</strong></div>
+          <div class="bpv-stat"><span>攻擊</span><strong>${enemy.attack}</strong></div>
+          <div class="bpv-stat"><span>防禦</span><strong>${enemy.defense}</strong></div>
+          <div class="bpv-stat"><span>士氣</span><strong>${enemy.morale}</strong></div>
+        </div>
+      </div>
+      <div class="bpv-section">
+        <div class="bpv-section-title">🎖 派遣隊伍</div>
+        <div class="bpv-squad-list">${squadSelHTML}</div>
+        <div class="bpv-player-summary">
+          我方派遣：${playerForce.memberCount} 人　攻擊 ${playerForce.attack}　防禦 ${playerForce.defense}
+        </div>
+      </div>
+      <div class="bpv-actions">
+        <button id="btn-bpv-cancel" class="btn-bpv-cancel">✕ 取消</button>
+        <button id="btn-bpv-start" class="btn-bpv-start"${playerForce.memberCount === 0 ? ' disabled' : ''}>⚔ 開戰！</button>
+      </div>
+    `;
+
+    // Squad selection toggle
+    body.querySelectorAll('.bpv-squad-row').forEach(row => {
+      const toggle = () => {
+        const id = Number(row.dataset.squadId);
+        if (this._selectedSquadIds.includes(id)) {
+          this._selectedSquadIds = this._selectedSquadIds.filter(x => x !== id);
+        } else {
+          this._selectedSquadIds.push(id);
+        }
+        this._renderBattlePreview();
+      };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+      });
+    });
+
+    body.querySelector('#btn-bpv-cancel').addEventListener('click', () => this._closeBattlePreview());
+    body.querySelector('#btn-bpv-start').addEventListener('click', () => {
+      if (playerForce.memberCount > 0) {
+        this._startBattle(settlement, this._selectedSquadIds);
+      }
+    });
+  }
+
+  _closeBattlePreview() {
+    document.getElementById('battle-preview-overlay')?.classList.remove('visible');
+    this._battleSettlement = null;
+    this._selectedSquadIds = [];
+  }
+
+  // -------------------------------------------------------------------------
+  // Battle scene
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start a battle: close preview, build state, open battle scene.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {number[]} selectedSquadIds
+   */
+  _startBattle(settlement, selectedSquadIds) {
+    this._closeBattlePreview();
+
+    const enemy  = this._generateEnemyForce(settlement);
+    const player = this._calculatePlayerForce(selectedSquadIds);
+
+    this._battleState = {
+      settlement,
+      player,
+      enemy,
+      round:    0,
+      log:      ['⚔ 戰鬥開始！雙方列陣，準備開戰…'],
+      finished: false,
+      result:   null,
+    };
+
+    const overlay = document.getElementById('battle-scene-overlay');
+    if (!overlay) return;
+
+    const theme = _BATTLE_THEMES[settlement.type] ?? _BATTLE_THEMES.grass;
+    overlay.style.setProperty('--battle-bg', theme.bg);
+
+    this._renderBattleScene();
+    overlay.classList.add('visible');
+  }
+
+  _renderBattleScene() {
+    const state = this._battleState;
+    if (!state) return;
+
+    const { settlement, player, enemy, round, log, finished, result } = state;
+    const theme = _BATTLE_THEMES[settlement.type] ?? _BATTLE_THEMES.grass;
+
+    document.getElementById('battle-scene-terrain-name').textContent = theme.name;
+    document.getElementById('battle-scene-round-label').textContent  = `第 ${round} 回合`;
+
+    // HP bars
+    const enemyPct  = Math.max(0, Math.round(enemy.hp  / enemy.maxHp  * 100));
+    const playerPct = Math.max(0, Math.round(player.hp / player.maxHp * 100));
+    document.getElementById('battle-enemy-hp-bar').style.width  = `${enemyPct}%`;
+    document.getElementById('battle-player-hp-bar').style.width = `${playerPct}%`;
+    document.getElementById('battle-scene-vs').textContent =
+      `敵 ${enemy.hp}/${enemy.maxHp}  ⚔  我 ${player.hp}/${player.maxHp}`;
+
+    // Enemy unit row (ruler icon + troop icons, faded when defeated)
+    const enemyAlive = Math.max(0, Math.ceil(enemy.troopCount * enemyPct / 100));
+    const enemyIcons = [
+      `<span class="btl-unit-enemy btl-leader${enemyPct === 0 ? ' btl-fallen' : ''}" title="${enemy.name} ${enemy.role}">👑</span>`,
+      ...Array.from({ length: enemy.troopCount }, (_, i) =>
+        `<span class="btl-unit-enemy${i < enemyAlive ? '' : ' btl-fallen'}">⚔</span>`
+      ),
+    ];
+    document.getElementById('battle-enemy-row').innerHTML =
+      `<div class="btl-row-label">敵軍陣列</div><div class="btl-unit-row">${enemyIcons.join('')}</div>`;
+
+    // Player unit row (character avatars, faded when defeated)
+    const aliveCount   = Math.ceil(player.memberCount * playerPct / 100);
+    const memberIcons  = player.members.map((m, idx) => {
+      const alive    = idx < aliveCount;
+      const charHtml = m.appearance ? renderCharHTML(m.appearance, 28) : '👤';
+      return `<span class="btl-unit-player${alive ? '' : ' btl-fallen'}" title="${m.name}${alive ? '' : ' (陣亡)'}">${charHtml}</span>`;
+    });
+    document.getElementById('battle-player-row').innerHTML =
+      `<div class="btl-unit-row">${memberIcons.join('')}</div><div class="btl-row-label">我方陣列</div>`;
+
+    // Battle log (last 3 lines)
+    document.getElementById('battle-scene-log').innerHTML =
+      log.slice(-3).map(l => `<div class="btl-log-line">${l}</div>`).join('');
+
+    // Command buttons or result banner
+    const actionsEl = document.getElementById('battle-scene-actions');
+    if (finished) {
+      const resultMeta = {
+        victory: { icon: '🏆', label: '大勝！',  cls: 'btl-result-victory' },
+        defeat:  { icon: '💀', label: '落敗…',   cls: 'btl-result-defeat'  },
+        draw:    { icon: '🤝', label: '平局',     cls: 'btl-result-draw'   },
+        retreat: { icon: '🏃', label: '撤退',     cls: 'btl-result-retreat'},
+      };
+      const r = resultMeta[result] ?? resultMeta.retreat;
+      actionsEl.innerHTML = `
+        <div class="btl-result ${r.cls}">${r.icon} ${r.label}</div>
+        <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
+      actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
+    } else {
+      actionsEl.innerHTML = `
+        <button class="btn-battle-cmd" id="btn-battle-attack">⚔ 進攻</button>
+        <button class="btn-battle-cmd" id="btn-battle-defend">🛡 防守</button>
+        <button class="btn-battle-cmd" id="btn-battle-retreat">🏃 後退</button>`;
+      actionsEl.querySelector('#btn-battle-attack').addEventListener('click', () => this._handleBattleCommand('attack'));
+      actionsEl.querySelector('#btn-battle-defend').addEventListener('click', () => this._handleBattleCommand('defend'));
+      actionsEl.querySelector('#btn-battle-retreat').addEventListener('click', () => this._handleBattleCommand('retreat'));
+    }
+  }
+
+  /**
+   * Process one battle round.
+   * @param {'attack'|'defend'|'retreat'} cmd
+   */
+  _handleBattleCommand(cmd) {
+    const state = this._battleState;
+    if (!state || state.finished) return;
+
+    state.round++;
+
+    if (cmd === 'retreat') {
+      state.finished = true;
+      state.result   = 'retreat';
+      state.log.push(`第 ${state.round} 回合 — 你下令撤退，部隊有序撤出戰場。`);
+      this._renderBattleScene();
+      return;
+    }
+
+    const randomMultiplier = () => 0.7 + Math.random() * 0.6; // 0.7 – 1.3
+    let playerDmg, enemyDmg, logMsg;
+
+    if (cmd === 'attack') {
+      playerDmg = Math.max(1, Math.floor(state.player.attack * randomMultiplier()));
+      enemyDmg  = Math.max(1, Math.floor(state.enemy.attack  * randomMultiplier()));
+      logMsg = `第 ${state.round} 回合 ⚔ — 我方猛攻，對敵造成 ${playerDmg} 傷害；敵方還擊造成 ${enemyDmg} 傷害。`;
+    } else {
+      playerDmg = Math.max(1, Math.floor(state.player.attack * (0.4 + Math.random() * 0.3)));
+      enemyDmg  = Math.max(1, Math.floor(state.enemy.attack  * (0.3 + Math.random() * 0.25)));
+      logMsg = `第 ${state.round} 回合 🛡 — 我方防守，對敵造成 ${playerDmg} 傷害；敵方減弱，造成 ${enemyDmg} 傷害。`;
+    }
+
+    state.enemy.hp  = Math.max(0, state.enemy.hp  - playerDmg);
+    state.player.hp = Math.max(0, state.player.hp - enemyDmg);
+    state.log.push(logMsg);
+
+    // Check end conditions
+    const playerDead = state.player.hp <= 0;
+    const enemyDead  = state.enemy.hp  <= 0;
+
+    if (playerDead && enemyDead) {
+      state.finished = true;
+      state.result   = 'draw';
+      state.log.push('雙方俱損，以平局收場。');
+    } else if (enemyDead) {
+      state.finished = true;
+      state.result   = 'victory';
+      state.log.push(`🏆 ${state.settlement.name} 已被攻下！`);
+    } else if (playerDead) {
+      state.finished = true;
+      state.result   = 'defeat';
+      state.log.push('💀 我方全軍覆沒，撤出戰場。');
+    }
+
+    this._renderBattleScene();
+  }
+
+  _closeBattleScene() {
+    document.getElementById('battle-scene-overlay')?.classList.remove('visible');
+    this._battleState = null;
+  }
 
   /** @returns {{ inventory: object, army: object, playerKingdom: object }} serialisable snapshot */
   getState() {
