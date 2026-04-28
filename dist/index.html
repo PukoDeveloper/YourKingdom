@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <title>Your Kingdom · 你的王國</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html, body {
+        width: 100%;
+        height: 100%;
+        background: #0d1b2a;
+        overflow: hidden;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #game-container {
+        width: 100vw;
+        height: 100vh;
+        position: relative;
+      }
+
+      /* HUD */
+      #terrain-label {
+        position: fixed;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 13px;
+        letter-spacing: 1px;
+        padding: 5px 16px;
+        border-radius: 20px;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+
+      /* Loading overlay */
+      #loading {
+        position: fixed;
+        inset: 0;
+        background: #0d1b2a;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 999;
+        transition: opacity 0.5s ease;
+      }
+      #loading.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .loading-title {
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 28px;
+        font-weight: bold;
+        letter-spacing: 4px;
+        margin-bottom: 24px;
+      }
+      .loading-subtitle {
+        color: #90a4ae;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        letter-spacing: 2px;
+        margin-bottom: 32px;
+      }
+      .loading-bar-wrap {
+        width: 200px;
+        height: 6px;
+        background: rgba(255,255,255,0.12);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .loading-bar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #e2c97e, #f5e6a3);
+        border-radius: 3px;
+        transition: width 0.3s ease;
+      }
+
+      /* Mobile control hint */
+      #hint {
+        position: fixed;
+        bottom: 14px;
+        right: 14px;
+        color: rgba(255,255,255,0.4);
+        font-family: sans-serif;
+        font-size: 11px;
+        pointer-events: none;
+      }
+    </style>
+    <script type="module" crossorigin src="/assets/index-C4dWI1x7.js"></script>
+  </head>
+  <body>
+    <div id="loading">
+      <div class="loading-title">你的王國</div>
+      <div class="loading-subtitle">YOUR KINGDOM</div>
+      <div class="loading-bar-wrap">
+        <div class="loading-bar" id="loading-bar"></div>
+      </div>
+    </div>
+
+    <div id="game-container"></div>
+    <div id="terrain-label">草原</div>
+    <div id="hint">WASD / 搖桿 移動</div>
+
+  </body>
+</html>
