@@ -13,6 +13,7 @@
 
 import { Unit } from './Army.js';
 import { generateFlagAppearance } from './AppearanceSystem.js';
+import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
@@ -49,6 +50,22 @@ const VILLAGE_SUFFIXES = [
   '東村', '西村', '南村', '北村', '上村', '下村', '新村', '舊村',
   '大村', '小村', '河村', '山村', '林村', '石村', '金村', '銀村',
 ];
+
+/** Geographic/natural prefixes for village names (independent of nation). */
+const VILLAGE_NAME_PREFIXES = [
+  '青石', '桃花', '梅嶺', '松坡', '竹林', '柳溪', '楓橋', '茅屋',
+  '荷塘', '菊田', '桑葉', '杏花', '黃沙', '白雲', '烏雀', '翠谷',
+];
+
+/** Poetic/geographic prefixes for castle names (independent of nation). */
+const CASTLE_NAME_PREFIXES = [
+  '雲頂', '鐵壁', '龍牙', '鳳翔', '玉門', '劍峰', '天關', '北疆',
+  '南嶠', '東陵', '西域', '金剛', '銀月', '紫霞', '翠嶺', '烈焰',
+  '寒冰', '碧霄', '黃龍', '赤炎',
+];
+
+/** Suffixes for castle names. */
+const CASTLE_NAME_SUFFIXES = ['城', '堡', '關', '砦', '要塞', '城堡'];
 
 // ---------------------------------------------------------------------------
 // Internal hash helpers (seed-deterministic, no imports needed)
@@ -99,6 +116,11 @@ export class Settlement {
     this.resources = resources;
     /** The ruling Unit – same class as army members, but with TRAIT_RULER. */
     this.ruler = ruler;
+    /**
+     * True when the player has captured this settlement.
+     * Mutable at runtime; persisted via the captured-settlements save key.
+     */
+    this.playerOwned = false;
   }
 }
 
@@ -149,12 +171,14 @@ export class NationSystem {
       const resources  = resA !== resB ? [resA, resB] : [resA];
       const rulerName  = _pick(RULER_SURNAMES, h(5)) + _pick(RULER_GIVEN, h(6));
       const rulerRole  = _pick(CASTLE_TITLES, h(7));
+      const personality = _pick(ALL_PERSONALITIES, h(12));
+      const castleName  = _pick(CASTLE_NAME_PREFIXES, h(13)) + _pick(CASTLE_NAME_SUFFIXES, h(14));
 
       const ruler = new Unit({
         id:     -(i + 1),       // negative IDs mark NPC rulers
         name:   rulerName,
         role:   rulerRole,
-        traits: [TRAIT_RULER],
+        traits: [TRAIT_RULER, personality],
         stats: {
           attack:  Math.floor(8  + h(8)  * 12),
           defense: Math.floor(8  + h(9)  * 12),
@@ -164,7 +188,7 @@ export class NationSystem {
 
       this.castleSettlements.push(new Settlement({
         type:         'castle',
-        name:         this.nations[i].name,
+        name:         castleName,
         nationId:     i,
         population:   pop,
         economyLevel: eco,
@@ -195,14 +219,12 @@ export class NationSystem {
         },
       });
 
-      const nationName = nationId >= 0
-        ? this.nations[nationId].name
-        : '中立';
+      const villagePrefix = _pick(VILLAGE_NAME_PREFIXES, h(12));
       const villageSuffix = _pick(VILLAGE_SUFFIXES, h(11));
 
       this.villageSettlements.push(new Settlement({
         type:         'village',
-        name:         `${nationName}${villageSuffix}`,
+        name:         `${villagePrefix}${villageSuffix}`,
         nationId,
         population:   pop,
         economyLevel: eco,

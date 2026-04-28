@@ -2,6 +2,12 @@ import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
 import { TRAIT_RULER }                     from '../systems/NationSystem.js';
 import {
+  RELATION_LEVELS,
+  PERSONALITY_COLORS,
+  PERSONALITY_ARROGANT, PERSONALITY_WARLIKE, PERSONALITY_GENTLE,
+  PERSONALITY_CUNNING,  PERSONALITY_CAUTIOUS, ALL_PERSONALITIES,
+} from '../systems/DiplomacySystem.js';
+import {
   renderFlagHTML,
   renderCharHTML,
   charAppearanceFromIndices,
@@ -89,13 +95,17 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
    * @param {() => void} [onReset] Called when the player confirms a game reset.
    * @param {import('../entities/Player.js').Player|null} [player]  Live Player instance.
+   * @param {import('../systems/DiplomacySystem.js').DiplomacySystem|null} [diplomacySystem]
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
     /** @type {import('../systems/NationSystem.js').NationSystem|null} */
     this.nationSystem = nationSystem;
+
+    /** @type {import('../systems/DiplomacySystem.js').DiplomacySystem|null} */
+    this.diplomacySystem = diplomacySystem;
 
     /** @type {import('../entities/Player.js').Player|null} */
     this.player = player;
@@ -108,8 +118,8 @@ export class GameUI {
     this._backpackTab  = 'all';
     this._equipSubTab  = 'weapon';
 
-    /** Active nations sub-tab: 'castles' | 'villages' */
-    this._nationsTab = 'castles';
+    /** Active nations sub-tab: only 'diplomacy' is used now */
+    this._nationsTab = 'diplomacy';
 
     /** Active team panel main tab: 'squads' | 'info' */
     this._teamInfoTab = 'squads';
@@ -956,78 +966,136 @@ export class GameUI {
       return;
     }
 
+    content.innerHTML = '<div id="ns-diplomacy-content"></div>';
+    this._renderDiplomacy();
+  }
+
+  // -------------------------------------------------------------------------
+  // Diplomacy panel
+  // -------------------------------------------------------------------------
+
+  _renderDiplomacy() {
+    const el = document.getElementById('ns-diplomacy-content');
+    if (!el) return;
+
+    if (!this.diplomacySystem || !this.nationSystem) {
+      el.innerHTML = '<p class="ui-empty">外交系統尚未初始化</p>';
+      return;
+    }
+
     const { nations, castleSettlements, villageSettlements } = this.nationSystem;
-    const tab = this._nationsTab;
 
-    const subTabsHTML = `
-      <div class="ns-cat-tabs">
-        <button class="ns-cat-btn${tab === 'castles'  ? ' active' : ''}" data-ns-tab="castles">
-          🏰 城堡 <span class="bp-cnt">${castleSettlements.length}</span>
-        </button>
-        <button class="ns-cat-btn${tab === 'villages' ? ' active' : ''}" data-ns-tab="villages">
-          🏘 村落 <span class="bp-cnt">${villageSettlements.length}</span>
-        </button>
-      </div>`;
+    // Group villages by nationId for quick lookup
+    const villagesByNation = {};
+    villageSettlements.forEach((v, idx) => {
+      if (!villagesByNation[v.nationId]) villagesByNation[v.nationId] = [];
+      villagesByNation[v.nationId].push({ s: v, idx });
+    });
 
-    const settlements = tab === 'castles' ? castleSettlements : villageSettlements;
-    const cardsHTML = settlements.map((s, i) => {
-      const isPlayer = this.isPlayerSettlement(s);
-      const nation   = isPlayer
-        ? this.getPlayerNation()
-        : this.nationSystem.getNation(s);
-      const flagHTML = nation.flagApp
-        ? renderFlagHTML(nation.flagApp, 36)
-        : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
-      const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
-      const popStr   = s.population.toLocaleString();
-      const playerBadge = isPlayer
-        ? `<span class="sc-player-badge">我方</span>`
-        : '';
-      return `
-        <div class="settlement-card${isPlayer ? ' player-owned' : ''}" data-ns-type="${s.type}" data-ns-idx="${i}"
-             style="border-color: ${nation.color}44; --ns-color: ${nation.color}"
-             role="button" tabindex="0">
-          <div class="sc-header">
-            <span class="sc-flag">${flagHTML}</span>
-            <span class="sc-name">${s.name}</span>
-            ${playerBadge}
-            <span class="sc-arrow">›</span>
-          </div>
-          <div class="sc-meta">
-            <span class="sc-nation-tag" style="border-color:${nation.color}88; color:${nation.color}">
+    const _personalityLabel = (traits) => {
+      const p = traits.find(t => ALL_PERSONALITIES.includes(t));
+      if (!p) return '';
+      const color = PERSONALITY_COLORS[p] ?? '#fff';
+      return `<span class="dipl-personality" style="color:${color}">${p}</span>`;
+    };
+
+    const nationCardsHTML = nations.map((nation, id) => {
+      const castle  = castleSettlements[id];
+      const val     = this.diplomacySystem.getPlayerRelation(id);
+      const level   = this.diplomacySystem.getRelationLevel(val);
+      const flagH   = nation.flagApp ? renderFlagHTML(nation.flagApp, 32) : `<span>${nation.emblem}</span>`;
+      const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
+      const isOwned = castle?.playerOwned;
+      const villages = villagesByNation[id] ?? [];
+
+      // Relation bar + level header
+      const relVal = val > 0 ? `+${val}` : `${val}`;
+      const headerHTML = `
+        <div class="dn-header">
+          <span class="dn-flag">${flagH}</span>
+          <div class="dn-title-col">
+            <div class="dn-name">
               ${nation.name}
-            </span>
-            <span class="sc-pop">👥 ${popStr}</span>
-            <span class="sc-eco">${ecoStars}</span>
+              ${isOwned ? '<span class="sc-player-badge">我方</span>' : ''}
+            </div>
+            <div class="dn-ruler-line">
+              ${castle ? `${castle.ruler.name}（${castle.ruler.role}） ${_personalityLabel(castle.ruler.traits)}` : ''}
+            </div>
           </div>
-          <div class="sc-res">盛產：${s.resources.join('、')}</div>
+          <div class="dn-rel-col">
+            <div class="dn-level" style="color:${level.color}">${level.icon} ${level.label}</div>
+            <div class="dn-val" style="color:${level.color}">${relVal}</div>
+          </div>
+          ${!isOwned ? `<button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
+                   ${alreadyCondemned ? 'disabled title="今日已譴責"' : ''}>
+              ${alreadyCondemned ? '✓ 已譴責' : '📢 譴責'}
+            </button>` : ''}
+        </div>
+        <div class="dn-bar-wrap">
+          <div class="dn-bar" style="width:${(val + 100) / 2}%;background:${level.color}"></div>
+        </div>`;
+
+      // Settlement rows
+      const castleRow = castle ? `
+        <div class="dn-settlement-row" data-ns-type="castle" data-ns-idx="${id}" role="button" tabindex="0">
+          <span class="dn-s-icon">🏰</span>
+          <span class="dn-s-name">${castle.name}</span>
+          <span class="dn-s-pop">👥 ${castle.population.toLocaleString()}</span>
+          <span class="dn-s-eco">${'⭐'.repeat(castle.economyLevel)}</span>
+          <span class="dn-s-res">${castle.resources.join('、')}</span>
+          <span class="dn-s-arrow">›</span>
+        </div>` : '';
+
+      const villageRows = villages.map(({ s, idx }) => `
+        <div class="dn-settlement-row" data-ns-type="village" data-ns-idx="${idx}" role="button" tabindex="0">
+          <span class="dn-s-icon">🏘️</span>
+          <span class="dn-s-name">${s.name}</span>
+          <span class="dn-s-pop">👥 ${s.population.toLocaleString()}</span>
+          <span class="dn-s-eco">${'⭐'.repeat(s.economyLevel)}</span>
+          <span class="dn-s-res">${s.resources.join('、')}</span>
+          <span class="dn-s-arrow">›</span>
+        </div>`).join('');
+
+      return `
+        <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44">
+          ${headerHTML}
+          <div class="dn-settlements">${castleRow}${villageRows}</div>
         </div>`;
     }).join('');
 
-    content.innerHTML = subTabsHTML + (
-      settlements.length === 0
-        ? '<p class="ui-empty">此類型暫無聚落</p>'
-        : `<div class="settlement-list">${cardsHTML}</div>`
-    );
+    el.innerHTML = `
+      <div class="dipl-intro">各國外交關係受距離、資源競爭及統治者性格影響。<br>
+        <span style="color:#ef6c00">傲慢</span>、<span style="color:#e53935">好戰</span>的統治者可能自發惡化關係；
+        <span style="color:#66bb6a">溫和</span>的統治者會主動釋出善意。</div>
+      <div class="dipl-nation-list">${nationCardsHTML}</div>`;
 
-    content.querySelectorAll('.ns-cat-btn').forEach(btn => {
+    // Condemn buttons
+    el.querySelectorAll('.dipl-condemn-btn:not([disabled])').forEach(btn => {
       btn.addEventListener('click', () => {
-        this._nationsTab = btn.dataset.nsTab;
-        this._renderNations();
+        const nationId = Number(btn.dataset.nationId);
+        const result = this.diplomacySystem.condemn(nationId);
+        if (result.success) {
+          const nation = this.nationSystem.nations[nationId];
+          this._toast(`📢 你公開譴責了 ${nation.name}，關係惡化 ${result.delta}。`);
+          this._renderDiplomacy();
+        } else {
+          this._toast('今日已對此國發出譴責，明日再試。');
+        }
       });
     });
 
-    content.querySelectorAll('.settlement-card[data-ns-idx]').forEach(card => {
+    // Settlement row clicks → open detail overlay
+    el.querySelectorAll('.dn-settlement-row[data-ns-type]').forEach(row => {
       const open = () => {
-        const idx  = Number(card.dataset.nsIdx);
-        const type = card.dataset.nsType;
+        const idx  = Number(row.dataset.nsIdx);
+        const type = row.dataset.nsType;
         const s    = type === 'castle'
           ? this.nationSystem.castleSettlements[idx]
           : this.nationSystem.villageSettlements[idx];
         if (s) this._openSettlementDetail(s);
       };
-      card.addEventListener('click', open);
-      card.addEventListener('keydown', e => {
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
@@ -1041,7 +1109,7 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const isPlayer  = this.isPlayerSettlement(settlement);
+    const isPlayer  = settlement.playerOwned;
     const nation    = isPlayer
       ? this.getPlayerNation()
       : this.nationSystem.getNation(settlement);
@@ -1051,14 +1119,35 @@ export class GameUI {
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
     const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
-    const rulerTraitsHTML = ruler.traits.map(t =>
-      `<span class="trait-tag${t === TRAIT_RULER ? ' trait-ruler' : ''}">${t}</span>`
-    ).join('');
+    // Colour-code personality traits
+    const rulerTraitsHTML = ruler.traits.map(t => {
+      const persColor = PERSONALITY_COLORS[t];
+      const cls = t === TRAIT_RULER
+        ? 'trait-ruler'
+        : persColor ? 'trait-personality' : '';
+      const style = persColor ? ` style="color:${persColor};border-color:${persColor}88"` : '';
+      return `<span class="trait-tag ${cls}"${style}>${t}</span>`;
+    }).join('');
 
     const playerBanner = isPlayer ? `
       <div class="sd-player-banner">
         ${renderFlagHTML(nation.flagApp, 20)} ${nation.name} · 已佔領
       </div>` : '';
+
+    // Diplomacy relation info (only for NPC castle settlements)
+    let diplomacyHTML = '';
+    if (!isPlayer && settlement.type === 'castle' && this.diplomacySystem && this.nationSystem) {
+      const nationId = settlement.nationId;
+      const relVal   = this.diplomacySystem.getPlayerRelation(nationId);
+      const relLevel = this.diplomacySystem.getRelationLevel(relVal);
+      diplomacyHTML = `
+        <div class="sd-row sd-diplomacy-row">
+          <span class="sd-label">外交關係</span>
+          <span class="sd-value" style="color:${relLevel.color}">
+            ${relLevel.icon} ${relLevel.label}（${relVal > 0 ? '+' : ''}${relVal}）
+          </span>
+        </div>`;
+    }
 
     document.getElementById('ui-settlement-detail-icon').innerHTML = flagHTML;
     document.getElementById('ui-settlement-detail-name').textContent = settlement.name;
@@ -1083,6 +1172,7 @@ export class GameUI {
         <span class="sd-label">盛產資源</span>
         <span class="sd-value">${settlement.resources.join('、')}</span>
       </div>
+      ${diplomacyHTML}
       <div class="sd-ruler-section">
         <div class="sd-ruler-title">👑 統治者</div>
         <div class="sd-ruler-card">
@@ -1263,10 +1353,8 @@ export class GameUI {
   }
 
   /**
-   * Called once per in-game day to consume food for all active members
-   * and to recover HP for wounded soldiers.
-   * Each active member consumes 1 food unit per day.
-   * Every unit recovers 10 % of their maxHp per day (minimum 1).
+   * Called once per in-game day to consume food for all active members,
+   * recover HP for wounded soldiers, and process NPC diplomacy events.
    */
   onDayPassed() {
     const squads = this.army.getSquads();
@@ -1289,7 +1377,6 @@ export class GameUI {
     }
 
     // Daily HP recovery for all wounded units.
-    // Each unit recovers 10% of their maxHp per day (minimum 1).
     let recoveredCount = 0;
     squads.forEach(sq => {
       sq.members.forEach(m => {
@@ -1297,7 +1384,6 @@ export class GameUI {
           const wasDown = m.stats.hp <= 0;
           const recovery = _dailyHpRecovery(m.stats.maxHp);
           m.stats.hp = Math.min(m.stats.maxHp, m.stats.hp + recovery);
-          // Re-enable unit once it has recovered from incapacitation.
           if (wasDown && m.stats.hp > 0) {
             recoveredCount++;
           }
@@ -1307,6 +1393,16 @@ export class GameUI {
 
     if (recoveredCount > 0) {
       this._toast(`💊 ${recoveredCount} 名士兵已從重傷中恢復，可重新參戰！`);
+    }
+
+    // Diplomacy: NPC daily events (arrogant rulers condemn, gentle rulers show goodwill, etc.)
+    if (this.diplomacySystem) {
+      const events = this.diplomacySystem.onDayPassed();
+      if (events.length > 0) {
+        // Show one random event to avoid toast spam
+        const ev = events[Math.floor(Math.random() * events.length)];
+        this._toast(ev.message);
+      }
     }
 
     if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
@@ -1613,7 +1709,7 @@ export class GameUI {
       if (attackBtn) {
         const s = this._nearbySettlement;
         const isAttackable = (s.type === 'castle' || s.type === 'village')
-          && !this.isPlayerSettlement(s);
+          && !s.playerOwned;
         attackBtn.classList.toggle('visible', isAttackable);
       }
     }
@@ -1660,7 +1756,7 @@ export class GameUI {
 
     let subtitle = '';
     if (s.type === 'castle' && this.nationSystem) {
-      const nation = this.isPlayerSettlement(s)
+      const nation = s.playerOwned
         ? this.getPlayerNation()
         : this.nationSystem.getNation(s);
       subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
@@ -1669,7 +1765,7 @@ export class GameUI {
     } else if (s.type === 'port') {
       subtitle = '沿岸港口';
     }
-    document.getElementById('location-subtitle').textContent = subtitle;
+    document.getElementById('location-subtitle').innerHTML = subtitle;
 
     if (this._locationStage === 'gate') {
       this._renderLocationGate(s);
@@ -1682,7 +1778,7 @@ export class GameUI {
   _renderLocationGate(settlement) {
     let nation = null;
     if (this.nationSystem) {
-      nation = this.isPlayerSettlement(settlement)
+      nation = settlement.playerOwned
         ? this.getPlayerNation()
         : this.nationSystem.getNation(settlement);
     }
@@ -2184,7 +2280,28 @@ export class GameUI {
     if (Array.isArray(state.capturedSettlements)) {
       this._capturedSettlements = new Set(state.capturedSettlements);
       this._playerSettlementCount = this._capturedSettlements.size;
+      // Apply playerOwned flag to Settlement objects so StructureRenderer
+      // and all UI code can read ownership directly from the settlement.
+      this._syncSettlementOwnership();
     }
+  }
+
+  /**
+   * Iterate `_capturedSettlements` and set `playerOwned = true` on the
+   * matching Settlement objects in NationSystem.
+   * Also clears `playerOwned` on settlements not in the set.
+   * Safe to call multiple times (idempotent).
+   */
+  _syncSettlementOwnership() {
+    if (!this.nationSystem) return;
+    const allSettlements = [
+      ...this.nationSystem.castleSettlements,
+      ...this.nationSystem.villageSettlements,
+    ];
+    allSettlements.forEach(s => {
+      const key = this._settlementKey(s);
+      s.playerOwned = key !== '' && this._capturedSettlements.has(key);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -2207,16 +2324,17 @@ export class GameUI {
 
   /**
    * Returns true when the player currently controls the given settlement.
+   * Reads directly from `settlement.playerOwned` (the authoritative source).
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    * @returns {boolean}
    */
   isPlayerSettlement(settlement) {
-    const key = this._settlementKey(settlement);
-    return key !== '' && this._capturedSettlements.has(key);
+    return settlement?.playerOwned === true;
   }
 
   /**
    * Mark a settlement as captured by the player:
+   * - Sets `settlement.playerOwned = true` on the Settlement object
    * - Records it in `_capturedSettlements`
    * - Updates `_playerSettlementCount`
    * - Awards gold + the settlement's resources as spoils
@@ -2226,6 +2344,7 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
+    settlement.playerOwned = true;
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
 
