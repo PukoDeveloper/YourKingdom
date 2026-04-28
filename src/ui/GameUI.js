@@ -2421,7 +2421,7 @@ export class GameUI {
             ${traitLine ? `<div class="rc-traits">${traitLine}</div>` : ''}
           </div>
           <span class="sir-price">🪙${r.hireCost}</span>
-          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}"${hired ? ' disabled' : ''}>
+          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}"${hired ? ' disabled aria-disabled="true"' : ''}>
             ${hired ? '已招募' : '招募'}
           </button>
         </div>`;
