@@ -179,6 +179,14 @@ export class GameUI {
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
 
+    /**
+     * Per-settlement tavern state.
+     * Key: "${sx}_${sy}" (from _settlementHashCoords).
+     * Value: { lastVisitDay: number, recruitedIndices: number[] }
+     * @type {Map<string, { lastVisitDay: number, recruitedIndices: number[] }>}
+     */
+    this._tavernState = new Map();
+
     /** Callback invoked when the player manually triggers a save. */
     this.onSave = onSave;
 
@@ -2368,7 +2376,17 @@ export class GameUI {
 
     const day = this.diplomacySystem?._currentDay ?? 0;
     const { sx, sy } = this._settlementHashCoords(settlement);
-    const recruits = BuildingSystem.generateRecruits(sx, sy, 0, day);
+    const settlementKey = `${sx}_${sy}`;
+
+    // Retrieve or initialise tavern state; refresh roster if ≥5 days have passed.
+    let tState = this._tavernState.get(settlementKey);
+    if (!tState || day - tState.lastVisitDay >= 5) {
+      tState = { lastVisitDay: day, recruitedIndices: [] };
+      this._tavernState.set(settlementKey, tState);
+    }
+
+    // Always generate the same roster that was present on the last-visit day.
+    const recruits = BuildingSystem.generateRecruits(sx, sy, 0, tState.lastVisitDay);
 
     // Food catalog with prices
     const foodItems = CATALOG_TAVERN_FOOD.map(item => ({
@@ -2394,15 +2412,18 @@ export class GameUI {
       const statLine = Object.entries(r.stats)
         .map(([k, v]) => `${STAT_LABEL[k] ?? k}:${v}`).join(' ');
       const traitLine = r.traits.length ? r.traits.join('・') : '';
+      const hired = tState.recruitedIndices.includes(i);
       return `
-        <div class="recruit-card">
+        <div class="recruit-card${hired ? ' recruited' : ''}">
           <div class="rc-info">
             <div class="rc-name">${r.name} <span class="rc-role">${r.role}</span></div>
             <div class="rc-stats">${statLine}</div>
             ${traitLine ? `<div class="rc-traits">${traitLine}</div>` : ''}
           </div>
           <span class="sir-price">🪙${r.hireCost}</span>
-          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}">招募</button>
+          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}"${hired ? ' disabled' : ''}>
+            ${hired ? '已招募' : '招募'}
+          </button>
         </div>`;
     }).join('');
 
@@ -2448,6 +2469,11 @@ export class GameUI {
         this._toast(`✅ 招募了 ${r.name}（-${cost} 🪙）`);
         this._refreshGoldDisplay();
         this.tryAcquireUnit({ name: r.name, role: r.role, traits: r.traits, stats: r.stats });
+        // Mark recruit as hired and re-render the tavern screen.
+        if (!tState.recruitedIndices.includes(idx)) {
+          tState.recruitedIndices.push(idx);
+        }
+        this._renderTavern(building, settlement);
       });
     });
   }
@@ -2889,19 +2915,20 @@ export class GameUI {
     this._battleState = null;
   }
 
-  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[] }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[], tavernState: object }} serialisable snapshot */
   getState() {
     return {
       inventory:            this.inventory.getState(),
       army:                 this.army.getState(),
       playerKingdom:        { ...this._playerKingdom },
       capturedSettlements:  [...this._capturedSettlements],
+      tavernState:          Object.fromEntries(this._tavernState),
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[] }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[], tavernState?: object }} state
    */
   loadState(state) {
     if (!state) return;
@@ -2914,6 +2941,9 @@ export class GameUI {
       // Apply playerOwned flag to Settlement objects so StructureRenderer
       // and all UI code can read ownership directly from the settlement.
       this._syncSettlementOwnership();
+    }
+    if (state.tavernState && typeof state.tavernState === 'object') {
+      this._tavernState = new Map(Object.entries(state.tavernState));
     }
   }
 
