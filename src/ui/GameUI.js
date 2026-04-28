@@ -91,6 +91,11 @@ export class GameUI {
       description: '短暫提升移動速度' });
     this.inventory.addItem({ name: '偵察鷹',   type: 'utility',   icon: '🦅', quantity: 2,
       description: '派出鷹隼偵察地形' });
+    // Trophies / war spoils
+    this.inventory.addItem({ name: '敵將首級', type: 'trophy', icon: '🏆', quantity: 1,
+      description: '擊倒敵方將領所獲得的戰功證明。' });
+    this.inventory.addItem({ name: '勝利旗幟', type: 'trophy', icon: '🚩', quantity: 1,
+      description: '從攻下的城池上取下的旗幟。' });
 
     // Squad 0 – already has the hero; add three more members
     this.army.acquireUnit({ name: '趙一', role: '劍士',   traits: ['重步兵'],           stats: { attack: 8,  defense: 6  } }, 0);
@@ -294,6 +299,9 @@ export class GameUI {
       { id: 'food',      label: '糧食' },
       { id: 'potion',    label: '藥水' },
       { id: 'utility',   label: '實用' },
+      { id: 'loot',      label: '資源' },
+      { id: 'trophy',    label: '戰利品' },
+      { id: 'other',     label: '其他' },
     ];
   }
   static get _EQUIP_SUBS() {
@@ -312,16 +320,24 @@ export class GameUI {
     return {
       weapon: '武器', helmet: '頭盔', chest: '胸甲', legs: '護腿', boots: '靴子',
       accessory: '飾品', food: '糧食', potion: '藥水', utility: '實用',
-      loot: '資源', consumable: '消耗',
+      loot: '資源', consumable: '消耗', trophy: '戰利品',
     };
+  }
+
+  /** All item types that map to an explicit category (used for 其他 catch-all). */
+  static get _KNOWN_TYPES() {
+    return new Set([
+      ...GameUI._EQUIP_TYPES,
+      'accessory', 'food', 'potion', 'consumable', 'utility', 'loot', 'trophy',
+    ]);
   }
 
   _filterItems(items) {
     const tab = this._backpackTab;
-    const EQUIP = GameUI._EQUIP_TYPES;
     if (tab === 'all')       return items;
-    if (tab === 'equipment') return items.filter(i => i.type === this._equipSubTab);
+    if (tab === 'equipment') return items.filter(i => GameUI._EQUIP_TYPES.includes(i.type) && i.type === this._equipSubTab);
     if (tab === 'potion')    return items.filter(i => i.type === 'potion' || i.type === 'consumable');
+    if (tab === 'other')     return items.filter(i => !GameUI._KNOWN_TYPES.has(i.type));
     return items.filter(i => i.type === tab);
   }
 
@@ -338,6 +354,7 @@ export class GameUI {
       if (id === 'all')       return allItems.length;
       if (id === 'equipment') return allItems.filter(i => EQUIP.includes(i.type)).length;
       if (id === 'potion')    return allItems.filter(i => i.type === 'potion' || i.type === 'consumable').length;
+      if (id === 'other')     return allItems.filter(i => !GameUI._KNOWN_TYPES.has(i.type)).length;
       return allItems.filter(i => i.type === id).length;
     };
 
