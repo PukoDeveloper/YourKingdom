@@ -43,6 +43,12 @@ const RULER_GIVEN    = ['文', '武', '德', '仁', '義', '禮', '智', '信', 
 const CASTLE_TITLES  = ['國王', '女王', '大君', '皇帝', '霸主'];
 const VILLAGE_TITLES = ['村長', '里正', '鄉紳', '族長', '耆老'];
 
+/** Unique directional/geographical suffixes for village names. */
+const VILLAGE_SUFFIXES = [
+  '東村', '西村', '南村', '北村', '上村', '下村', '新村', '舊村',
+  '大村', '小村', '河村', '山村', '林村', '石村', '金村', '銀村',
+];
+
 // ---------------------------------------------------------------------------
 // Internal hash helpers (seed-deterministic, no imports needed)
 // ---------------------------------------------------------------------------
@@ -156,7 +162,7 @@ export class NationSystem {
 
       this.castleSettlements.push(new Settlement({
         type:         'castle',
-        name:         `${this.nations[i].name}${this.nations[i].emblem}`,
+        name:         this.nations[i].name,
         nationId:     i,
         population:   pop,
         economyLevel: eco,
@@ -190,10 +196,11 @@ export class NationSystem {
       const nationName = nationId >= 0
         ? this.nations[nationId].name
         : '中立';
+      const villageSuffix = _pick(VILLAGE_SUFFIXES, h(11));
 
       this.villageSettlements.push(new Settlement({
         type:         'village',
-        name:         `${nationName}村落`,
+        name:         `${nationName}${villageSuffix}`,
         nationId,
         population:   pop,
         economyLevel: eco,
