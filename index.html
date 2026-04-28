@@ -119,6 +119,14 @@
         border-radius: 3px;
         transition: width 0.3s ease;
       }
+      .loading-status {
+        margin-top: 12px;
+        color: rgba(255,255,255,0.45);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        letter-spacing: 1px;
+        min-height: 1.4em;
+      }
 
       /* Mobile control hint */
       #hint {
@@ -494,6 +502,7 @@
       <div class="loading-bar-wrap">
         <div class="loading-bar" id="loading-bar"></div>
       </div>
+      <div class="loading-status" id="loading-status">初始化...</div>
     </div>
 
     <div id="game-container"></div>

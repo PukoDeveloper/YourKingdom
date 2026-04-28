@@ -49,24 +49,35 @@ export class Game {
     // -----------------------------------------------------------------------
 
     this._reportLoading(5);
+    this._setLoadingStatus('初始化引擎...');
+    await this._yieldFrame();
 
-    this._mapData = new MapData(/* seed= */ 42);
+    const seed = Math.floor(Math.random() * 0xFFFFFF); // 24-bit seed range: 0 – 16 777 215
+    this._setLoadingStatus('生成世界地圖...');
+    await this._yieldFrame();
+    this._mapData = new MapData(seed);
     this._reportLoading(15);
+    await this._yieldFrame();
 
     // Terrain chunks
+    this._setLoadingStatus('繪製地形...');
     this._mapRenderer = new MapRenderer(this.app, this._mapData, (done, total) => {
       this._reportLoading(15 + Math.floor((done / total) * 70));
     });
-    this._mapRenderer.build();
+    await this._mapRenderer.build();
     this._world.addChild(this._mapRenderer.container);
     this._reportLoading(85);
+    await this._yieldFrame();
 
     // Castle structures (drawn on top of terrain)
+    this._setLoadingStatus('建造城池與村落...');
     this._structureRenderer = new StructureRenderer(this._mapData);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
+    await this._yieldFrame();
 
     // Player
+    this._setLoadingStatus('召喚玩家...');
     const { tileX, tileY } = this._mapData.findStartTile();
     const startX = (tileX + 0.5) * TILE_SIZE;
     const startY = (tileY + 0.5) * TILE_SIZE;
@@ -99,6 +110,7 @@ export class Game {
     // -----------------------------------------------------------------------
     // Day / Night cycle & Weather
     // -----------------------------------------------------------------------
+    this._setLoadingStatus('準備天氣系統...');
     this._dayNight = new DayNightCycle();
     this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
     this._ui.addChild(this._weather.container);
@@ -127,6 +139,8 @@ export class Game {
 
     // Hide loading screen
     this._reportLoading(100);
+    this._setLoadingStatus('進入王國...');
+    await this._yieldFrame();
     this._hideLoading();
   }
 
@@ -178,6 +192,16 @@ export class Game {
   _reportLoading(percent) {
     const bar = document.getElementById('loading-bar');
     if (bar) bar.style.width = `${percent}%`;
+  }
+
+  _setLoadingStatus(text) {
+    const el = document.getElementById('loading-status');
+    if (el) el.textContent = text;
+  }
+
+  /** Yields control back to the browser for one animation frame so the UI can repaint. */
+  _yieldFrame() {
+    return new Promise(resolve => requestAnimationFrame(resolve));
   }
 
   _hideLoading() {
