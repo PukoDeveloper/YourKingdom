@@ -2,27 +2,55 @@ import { Container, Graphics } from 'pixi.js';
 import { TILE_SIZE } from './constants.js';
 import { drawCastleBuilding, drawVillageBuilding, drawPortBuilding } from './TileDrawer.js';
 
+/** Convert a CSS hex colour string (e.g. '#C62828') to a numeric value. */
+function _hexToNum(color) {
+  if (typeof color === 'string' && color.startsWith('#')) {
+    const n = parseInt(color.slice(1), 16);
+    if (!isNaN(n)) return n;
+  }
+  return null;
+}
+
 /**
  * Draws large structures (castles, villages, ports) on top of the terrain layer.
  */
 export class StructureRenderer {
   /**
    * @param {import('./MapData.js').MapData} mapData
+   * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
    */
-  constructor(mapData) {
+  constructor(mapData, nationSystem = null) {
     this.container = new Container();
-    this._build(mapData);
+    this._build(mapData, nationSystem);
   }
 
-  _build(mapData) {
+  _build(mapData, nationSystem) {
     const g = new Graphics();
 
-    for (const { x, y } of mapData.castles) {
-      drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
+    for (let i = 0; i < mapData.castles.length; i++) {
+      const { x, y } = mapData.castles[i];
+      let flagColor = 0xE53935;
+      if (nationSystem) {
+        const settlement = nationSystem.castleSettlements[i];
+        if (settlement) {
+          const parsed = _hexToNum(nationSystem.getNation(settlement).color);
+          if (parsed !== null) flagColor = parsed;
+        }
+      }
+      drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
     }
 
-    for (const { x, y } of mapData.villages) {
-      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
+    for (let i = 0; i < mapData.villages.length; i++) {
+      const { x, y } = mapData.villages[i];
+      let flagColor = 0xBF360C;
+      if (nationSystem) {
+        const settlement = nationSystem.villageSettlements[i];
+        if (settlement) {
+          const parsed = _hexToNum(nationSystem.getNation(settlement).color);
+          if (parsed !== null) flagColor = parsed;
+        }
+      }
+      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
     }
 
     for (const { x, y } of mapData.ports) {

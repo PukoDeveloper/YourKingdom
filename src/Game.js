@@ -83,7 +83,7 @@ export class Game {
 
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
-    this._structureRenderer = new StructureRenderer(this._mapData);
+    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
     await this._yieldFrame();
@@ -151,6 +151,7 @@ export class Game {
       savedState ?? null,
       () => this.save(),
       this._nationSystem,
+      () => this._resetGame(),
     );
 
     // -----------------------------------------------------------------------
@@ -246,6 +247,12 @@ export class Game {
     });
 
     window.addEventListener('beforeunload', () => this.save());
+  }
+
+  /** Clear save data and reload for a fresh start. */
+  _resetGame() {
+    SaveManager.clear();
+    window.location.reload();
   }
 
   // ---------------------------------------------------------------------------

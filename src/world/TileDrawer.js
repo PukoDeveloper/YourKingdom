@@ -108,8 +108,9 @@ export function drawTile(g, localX, localY, terrain) {
 /**
  * Draw a detailed castle building at world-pixel position (px, py).
  * The building occupies 4×4 tiles = (4 * TILE_SIZE)² pixels.
+ * @param {number} [flagColor=0xE53935] Nation banner colour (hex number).
  */
-export function drawCastleBuilding(g, px, py) {
+export function drawCastleBuilding(g, px, py, flagColor = 0xE53935) {
   const S = T * 4; // 192
 
   // --- Outer defensive ground ---
@@ -174,13 +175,13 @@ export function drawCastleBuilding(g, px, py) {
   }
   g.rect(px + 84, py + S - 14, 24, 3).fill(0x37474F); // horizontal bar
 
-  // --- Flagpole + banner on keep ---
+  // --- Flagpole + banner on keep (nation colour) ---
   g.rect(px + 94, py + 54, 4, 22).fill(0x8D6E63);
   g.poly([
     px + 98, py + 54,
     px + 118, py + 62,
     px + 98, py + 70,
-  ]).fill(0xE53935);
+  ]).fill(flagColor);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,8 +191,9 @@ export function drawCastleBuilding(g, px, py) {
 /**
  * Draw a village cluster at world-pixel position (px, py).
  * The village occupies 2×2 tiles = (2 * TILE_SIZE)² pixels.
+ * @param {number} [flagColor=0xBF360C] Nation banner colour (hex number).
  */
-export function drawVillageBuilding(g, px, py) {
+export function drawVillageBuilding(g, px, py, flagColor = 0xBF360C) {
   const S = T * 2; // 96
 
   // --- Ground base ---
@@ -223,6 +225,14 @@ export function drawVillageBuilding(g, px, py) {
     g.rect(px + 35, py + 36 + i * 6, 6, 3).fill(0x8B6914);  // left fence
     g.rect(px + 61, py + 36 + i * 6, 6, 3).fill(0x8B6914);  // right fence
   }
+
+  // --- Flagpole on house-2 roof peak (nation colour) ---
+  g.rect(px + 74, py - 8, 3, 16).fill(0x8D6E63); // pole
+  g.poly([
+    px + 77, py - 8,
+    px + 91, py - 1,
+    px + 77, py + 6,
+  ]).fill(flagColor); // triangular banner
 }
 
 // ---------------------------------------------------------------------------
