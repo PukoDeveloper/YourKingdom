@@ -335,7 +335,7 @@ export class GameUI {
   _filterItems(items) {
     const tab = this._backpackTab;
     if (tab === 'all')       return items;
-    if (tab === 'equipment') return items.filter(i => GameUI._EQUIP_TYPES.includes(i.type) && i.type === this._equipSubTab);
+    if (tab === 'equipment') return items.filter(i => i.type === this._equipSubTab);
     if (tab === 'potion')    return items.filter(i => i.type === 'potion' || i.type === 'consumable');
     if (tab === 'other')     return items.filter(i => !GameUI._KNOWN_TYPES.has(i.type));
     return items.filter(i => i.type === tab);
