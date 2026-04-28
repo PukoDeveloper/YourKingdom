@@ -196,6 +196,16 @@ export class GameUI {
      */
     this._satisfactionMap = new Map();
 
+    /**
+     * Inbox message log.  Each entry: { icon: string, text: string, day: number, read: boolean }
+     * Capped at MAX_INBOX_MESSAGES.  Persisted in save state.
+     * @type {{ icon: string, text: string, day: number, read: boolean }[]}
+     */
+    this._inbox = [];
+
+    /** Number of unread inbox messages. */
+    this._inboxUnread = 0;
+
     /** Callback invoked when the player manually triggers a save. */
     this.onSave = onSave;
 
@@ -307,6 +317,7 @@ export class GameUI {
       <button id="btn-team"       class="ui-tab-btn" title="隊伍">⚔️</button>
       <button id="btn-nations"    class="ui-tab-btn" title="王國">🏰</button>
       <button id="btn-appearance" class="ui-tab-btn" title="外觀">🎨</button>
+      <button id="btn-inbox"      class="ui-tab-btn inbox-tab-btn" title="信件夾">📬<span id="inbox-badge" class="inbox-badge" style="display:none">0</span></button>
       <button id="btn-save"       class="ui-tab-btn" title="儲存">💾</button>
       <button id="btn-settings"   class="ui-tab-btn" title="設定">⚙️</button>
     `;
@@ -400,6 +411,7 @@ export class GameUI {
     document.getElementById('btn-team').addEventListener('click',     () => this._togglePanel('team'));
     document.getElementById('btn-nations').addEventListener('click',  () => this._togglePanel('nations'));
     document.getElementById('btn-appearance').addEventListener('click', () => this._togglePanel('appearance'));
+    document.getElementById('btn-inbox').addEventListener('click',    () => this._togglePanel('inbox'));
     document.getElementById('btn-settings').addEventListener('click', () => this._togglePanel('settings'));
     document.getElementById('ui-panel-close').addEventListener('click', () => this._closePanel());
 
@@ -475,6 +487,7 @@ export class GameUI {
     document.getElementById('btn-team').classList.toggle('active',       type === 'team');
     document.getElementById('btn-nations').classList.toggle('active',    type === 'nations');
     document.getElementById('btn-appearance').classList.toggle('active', type === 'appearance');
+    document.getElementById('btn-inbox').classList.toggle('active',      type === 'inbox');
     document.getElementById('btn-settings').classList.toggle('active',   type === 'settings');
 
     if (type === 'backpack') {
@@ -486,6 +499,9 @@ export class GameUI {
     } else if (type === 'appearance') {
       document.getElementById('ui-panel-title').textContent = '🎨 外觀';
       this._renderAppearance();
+    } else if (type === 'inbox') {
+      document.getElementById('ui-panel-title').textContent = '📬 信件夾';
+      this._renderInbox();
     } else if (type === 'settings') {
       document.getElementById('ui-panel-title').textContent = '⚙️ 設定';
       this._renderSettings();
@@ -502,6 +518,7 @@ export class GameUI {
     document.getElementById('btn-team').classList.remove('active');
     document.getElementById('btn-nations').classList.remove('active');
     document.getElementById('btn-appearance').classList.remove('active');
+    document.getElementById('btn-inbox').classList.remove('active');
     document.getElementById('btn-settings').classList.remove('active');
   }
 
@@ -1241,7 +1258,7 @@ export class GameUI {
         const result = this.diplomacySystem.condemn(nationId);
         if (result.success) {
           const nation = this.nationSystem.nations[nationId];
-          this._toast(`📢 你公開譴責了 ${nation.name}，關係惡化 ${result.delta}。`);
+          this._addInboxMessage('📢', `你公開譴責了 ${nation.name}，關係惡化 ${result.delta}。`);
           this._renderDiplomacy();
         } else {
           this._toast('今日已對此國發出譴責，明日再試。');
@@ -1537,7 +1554,7 @@ export class GameUI {
       }
 
       if (toConsume > 0) {
-        this._toast(`⚠ 糧食不足！缺少 ${toConsume} 份糧食`);
+        this._addInboxMessage('⚠', `糧食不足！缺少 ${toConsume} 份糧食`);
       }
     }
 
@@ -1557,17 +1574,14 @@ export class GameUI {
     });
 
     if (recoveredCount > 0) {
-      this._toast(`💊 ${recoveredCount} 名士兵已從重傷中恢復，可重新參戰！`);
+      this._addInboxMessage('💊', `${recoveredCount} 名士兵已從重傷中恢復，可重新參戰！`);
     }
 
     // Diplomacy: NPC daily events (arrogant rulers condemn, gentle rulers show goodwill, etc.)
     if (this.diplomacySystem) {
       const events = this.diplomacySystem.onDayPassed();
-      if (events.length > 0) {
-        // Show one random event to avoid toast spam
-        const ev = events[Math.floor(Math.random() * events.length)];
-        this._toast(ev.message);
-      }
+      // Add all events to inbox; show one random event as toast.
+      events.forEach(ev => this._addInboxMessage('📜', ev.message));
     }
 
     // Satisfaction drift: each player-owned settlement moves ±2/day toward 0.
@@ -1597,14 +1611,14 @@ export class GameUI {
       const nearbyKey = this._nearbySettlement
         ? this._settlementKey(this._nearbySettlement)
         : null;
-      const nearby = messages.find(m => nearbyKey && m.settlementKey === nearbyKey);
-      if (nearby) {
-        this._toast(`🍺 競爭招募！${nearby.message.replace(/^🍺 /, '')}`);
-      } else if (phase === '白天') {
-        // Show a war event to the player if one occurred.
-        const warMsg = messages.find(m => m.message.includes('進攻'));
-        if (warMsg) this._toast(warMsg.message);
-      }
+      messages.forEach(m => {
+        const isNearbyRecruit = nearbyKey && m.settlementKey === nearbyKey;
+        const icon = isNearbyRecruit ? '🍺' : m.message.startsWith('⚔') ? '⚔' : '📋';
+        const text = isNearbyRecruit
+          ? `競爭招募！${m.message.replace(/^🍺 /, '')}`
+          : m.message.replace(/^[⚔📋🍺] /, '');
+        this._addInboxMessage(icon, text);
+      });
     }
   }
 
@@ -2613,7 +2627,7 @@ export class GameUI {
         const newSat = Math.max(-100, (this._satisfactionMap.get(key) ?? -50) - 10);
         this._satisfactionMap.set(key, newSat);
         this._addGold(taxYield);
-        this._toast(`🏦 已徵收稅款 +${taxYield} 🪙，民心 ${newSat >= 0 ? '+' : ''}${newSat}`);
+        this._addInboxMessage('🏦', `已徵收 ${settlement.name} 稅款 +${taxYield} 🪙，民心 ${newSat >= 0 ? '+' : ''}${newSat}`);
         // Re-render to reflect updated satisfaction
         this._renderGovBuilding(building, settlement);
       });
@@ -2997,6 +3011,14 @@ export class GameUI {
     // Apply diplomacy effects once when the battle concludes
     if (state.finished && !state.diplomacyApplied) {
       state.diplomacyApplied = true;
+      // Log battle outcome to inbox.
+      if (state.result === 'victory') {
+        this._addInboxMessage('🏆', `攻下 ${state.settlement.name}！`);
+      } else if (state.result === 'defeat') {
+        this._addInboxMessage('💀', `進攻 ${state.settlement.name} 失敗，全軍撤退。`);
+      } else {
+        this._addInboxMessage('⚔', `進攻 ${state.settlement.name} 以平局告終。`);
+      }
       this._triggerBattleAttackDiplomacy(state.settlement, state.result === 'victory');
       // Reduce the defeated settlement's garrison to reflect combat losses.
       if ((state.result === 'victory' || state.result === 'draw') && this.diplomacySystem) {
@@ -3045,7 +3067,7 @@ export class GameUI {
         }
       });
       if (woundedCount > 0) {
-        this._toast(`⚠ ${woundedCount} 名士兵受重傷，需要靜養恢復！`);
+        this._addInboxMessage('⚠', `${woundedCount} 名士兵受重傷，需要靜養恢復！`);
       }
     }
 
@@ -3053,7 +3075,7 @@ export class GameUI {
     this._battleState = null;
   }
 
-  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[], tavernState: object, satisfactionMap: object }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[], tavernState: object, satisfactionMap: object, inbox: object[] }} serialisable snapshot */
   getState() {
     return {
       inventory:            this.inventory.getState(),
@@ -3062,12 +3084,13 @@ export class GameUI {
       capturedSettlements:  [...this._capturedSettlements],
       tavernState:          Object.fromEntries(this._tavernState),
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
+      inbox:                [...this._inbox],
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[], tavernState?: object, satisfactionMap?: object }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[], tavernState?: object, satisfactionMap?: object, inbox?: object[] }} state
    */
   loadState(state) {
     if (!state) return;
@@ -3088,6 +3111,10 @@ export class GameUI {
       this._satisfactionMap = new Map(
         Object.entries(state.satisfactionMap).map(([k, v]) => [k, Number(v)]),
       );
+    }
+    if (Array.isArray(state.inbox)) {
+      this._inbox = state.inbox.slice(0, GameUI._MAX_INBOX);
+      this._inboxUnread = this._inbox.filter(m => !m.read).length;
     }
   }
 
@@ -3193,7 +3220,7 @@ export class GameUI {
     if (this.nationSystem && settlement.nationId >= 0) {
       const foundingNation = this.nationSystem.nations[settlement.nationId];
       if (foundingNation && this.nationSystem.isNationExtinct(settlement.nationId)) {
-        this._toast(`🏴 ${foundingNation.name} 失去了所有領地，國家滅亡！`);
+        this._addInboxMessage('🏴', `${foundingNation.name} 失去了所有領地，國家滅亡！`);
       }
     }
   }
@@ -3230,5 +3257,86 @@ export class GameUI {
     el.classList.add('show');
     clearTimeout(this._toastTimer);
     this._toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+  }
+
+  // -------------------------------------------------------------------------
+  // Inbox helpers
+  // -------------------------------------------------------------------------
+
+  /** Maximum number of messages kept in the inbox. */
+  static get _MAX_INBOX() { return 60; }
+
+  /**
+   * Add a message to the inbox AND show a toast.
+   * Automatically trims the log to MAX_INBOX entries (oldest removed first).
+   *
+   * @param {string} icon  Emoji icon for the message category.
+   * @param {string} text  Message body.
+   */
+  _addInboxMessage(icon, text) {
+    const day = this.diplomacySystem?._currentDay ?? 0;
+    this._inbox.unshift({ icon, text, day, read: false });
+    if (this._inbox.length > GameUI._MAX_INBOX) {
+      this._inbox.length = GameUI._MAX_INBOX;
+    }
+    this._inboxUnread = this._inbox.filter(m => !m.read).length;
+    this._updateInboxBadge();
+    this._toast(`${icon} ${text}`);
+    // Refresh inbox panel if open.
+    if (this._activePanel === 'inbox') this._renderInbox();
+  }
+
+  /** Update the numeric badge on the inbox tab button. */
+  _updateInboxBadge() {
+    const badge = document.getElementById('inbox-badge');
+    if (!badge) return;
+    if (this._inboxUnread > 0) {
+      badge.textContent = this._inboxUnread > 99 ? '99+' : String(this._inboxUnread);
+      badge.style.display = 'block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Inbox panel renderer
+  // -------------------------------------------------------------------------
+
+  _renderInbox() {
+    const content = document.getElementById('ui-panel-content');
+    if (!content) return;
+
+    // Mark all visible messages as read.
+    this._inbox.forEach(m => { m.read = true; });
+    this._inboxUnread = 0;
+    this._updateInboxBadge();
+
+    if (this._inbox.length === 0) {
+      content.innerHTML = `<div class="ui-empty">📭 信件夾是空的</div>`;
+      return;
+    }
+
+    const rows = this._inbox.map((m, i) => `
+      <div class="inbox-row${m.read ? '' : ' inbox-unread'}" data-idx="${i}">
+        <span class="inbox-icon">${m.icon}</span>
+        <div class="inbox-body">
+          <div class="inbox-text">${m.text}</div>
+          <div class="inbox-day">第 ${m.day} 天</div>
+        </div>
+      </div>`).join('');
+
+    content.innerHTML = `
+      <div class="inbox-toolbar">
+        <span class="inbox-count">${this._inbox.length} 則訊息</span>
+        <button id="inbox-clear-btn" class="inbox-clear-btn">🗑 清除全部</button>
+      </div>
+      <div class="inbox-list">${rows}</div>`;
+
+    document.getElementById('inbox-clear-btn')?.addEventListener('click', () => {
+      this._inbox.length = 0;
+      this._inboxUnread = 0;
+      this._updateInboxBadge();
+      this._renderInbox();
+    });
   }
 }
