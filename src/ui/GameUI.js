@@ -64,6 +64,15 @@ const _BATTLE_THEMES = {
 };
 
 /**
+ * Amount of HP a unit recovers per in-game day (10% of maxHp, minimum 1).
+ * @param {number} maxHp
+ * @returns {number}
+ */
+function _dailyHpRecovery(maxHp) {
+  return Math.max(1, Math.floor(maxHp * 0.1));
+}
+
+/**
  * GameUI – manages the Backpack and Team DOM panels.
  *
  * Attach it to the game after init:
@@ -1133,7 +1142,7 @@ export class GameUI {
       const totalDefense = activeMembers.reduce((s, m) => s + m.stats.defense, 0);
       const totalMorale  = activeMembers.reduce((s, m) => s + m.stats.morale,  0);
       const avgMorale    = activeMembers.length > 0 ? Math.round(totalMorale / activeMembers.length) : 0;
-      const woundedCount = sq.members.filter(m => m.stats.hp <= 0).length;
+      const woundedCount = sq.members.reduce((n, m) => n + (m.stats.hp <= 0 ? 1 : 0), 0);
       return {
         id:           sq.id,
         totalMembers: sq.members.length,
@@ -1252,7 +1261,7 @@ export class GameUI {
       sq.members.forEach(m => {
         if (m.stats.hp < m.stats.maxHp) {
           const wasDown = m.stats.hp <= 0;
-          const recovery = Math.max(1, Math.floor(m.stats.maxHp * 0.1));
+          const recovery = _dailyHpRecovery(m.stats.maxHp);
           m.stats.hp = Math.min(m.stats.maxHp, m.stats.hp + recovery);
           // Re-enable unit once it has recovered from incapacitation.
           if (wasDown && m.stats.hp > 0) {
@@ -1369,7 +1378,7 @@ export class GameUI {
     const isDown  = unit.stats.hp <= 0;
     const hpColor = isDown ? '#e53935' : hpPct <= 30 ? '#ff8f00' : '#43a047';
     const daysToRecover = isDown || unit.stats.hp < unit.stats.maxHp
-      ? Math.ceil((unit.stats.maxHp - unit.stats.hp) / Math.max(1, Math.floor(unit.stats.maxHp * 0.1)))
+      ? Math.ceil((unit.stats.maxHp - unit.stats.hp) / _dailyHpRecovery(unit.stats.maxHp))
       : 0;
     const hpStatusText = isDown
       ? `重傷（約 ${daysToRecover} 天恢復）`
@@ -2053,9 +2062,7 @@ export class GameUI {
     if (aliveMembers.length > 0) {
       const totalAliveMaxHp = aliveMembers.reduce((sum, m) => sum + m.stats.maxHp, 0);
       aliveMembers.forEach(m => {
-        const share = totalAliveMaxHp > 0
-          ? (m.stats.maxHp / totalAliveMaxHp) * enemyDmg
-          : enemyDmg / aliveMembers.length;
+        const share = (m.stats.maxHp / totalAliveMaxHp) * enemyDmg;
         m.stats.hp = Math.max(0, m.stats.hp - share);
       });
     }
@@ -2188,11 +2195,6 @@ export class GameUI {
         name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: 5,
       });
     });
-
-    // Update kingdom-type gating.
-    if (this._playerSettlementCount === 1) {
-      // First capture – keep current type or upgrade to 王國 if allowed.
-    }
   }
 
   /**
