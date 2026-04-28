@@ -179,6 +179,23 @@ export class GameUI {
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
 
+    /**
+     * Per-settlement tavern state.
+     * Key: "${sx}_${sy}" (from _settlementHashCoords).
+     * Value: { lastVisitDay: number, recruitedIndices: number[] }
+     * @type {Map<string, { lastVisitDay: number, recruitedIndices: number[] }>}
+     */
+    this._tavernState = new Map();
+
+    /**
+     * Per-settlement satisfaction.
+     * Key: settlement key from _settlementKey() (e.g. "castle:0").
+     * Value: number in [-100, 100]. Newly-captured settlements start at -50.
+     * Drifts +2/day toward 0; collecting tax reduces it by 10.
+     * @type {Map<string, number>}
+     */
+    this._satisfactionMap = new Map();
+
     /** Callback invoked when the player manually triggers a save. */
     this.onSave = onSave;
 
@@ -1553,6 +1570,15 @@ export class GameUI {
       }
     }
 
+    // Satisfaction drift: each player-owned settlement moves ±2/day toward 0.
+    for (const [key, sat] of this._satisfactionMap) {
+      if (sat < 0) {
+        this._satisfactionMap.set(key, Math.min(0, sat + 2));
+      } else if (sat > 0) {
+        this._satisfactionMap.set(key, Math.max(0, sat - 2));
+      }
+    }
+
     if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
       this._renderTeamInfo();
     }
@@ -2059,6 +2085,15 @@ export class GameUI {
   }
 
   /**
+   * Add `amount` gold to the player's inventory.
+   * @param {number} amount
+   */
+  _addGold(amount) {
+    if (amount <= 0) return;
+    this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: amount });
+  }
+
+  /**
    * Deduct `amount` gold from the player's inventory.
    * Returns true on success, false if not enough gold.
    * @param {number} amount
@@ -2368,7 +2403,17 @@ export class GameUI {
 
     const day = this.diplomacySystem?._currentDay ?? 0;
     const { sx, sy } = this._settlementHashCoords(settlement);
-    const recruits = BuildingSystem.generateRecruits(sx, sy, 0, day);
+    const settlementKey = `${sx}_${sy}`;
+
+    // Retrieve or initialise tavern state; refresh roster if ≥5 days have passed.
+    let tState = this._tavernState.get(settlementKey);
+    if (!tState || day - tState.lastVisitDay >= 5) {
+      tState = { lastVisitDay: day, recruitedIndices: [] };
+      this._tavernState.set(settlementKey, tState);
+    }
+
+    // Always generate the same roster that was present on the last-visit day.
+    const recruits = BuildingSystem.generateRecruits(sx, sy, 0, tState.lastVisitDay);
 
     // Food catalog with prices
     const foodItems = CATALOG_TAVERN_FOOD.map(item => ({
@@ -2394,15 +2439,18 @@ export class GameUI {
       const statLine = Object.entries(r.stats)
         .map(([k, v]) => `${STAT_LABEL[k] ?? k}:${v}`).join(' ');
       const traitLine = r.traits.length ? r.traits.join('・') : '';
+      const hired = tState.recruitedIndices.includes(i);
       return `
-        <div class="recruit-card">
+        <div class="recruit-card${hired ? ' recruited' : ''}">
           <div class="rc-info">
             <div class="rc-name">${r.name} <span class="rc-role">${r.role}</span></div>
             <div class="rc-stats">${statLine}</div>
             ${traitLine ? `<div class="rc-traits">${traitLine}</div>` : ''}
           </div>
           <span class="sir-price">🪙${r.hireCost}</span>
-          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}">招募</button>
+          <button class="btn-buy tavern-recruit-btn" data-recruit-idx="${i}" data-cost="${r.hireCost}"${hired ? ' disabled aria-disabled="true"' : ''}>
+            ${hired ? '已招募' : '招募'}
+          </button>
         </div>`;
     }).join('');
 
@@ -2448,6 +2496,11 @@ export class GameUI {
         this._toast(`✅ 招募了 ${r.name}（-${cost} 🪙）`);
         this._refreshGoldDisplay();
         this.tryAcquireUnit({ name: r.name, role: r.role, traits: r.traits, stats: r.stats });
+        // Mark recruit as hired and re-render the tavern screen.
+        if (!tState.recruitedIndices.includes(idx)) {
+          tState.recruitedIndices.push(idx);
+        }
+        this._renderTavern(building, settlement);
       });
     });
   }
@@ -2464,8 +2517,48 @@ export class GameUI {
     const content = document.getElementById('location-content');
     if (!content) return;
 
-    const ruler = settlement.ruler;
+    const ruler  = settlement.ruler;
     const traits = ruler?.traits?.filter(t => t !== '統治者') ?? [];
+    const isOwnedByPlayer = this.isPlayerSettlement(settlement);
+
+    // Tax section (player-owned only)
+    const key = this._settlementKey(settlement);
+    const satisfaction = isOwnedByPlayer
+      ? (this._satisfactionMap.get(key) ?? -50)
+      : null;
+
+    // Satisfaction label / colour
+    let satLabel = '', satColor = '#9e9e9e';
+    if (satisfaction !== null) {
+      if (satisfaction >= 0)        { satLabel = '穩定';   satColor = '#66bb6a'; }
+      else if (satisfaction >= -30) { satLabel = '不滿';   satColor = '#ffa726'; }
+      else if (satisfaction >= -60) { satLabel = '憤慨';   satColor = '#ef6c00'; }
+      else                          { satLabel = '激憤';   satColor = '#e53935'; }
+    }
+
+    // Tax yield: economyLevel × 20 + floor(population / 100), then scaled by satisfaction
+    let taxYield = 0;
+    let taxHTML  = '';
+    if (isOwnedByPlayer) {
+      const baseTax  = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
+      // Satisfaction factor: -100 → 10 %, 0 → 100 % (capped at 100 %)
+      const factor   = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
+      taxYield       = Math.max(1, Math.round(baseTax * factor));
+
+      taxHTML = `
+        <div class="gov-tax-section">
+          <div class="gov-tax-title">📋 地區管理</div>
+          <div class="gov-stat-row-small">
+            <span class="gov-stat-label">民心滿意度</span>
+            <span class="gov-sat-val" style="color:${satColor}">${satLabel}（${satisfaction >= 0 ? '+' : ''}${satisfaction}）</span>
+          </div>
+          <div class="gov-stat-row-small">
+            <span class="gov-stat-label">預期稅收</span>
+            <span class="gov-stat-val">🪙${taxYield}</span>
+          </div>
+          <button class="btn-buy gov-tax-btn" id="btn-collect-tax">🏦 徵收稅款</button>
+        </div>`;
+    }
 
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
@@ -2483,12 +2576,24 @@ export class GameUI {
         <div class="gov-stat"><span class="gov-stat-label">經濟</span><span class="gov-stat-val">${'⭐'.repeat(settlement.economyLevel ?? 1)}</span></div>
         <div class="gov-stat"><span class="gov-stat-label">資源</span><span class="gov-stat-val">${(settlement.resources ?? []).join('、') || '無'}</span></div>
       </div>
+      ${taxHTML}
       <div class="gov-ruler-speech">
         <em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em>
       </div>
     `;
 
     this._attachFacilityBack(settlement);
+
+    if (isOwnedByPlayer) {
+      document.getElementById('btn-collect-tax')?.addEventListener('click', () => {
+        const newSat = Math.max(-100, (this._satisfactionMap.get(key) ?? -50) - 10);
+        this._satisfactionMap.set(key, newSat);
+        this._addGold(taxYield);
+        this._toast(`🏦 已徵收稅款 +${taxYield} 🪙，民心 ${newSat >= 0 ? '+' : ''}${newSat}`);
+        // Re-render to reflect updated satisfaction
+        this._renderGovBuilding(building, settlement);
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -2889,19 +2994,21 @@ export class GameUI {
     this._battleState = null;
   }
 
-  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[] }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[], tavernState: object, satisfactionMap: object }} serialisable snapshot */
   getState() {
     return {
       inventory:            this.inventory.getState(),
       army:                 this.army.getState(),
       playerKingdom:        { ...this._playerKingdom },
       capturedSettlements:  [...this._capturedSettlements],
+      tavernState:          Object.fromEntries(this._tavernState),
+      satisfactionMap:      Object.fromEntries(this._satisfactionMap),
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[] }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[], tavernState?: object, satisfactionMap?: object }} state
    */
   loadState(state) {
     if (!state) return;
@@ -2914,6 +3021,14 @@ export class GameUI {
       // Apply playerOwned flag to Settlement objects so StructureRenderer
       // and all UI code can read ownership directly from the settlement.
       this._syncSettlementOwnership();
+    }
+    if (state.tavernState && typeof state.tavernState === 'object') {
+      this._tavernState = new Map(Object.entries(state.tavernState));
+    }
+    if (state.satisfactionMap && typeof state.satisfactionMap === 'object') {
+      this._satisfactionMap = new Map(
+        Object.entries(state.satisfactionMap).map(([k, v]) => [k, Number(v)]),
+      );
     }
   }
 
@@ -2988,6 +3103,9 @@ export class GameUI {
     this._setSettlementOwnership(settlement, true);
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
+
+    // Initialise satisfaction at -50 for newly-conquered settlements.
+    this._satisfactionMap.set(key, -50);
 
     // Notify the game so it can update map visuals.
     if (typeof this.onCaptureSettlement === 'function') {
