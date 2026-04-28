@@ -1608,11 +1608,13 @@ export class GameUI {
       const enterBtn = document.getElementById('enter-facility-btn');
       if (enterBtn) enterBtn.textContent = `🚪 進入 ${name}`;
 
-      // Show attack button only for castle/village settlements (not port)
+      // Show attack button only for castle/village settlements that the player does NOT own
       const attackBtn = document.getElementById('attack-facility-btn');
       if (attackBtn) {
         const s = this._nearbySettlement;
-        attackBtn.classList.toggle('visible', s.type === 'castle' || s.type === 'village');
+        const isAttackable = (s.type === 'castle' || s.type === 'village')
+          && !this.isPlayerSettlement(s);
+        attackBtn.classList.toggle('visible', isAttackable);
       }
     }
 
@@ -1686,14 +1688,22 @@ export class GameUI {
     }
     const nationName = nation ? nation.name : settlement.name;
 
+    const isPlayerOwned = this.isPlayerSettlement(settlement);
+    const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : '🛡️⚔️🛡️';
+    const gateMsg = isPlayerOwned
+      ? `兩名身著你方盔甲的士兵立正行禮。<br>
+           「<em>主公歸來，城門大開！</em>」<br>
+           「<em>請入內視察 ${nationName}。</em>」`
+      : `兩名身著銀甲的守衛持槍攔下了你。<br>
+           「<em>停！這裡是 ${nationName} 的城門。</em>」<br>
+           「<em>說明來意，方可入城。</em>」`;
+
     const content = document.getElementById('location-content');
     content.innerHTML = `
       <div class="loc-gate-scene">
-        <div class="loc-gate-art">🛡️⚔️🛡️</div>
+        <div class="loc-gate-art">${gateArt}</div>
         <div class="loc-gate-msg">
-          兩名身著銀甲的守衛持槍攔下了你。<br>
-          「<em>停！這裡是 ${nationName} 的城門。</em>」<br>
-          「<em>說明來意，方可入城。</em>」
+          ${gateMsg}
         </div>
         <div class="loc-gate-actions">
           <button class="btn-loc-enter" id="btn-city-enter">進城 →</button>
