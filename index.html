@@ -1495,6 +1495,103 @@
       }
 
       /* =====================================================================
+         Diplomacy panel
+         ===================================================================== */
+      .dipl-intro {
+        font-size: 12px;
+        color: rgba(255,255,255,0.5);
+        line-height: 1.6;
+        padding: 8px 4px 12px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        margin-bottom: 8px;
+      }
+      .dipl-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .dipl-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255,255,255,0.05);
+        border-radius: 10px;
+        padding: 10px 12px;
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+      .dipl-flag { flex-shrink: 0; display: flex; align-items: center; }
+      .dipl-info { flex: 1; min-width: 0; }
+      .dipl-name {
+        font-size: 13px;
+        color: #eee;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 4px;
+      }
+      .dipl-personality {
+        font-size: 11px;
+        font-weight: 400;
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(255,255,255,0.07);
+        border: 1px solid currentColor;
+        opacity: 0.9;
+      }
+      .dipl-bar-wrap {
+        height: 6px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 3px;
+        overflow: hidden;
+        margin-top: 2px;
+      }
+      .dipl-bar {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.3s;
+        min-width: 2px;
+      }
+      .dipl-level {
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .dipl-val {
+        font-size: 13px;
+        font-weight: 700;
+        min-width: 32px;
+        text-align: right;
+        flex-shrink: 0;
+      }
+      .dipl-condemn-btn {
+        flex-shrink: 0;
+        padding: 5px 9px;
+        border-radius: 7px;
+        border: 1px solid rgba(239,108,0,0.5);
+        background: rgba(239,108,0,0.12);
+        color: #ef6c00;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        cursor: pointer;
+        touch-action: manipulation;
+        white-space: nowrap;
+        transition: background 0.15s;
+      }
+      .dipl-condemn-btn:hover:not([disabled]) {
+        background: rgba(239,108,0,0.22);
+      }
+      .dipl-condemn-btn.used, .dipl-condemn-btn[disabled] {
+        border-color: rgba(255,255,255,0.15);
+        background: rgba(255,255,255,0.05);
+        color: rgba(255,255,255,0.3);
+        cursor: default;
+      }
+      .sd-diplomacy-row { margin-top: 4px; }
+
+      /* =====================================================================
          Settings panel
          ===================================================================== */
       .settings-section {

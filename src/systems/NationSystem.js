@@ -100,6 +100,11 @@ export class Settlement {
     this.resources = resources;
     /** The ruling Unit – same class as army members, but with TRAIT_RULER. */
     this.ruler = ruler;
+    /**
+     * True when the player has captured this settlement.
+     * Mutable at runtime; persisted via the captured-settlements save key.
+     */
+    this.playerOwned = false;
   }
 }
 
@@ -150,12 +155,13 @@ export class NationSystem {
       const resources  = resA !== resB ? [resA, resB] : [resA];
       const rulerName  = _pick(RULER_SURNAMES, h(5)) + _pick(RULER_GIVEN, h(6));
       const rulerRole  = _pick(CASTLE_TITLES, h(7));
+      const personality = _pick(ALL_PERSONALITIES, h(12));
 
       const ruler = new Unit({
         id:     -(i + 1),       // negative IDs mark NPC rulers
         name:   rulerName,
         role:   rulerRole,
-        traits: [TRAIT_RULER],
+        traits: [TRAIT_RULER, personality],
         stats: {
           attack:  Math.floor(8  + h(8)  * 12),
           defense: Math.floor(8  + h(9)  * 12),

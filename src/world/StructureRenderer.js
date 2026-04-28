@@ -18,24 +18,28 @@ export class StructureRenderer {
   /**
    * @param {import('./MapData.js').MapData} mapData
    * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
-   * @param {((settlement: import('../systems/NationSystem.js').Settlement) => { color: string, flagApp: object|null })|null} [getEffectiveNation]
-   *   Optional override: given a settlement, returns the nation info to use for rendering.
-   *   If omitted, `nationSystem.getNation` is used directly.
+   * @param {(() => { color: string, flagApp: object|null })|null} [getPlayerNation]
+   *   Returns the player's kingdom info (color + flagApp) used when a settlement
+   *   is player-owned.  If omitted the NPC nation is always used.
    */
-  constructor(mapData, nationSystem = null, getEffectiveNation = null) {
-    this._mapData          = mapData;
-    this._nationSystem     = nationSystem;
-    this._getEffectiveNation = getEffectiveNation;
+  constructor(mapData, nationSystem = null, getPlayerNation = null) {
+    this._mapData        = mapData;
+    this._nationSystem   = nationSystem;
+    this._getPlayerNation = getPlayerNation;
     this.container = new Container();
     this._build();
   }
 
   _build() {
     const { _mapData: mapData, _nationSystem: nationSystem } = this;
-    const _nation = (settlement) =>
-      this._getEffectiveNation
-        ? this._getEffectiveNation(settlement)
-        : nationSystem.getNation(settlement);
+
+    /** Return the nation info to use for rendering a settlement. */
+    const _nation = (settlement) => {
+      if (settlement?.playerOwned && this._getPlayerNation) {
+        return this._getPlayerNation();
+      }
+      return nationSystem ? nationSystem.getNation(settlement) : { color: '#9E9E9E', flagApp: null };
+    };
 
     const g = new Graphics();
 

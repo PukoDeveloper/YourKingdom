@@ -11,7 +11,8 @@ import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
 import { GameUI }           from './ui/GameUI.js';
 import { SaveManager }      from './systems/SaveManager.js';
-import { NationSystem }    from './systems/NationSystem.js';
+import { NationSystem }     from './systems/NationSystem.js';
+import { DiplomacySystem }  from './systems/DiplomacySystem.js';
 
 /** Auto-save interval in milliseconds. */
 const AUTO_SAVE_INTERVAL_MS = 60_000;
@@ -71,6 +72,12 @@ export class Game {
     // Nation system (deterministic from seed – no separate save state needed)
     this._nationSystem = new NationSystem(this._mapData);
 
+    // Diplomacy system (initial relations derived from NationSystem; player deltas persisted)
+    this._diplomacySystem = new DiplomacySystem(this._nationSystem, this._mapData);
+    if (savedState?.diplomacy) {
+      this._diplomacySystem.loadState(savedState.diplomacy);
+    }
+
     // Terrain chunks
     this._setLoadingStatus('繪製地形...');
     this._mapRenderer = new MapRenderer(this.app, this._mapData, (done, total) => {
@@ -83,15 +90,9 @@ export class Game {
 
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
-    // getEffectiveNation is evaluated lazily (only during build/rebuild),
-    // so _gameUI will already exist by the time rebuilds are triggered.
-    const getEffectiveNation = (settlement) => {
-      if (this._gameUI?.isPlayerSettlement(settlement)) {
-        return this._gameUI.getPlayerNation();
-      }
-      return this._nationSystem.getNation(settlement);
-    };
-    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getEffectiveNation);
+    // getPlayerNation is evaluated lazily so _gameUI exists by the time it is called.
+    const getPlayerNation = () => this._gameUI?.getPlayerNation() ?? { color: '#e2c97e', flagApp: null };
+    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getPlayerNation);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
     await this._yieldFrame();
@@ -163,6 +164,7 @@ export class Game {
       this._nationSystem,
       () => this._resetGame(),
       this._player,
+      this._diplomacySystem,
     );
 
     // Rebuild structures now that GameUI is ready (restores player flags from save).
@@ -233,8 +235,7 @@ export class Game {
       const tileY = Math.floor(this._player.y / TILE_SIZE);
       const hit = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
       if (hit) {
-        const isPlayer = this._gameUI.isPlayerSettlement(hit.settlement);
-        if (isPlayer) {
+        if (hit.settlement.playerOwned) {
           const pk = this._gameUI.getPlayerNation();
           label = `🏴 ${pk.name} · ${hit.settlement.name}`;
         } else {
@@ -273,6 +274,7 @@ export class Game {
       player:           { x: this._player.x, y: this._player.y },
       playerAppearance: this._player.getAppearanceState(),
       dayTime:          this._dayNight.time,
+      diplomacy:        this._diplomacySystem.getState(),
       ...this._gameUI.getState(),
     });
     this._gameUI.showToast(ok ? '遊戲已儲存 💾' : '儲存失敗 ✗');
