@@ -63,7 +63,8 @@ export class Inventory {
    */
   useItem(id) {
     const item = this._items.find(i => i.id === id);
-    if (!item || item.type !== 'consumable') return null;
+    const usable = ['consumable', 'potion', 'utility'];
+    if (!item || !usable.includes(item.type)) return null;
     const desc = item.description;
     this.removeItem(id, 1);
     return desc;
