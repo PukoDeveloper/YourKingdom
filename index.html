@@ -775,11 +775,43 @@
         border-color: rgba(56,142,60,0.4);
         color: #a5d6a7;
       }
+      .ucc-status.wounded {
+        background: rgba(183,28,28,0.18);
+        border-color: rgba(229,57,53,0.4);
+        color: #ef9a9a;
+      }
       .ucc-arrow {
         color: rgba(255,255,255,0.3);
         font-size: 18px;
         flex-shrink: 0;
         line-height: 1;
+      }
+      /* Info column inside compact unit card (wraps name row + HP bar) */
+      .ucc-info {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
+        gap: 4px;
+      }
+      .ucc-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+      }
+      .ucc-top .ucc-name { flex: 1; }
+      /* Tiny HP bar strip at the bottom of each unit card */
+      .ucc-hp-bar-wrap {
+        height: 3px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .ucc-hp-bar {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.3s ease;
       }
 
       /* =====================================================================
@@ -915,6 +947,46 @@
       .unit-no-traits {
         color: rgba(255,255,255,0.3);
         font-size: 12px;
+      }
+      /* HP bar inside unit detail overlay */
+      .ud-hp-section {
+        margin-bottom: 14px;
+      }
+      .ud-hp-label-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 5px;
+      }
+      .ud-hp-label {
+        color: rgba(255,255,255,0.45);
+        font-size: 12px;
+        min-width: 40px;
+        flex-shrink: 0;
+      }
+      .ud-hp-nums {
+        color: #eee;
+        font-size: 13px;
+      }
+      .ud-hp-status {
+        font-size: 11px;
+        margin-left: auto;
+      }
+      .ud-hp-bar-wrap {
+        height: 7px;
+        background: rgba(255,255,255,0.1);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .ud-hp-bar {
+        height: 100%;
+        border-radius: 4px;
+        transition: width 0.3s ease;
+      }
+      /* Wounded status label */
+      .ud-wounded {
+        color: #ef9a9a;
+        font-size: 13px;
       }
 
       /* Trait tags */

@@ -31,7 +31,14 @@ export class Unit {
     this.name   = name;
     this.role   = role;
     this.traits = [...traits];
-    this.stats  = { attack: 5, defense: 5, morale: 50, ...stats };
+    this.stats = { attack: 5, defense: 5, morale: 50, ...stats };
+    // HP derived from defense if not explicitly saved.
+    if (this.stats.maxHp === undefined) {
+      this.stats.maxHp = 50 + this.stats.defense * 5;
+    }
+    if (this.stats.hp === undefined) {
+      this.stats.hp = this.stats.maxHp;
+    }
     /** Whether this unit participates in battle. */
     this.active = active !== false;
 

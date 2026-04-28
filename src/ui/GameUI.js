@@ -1108,10 +1108,12 @@ export class GameUI {
       const totalDefense = activeMembers.reduce((s, m) => s + m.stats.defense, 0);
       const totalMorale  = activeMembers.reduce((s, m) => s + m.stats.morale,  0);
       const avgMorale    = activeMembers.length > 0 ? Math.round(totalMorale / activeMembers.length) : 0;
+      const woundedCount = sq.members.filter(m => m.stats.hp <= 0).length;
       return {
         id:           sq.id,
         totalMembers: sq.members.length,
         activeCount:  activeMembers.length,
+        woundedCount,
         totalAttack,
         totalDefense,
         combatPower:  totalAttack + totalDefense,
@@ -1122,6 +1124,7 @@ export class GameUI {
     const totalMembers  = squadStats.reduce((s, sq) => s + sq.totalMembers, 0);
     const totalActive   = squadStats.reduce((s, sq) => s + sq.activeCount,  0);
     const totalCombat   = squadStats.reduce((s, sq) => s + sq.combatPower,  0);
+    const totalWounded  = squadStats.reduce((s, sq) => s + sq.woundedCount, 0);
 
     // Food stats
     const foodItems      = this.inventory.getItems().filter(i => i.type === 'food');
@@ -1150,6 +1153,10 @@ export class GameUI {
           <span class="team-info-value">${totalActive} 人</span>
         </div>
         <div class="team-info-row">
+          <span class="team-info-label">重傷人數</span>
+          <span class="team-info-value${totalWounded > 0 ? ' warn' : ''}">${totalWounded} 人</span>
+        </div>
+        <div class="team-info-row">
           <span class="team-info-label">總戰力</span>
           <span class="team-info-value">${totalCombat}</span>
         </div>
@@ -1161,6 +1168,7 @@ export class GameUI {
           <div class="team-info-squad-row">
             <span class="team-info-squad-name">小隊${sq.id + 1}</span>
             <span class="team-info-squad-stat">${sq.activeCount}/${sq.totalMembers} 人</span>
+            ${sq.woundedCount > 0 ? `<span class="team-info-squad-stat warn">傷 ${sq.woundedCount}</span>` : ''}
             <span class="team-info-squad-stat">攻 ${sq.totalAttack}</span>
             <span class="team-info-squad-stat">防 ${sq.totalDefense}</span>
             <span class="team-info-squad-stat">士氣 ${sq.avgMorale}</span>
@@ -1187,27 +1195,49 @@ export class GameUI {
   }
 
   /**
-   * Called once per in-game day to consume food for all active members.
+   * Called once per in-game day to consume food for all active members
+   * and to recover HP for wounded soldiers.
    * Each active member consumes 1 food unit per day.
+   * Every unit recovers 10 % of their maxHp per day (minimum 1).
    */
   onDayPassed() {
     const squads = this.army.getSquads();
     const totalActive = squads.reduce((sum, sq) =>
       sum + sq.members.filter(m => m.active).length, 0);
 
-    if (totalActive === 0) return;
+    if (totalActive > 0) {
+      let toConsume = totalActive;
+      const foodItems = this.inventory.getItems().filter(i => i.type === 'food');
+      for (const item of foodItems) {
+        if (toConsume <= 0) break;
+        const deduct = Math.min(item.quantity, toConsume);
+        this.inventory.removeItem(item.id, deduct);
+        toConsume -= deduct;
+      }
 
-    let toConsume = totalActive;
-    const foodItems = this.inventory.getItems().filter(i => i.type === 'food');
-    for (const item of foodItems) {
-      if (toConsume <= 0) break;
-      const deduct = Math.min(item.quantity, toConsume);
-      this.inventory.removeItem(item.id, deduct);
-      toConsume -= deduct;
+      if (toConsume > 0) {
+        this._toast(`⚠ 糧食不足！缺少 ${toConsume} 份糧食`);
+      }
     }
 
-    if (toConsume > 0) {
-      this._toast(`⚠ 糧食不足！缺少 ${toConsume} 份糧食`);
+    // Daily HP recovery for all wounded units.
+    let recoveredCount = 0;
+    squads.forEach(sq => {
+      sq.members.forEach(m => {
+        if (m.stats.hp < m.stats.maxHp) {
+          const wasDown = m.stats.hp <= 0;
+          const recovery = Math.max(1, Math.floor(m.stats.maxHp * 0.1));
+          m.stats.hp = Math.min(m.stats.maxHp, m.stats.hp + recovery);
+          // Re-enable unit once it has recovered from incapacitation.
+          if (wasDown && m.stats.hp > 0) {
+            recoveredCount++;
+          }
+        }
+      });
+    });
+
+    if (recoveredCount > 0) {
+      this._toast(`💊 ${recoveredCount} 名士兵已從重傷中恢復，可重新參戰！`);
     }
 
     if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
@@ -1225,15 +1255,27 @@ export class GameUI {
       if (m) {
         const isCaptain = m.id === squad.captainId;
         const avatarHTML = m.appearance ? renderCharHTML(m.appearance, 32) : '';
+        const hpPct    = m.stats.maxHp > 0 ? Math.max(0, Math.round(m.stats.hp / m.stats.maxHp * 100)) : 0;
+        const isDown   = m.stats.hp <= 0;
+        const hpColor  = isDown ? '#e53935' : hpPct <= 30 ? '#ff8f00' : '#43a047';
+        const statusLabel = isDown ? '重傷' : (m.active ? '參戰' : '待命');
+        const statusClass = isDown ? ' wounded' : (m.active ? ' active' : '');
         memberCards.push(`
-          <div class="unit-card-compact${isCaptain ? ' captain' : ''}${m.active ? '' : ' inactive'}"
+          <div class="unit-card-compact${isCaptain ? ' captain' : ''}${m.active && !isDown ? '' : ' inactive'}"
                data-id="${m.id}" role="button" tabindex="0">
             <span class="ucc-avatar">${avatarHTML}</span>
             <span class="ucc-badge">${isCaptain ? '⭐' : ''}</span>
-            <span class="ucc-name">${m.name}</span>
-            <span class="ucc-role">${m.role}</span>
-            <span class="ucc-status${m.active ? ' active' : ''}">${m.active ? '參戰' : '待命'}</span>
-            <span class="ucc-arrow">›</span>
+            <div class="ucc-info">
+              <div class="ucc-top">
+                <span class="ucc-name">${m.name}</span>
+                <span class="ucc-role">${m.role}</span>
+                <span class="ucc-status${statusClass}">${statusLabel}</span>
+                <span class="ucc-arrow">›</span>
+              </div>
+              <div class="ucc-hp-bar-wrap">
+                <div class="ucc-hp-bar" style="width:${hpPct}%;background:${hpColor}"></div>
+              </div>
+            </div>
           </div>`);
       } else {
         memberCards.push(`
@@ -1297,16 +1339,43 @@ export class GameUI {
     document.getElementById('ui-unit-detail-name').textContent =
       `${isCaptain ? '⭐ ' : ''}${unit.name}`;
 
+    const hpPct   = unit.stats.maxHp > 0 ? Math.max(0, Math.round(unit.stats.hp / unit.stats.maxHp * 100)) : 0;
+    const isDown  = unit.stats.hp <= 0;
+    const hpColor = isDown ? '#e53935' : hpPct <= 30 ? '#ff8f00' : '#43a047';
+    const daysToRecover = isDown || unit.stats.hp < unit.stats.maxHp
+      ? Math.ceil((unit.stats.maxHp - unit.stats.hp) / Math.max(1, Math.floor(unit.stats.maxHp * 0.1)))
+      : 0;
+    const hpStatusText = isDown
+      ? `重傷（約 ${daysToRecover} 天恢復）`
+      : unit.stats.hp < unit.stats.maxHp
+        ? `受傷（約 ${daysToRecover} 天全癒）`
+        : '健康';
+    const hpHTML = `
+      <div class="ud-hp-section">
+        <div class="ud-hp-label-row">
+          <span class="ud-hp-label">生命值</span>
+          <span class="ud-hp-nums">${Math.ceil(unit.stats.hp)} / ${unit.stats.maxHp}</span>
+          <span class="ud-hp-status" style="color:${hpColor}">${hpStatusText}</span>
+        </div>
+        <div class="ud-hp-bar-wrap">
+          <div class="ud-hp-bar" style="width:${hpPct}%;background:${hpColor}"></div>
+        </div>
+      </div>`;
+
     document.getElementById('ui-unit-detail-body').innerHTML = `
+      ${hpHTML}
       <div class="ud-row">
         <span class="ud-label">職業</span>
         <span class="ud-value">${unit.role}</span>
       </div>
       <div class="ud-row">
         <span class="ud-label">狀態</span>
-        <button class="btn-toggle-active${unit.active ? ' is-active' : ''}" data-id="${unit.id}">
-          ${unit.active ? '✅ 參戰中' : '💤 待命中'}
-        </button>
+        ${isDown
+          ? `<span class="ud-value ud-wounded">🤕 重傷中，靜養恢復</span>`
+          : `<button class="btn-toggle-active${unit.active ? ' is-active' : ''}" data-id="${unit.id}">
+              ${unit.active ? '✅ 參戰中' : '💤 待命中'}
+            </button>`
+        }
       </div>
       <div class="ud-row">
         <span class="ud-label">特質</span>
@@ -1679,23 +1748,23 @@ export class GameUI {
    */
   _calculatePlayerForce(squadIds) {
     const squads  = this.army.getSquads().filter(s => squadIds.includes(s.id));
-    const members = squads.flatMap(s => s.members.filter(m => m.active));
+    // Only active, able-bodied units (hp > 0) participate.
+    const members = squads.flatMap(s => s.members.filter(m => m.active && m.stats.hp > 0));
 
-    const totalAtk = members.reduce((sum, m) => sum + m.stats.attack,  0);
-    const totalDef = members.reduce((sum, m) => sum + m.stats.defense, 0);
-    const moraleSum = members.reduce((sum, m) => sum + m.stats.morale, 0);
-    const avgMor = members.length > 0
-      ? Math.round(moraleSum / members.length)
-      : 0;
-    const maxHp = Math.max(1, Math.floor(totalDef * 5 + members.length * 20));
+    const totalAtk   = members.reduce((sum, m) => sum + m.stats.attack,  0);
+    const totalDef   = members.reduce((sum, m) => sum + m.stats.defense, 0);
+    const moraleSum  = members.reduce((sum, m) => sum + m.stats.morale,  0);
+    const avgMor     = members.length > 0 ? Math.round(moraleSum / members.length) : 0;
+    const totalHp    = members.reduce((sum, m) => sum + m.stats.hp,      0);
+    const totalMaxHp = members.reduce((sum, m) => sum + m.stats.maxHp,   0);
 
     return {
       memberCount: members.length,
       attack:  totalAtk,
       defense: totalDef,
       morale:  avgMor,
-      hp:      maxHp,
-      maxHp,
+      hp:      Math.max(1, totalHp),
+      maxHp:   Math.max(1, totalMaxHp),
       members,
     };
   }
@@ -1939,7 +2008,21 @@ export class GameUI {
     }
 
     state.enemy.hp  = Math.max(0, state.enemy.hp  - playerDmg);
-    state.player.hp = Math.max(0, state.player.hp - enemyDmg);
+
+    // Distribute enemy damage to individual units proportionally to their maxHp.
+    const aliveMembers = state.player.members.filter(m => m.stats.hp > 0);
+    if (aliveMembers.length > 0) {
+      const totalAliveMaxHp = aliveMembers.reduce((sum, m) => sum + m.stats.maxHp, 0);
+      aliveMembers.forEach(m => {
+        const share = totalAliveMaxHp > 0
+          ? (m.stats.maxHp / totalAliveMaxHp) * enemyDmg
+          : enemyDmg / aliveMembers.length;
+        m.stats.hp = Math.max(0, m.stats.hp - share);
+      });
+    }
+    // Sync aggregate HP from individual unit totals.
+    state.player.hp = Math.max(0, state.player.members.reduce((sum, m) => sum + m.stats.hp, 0));
+
     state.log.push(logMsg);
 
     // Check end conditions
@@ -1964,6 +2047,20 @@ export class GameUI {
   }
 
   _closeBattleScene() {
+    // Mark units with hp ≤ 0 as inactive (wounded – needs recovery time).
+    if (this._battleState) {
+      let woundedCount = 0;
+      this._battleState.player.members.forEach(m => {
+        if (m.stats.hp <= 0) {
+          m.active = false;
+          woundedCount++;
+        }
+      });
+      if (woundedCount > 0) {
+        this._toast(`⚠ ${woundedCount} 名士兵受重傷，需要靜養恢復！`);
+      }
+    }
+
     document.getElementById('battle-scene-overlay')?.classList.remove('visible');
     this._battleState = null;
   }
