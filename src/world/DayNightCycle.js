@@ -12,7 +12,7 @@
  */
 
 /** Real-world seconds for one full in-game day. */
-export const DEFAULT_DAY_DURATION = 120;
+export const DEFAULT_DAY_DURATION = 300;
 
 // Phase boundaries (fraction of day)
 const NIGHT_END    = 0.21;
