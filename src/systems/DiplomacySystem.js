@@ -668,7 +668,7 @@ export class DiplomacySystem {
     const { nations, castleSettlements, villageSettlements } = this.nationSystem;
     const day = this._currentDay;
 
-    const tryRecruit = (s, settlementKey, settlementType, idx) => {
+    const tryRecruit = (s, settlementType, idx) => {
       const nationId = s.controllingNationId;
       if (nationId < 0) return; // player-owned
 
@@ -697,12 +697,14 @@ export class DiplomacySystem {
       }
 
       const recruits = BuildingSystem.generateRecruits(sx, sy, 0, tState.lastVisitDay);
-      const gold     = this._npcGold.get(nationId) ?? 0;
 
       for (let i = 0; i < recruits.length; i++) {
         if (tState.recruitedIndices.includes(i)) continue; // already taken
         const r = recruits[i];
-        if (gold < r.hireCost) continue;
+        // Re-fetch gold on each iteration so multiple purchases within one
+        // phase correctly deduct from the running total.
+        const currentGold = this._npcGold.get(nationId) ?? 0;
+        if (currentGold < r.hireCost) continue;
 
         // Check army capacity again (we may have just filled a slot above).
         const filledNow = armies.reduce((sum, sq) => sum + sq.length, 0);
@@ -720,7 +722,7 @@ export class DiplomacySystem {
         }
 
         // Deduct gold and add recruit.
-        this._npcGold.set(nationId, gold - r.hireCost);
+        this._npcGold.set(nationId, currentGold - r.hireCost);
         tState.recruitedIndices.push(i);
         targetSquad.push({
           name:   r.name,
@@ -737,15 +739,15 @@ export class DiplomacySystem {
 
         const nationName = nations[nationId]?.name ?? '';
         messages.push({
-          message: `🍺 ${nationName} 在 ${s.name} 的酒館招募了 ${r.name}（${r.role}）`,
-          settlementKey,
+          message:    `🍺 ${nationName} 在 ${s.name} 的酒館招募了 ${r.name}（${r.role}）`,
+          settlementKey: armyKey,
         });
         break; // one recruit per settlement per dusk
       }
     };
 
-    castleSettlements.forEach((s, idx) => tryRecruit(s, `castle:${idx}`, 'castle', idx));
-    villageSettlements.forEach((s, idx) => tryRecruit(s, `village:${idx}`, 'village', idx));
+    castleSettlements.forEach((s, idx) => tryRecruit(s, 'castle', idx));
+    villageSettlements.forEach((s, idx) => tryRecruit(s, 'village', idx));
   }
 
   /**
