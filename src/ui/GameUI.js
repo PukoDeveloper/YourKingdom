@@ -11,7 +11,12 @@ import { Army, MAX_SOLDIERS } from '../systems/Army.js';
  *   this._gameUI.tryAcquireUnit({ name:'張飛', type:'general', role:'武將', stats:{attack:15} });
  */
 export class GameUI {
-  constructor() {
+  /**
+   * @param {{ inventory?: object, army?: object }|null} [savedState]
+   *   If provided the UI is initialised from the save instead of the demo seed.
+   * @param {() => void} [onSave]  Called when the player presses the save button.
+   */
+  constructor(savedState = null, onSave = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
@@ -19,7 +24,14 @@ export class GameUI {
     this._activePanel  = null;
     this._activeSquad  = 0;
 
-    this._seedDemo();
+    /** Callback invoked when the player manually triggers a save. */
+    this.onSave = onSave;
+
+    if (savedState) {
+      this.loadState(savedState);
+    } else {
+      this._seedDemo();
+    }
     this._buildDOM();
     this._attachListeners();
   }
@@ -57,6 +69,7 @@ export class GameUI {
     tabBar.innerHTML = `
       <button id="btn-backpack" class="ui-tab-btn" title="背包">🎒</button>
       <button id="btn-team"     class="ui-tab-btn" title="隊伍">⚔️</button>
+      <button id="btn-save"     class="ui-tab-btn" title="儲存">💾</button>
     `;
     document.body.appendChild(tabBar);
 
@@ -104,6 +117,12 @@ export class GameUI {
     document.getElementById('btn-backpack').addEventListener('click', () => this._togglePanel('backpack'));
     document.getElementById('btn-team').addEventListener('click',     () => this._togglePanel('team'));
     document.getElementById('ui-panel-close').addEventListener('click', () => this._closePanel());
+
+    document.getElementById('btn-save').addEventListener('click', () => {
+      if (typeof this.onSave === 'function') {
+        this.onSave();
+      }
+    });
 
     // Close panel when tapping the backdrop
     document.getElementById('ui-panel').addEventListener('click', (e) => {
@@ -352,6 +371,33 @@ export class GameUI {
       this._toast(`${unitData.name} 已被流放`);
       close();
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Persistence
+  // -------------------------------------------------------------------------
+
+  /** @returns {{ inventory: object, army: object }} serialisable snapshot */
+  getState() {
+    return {
+      inventory: this.inventory.getState(),
+      army:      this.army.getState(),
+    };
+  }
+
+  /**
+   * Restore inventory and army from a saved snapshot (skips demo seed).
+   * @param {{ inventory?: object, army?: object }} state
+   */
+  loadState(state) {
+    if (!state) return;
+    if (state.inventory) this.inventory.loadState(state.inventory);
+    if (state.army)      this.army.loadState(state.army);
+  }
+
+  /** Public helper – display a toast notification. */
+  showToast(msg) {
+    this._toast(msg);
   }
 
   // -------------------------------------------------------------------------

@@ -10,6 +10,10 @@ import { TILE_SIZE, TERRAIN_NAMES } from './world/constants.js';
 import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
 import { GameUI }           from './ui/GameUI.js';
+import { SaveManager }      from './systems/SaveManager.js';
+
+/** Auto-save interval in milliseconds. */
+const AUTO_SAVE_INTERVAL_MS = 60_000;
 
 export class Game {
   async init() {
@@ -49,27 +53,44 @@ export class Game {
     // -----------------------------------------------------------------------
 
     this._reportLoading(5);
+    this._setLoadingStatus('初始化引擎...');
+    await this._yieldFrame();
 
-    this._mapData = new MapData(/* seed= */ 42);
+    // Try to restore a previous session; fall back to a fresh random world.
+    const savedState = SaveManager.load();
+    const seed = savedState?.seed ?? Math.floor(Math.random() * 0xFFFFFF); // 24-bit seed range: 0 – 16 777 215
+    this._seed = seed;
+
+    this._setLoadingStatus('生成世界地圖...');
+    await this._yieldFrame();
+    this._mapData = new MapData(seed);
     this._reportLoading(15);
+    await this._yieldFrame();
 
     // Terrain chunks
+    this._setLoadingStatus('繪製地形...');
     this._mapRenderer = new MapRenderer(this.app, this._mapData, (done, total) => {
       this._reportLoading(15 + Math.floor((done / total) * 70));
     });
-    this._mapRenderer.build();
+    await this._mapRenderer.build();
     this._world.addChild(this._mapRenderer.container);
     this._reportLoading(85);
+    await this._yieldFrame();
 
     // Castle structures (drawn on top of terrain)
+    this._setLoadingStatus('建造城池與村落...');
     this._structureRenderer = new StructureRenderer(this._mapData);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
+    await this._yieldFrame();
 
     // Player
+    this._setLoadingStatus('召喚玩家...');
     const { tileX, tileY } = this._mapData.findStartTile();
-    const startX = (tileX + 0.5) * TILE_SIZE;
-    const startY = (tileY + 0.5) * TILE_SIZE;
+    const defaultX = (tileX + 0.5) * TILE_SIZE;
+    const defaultY = (tileY + 0.5) * TILE_SIZE;
+    const startX = savedState?.player?.x ?? defaultX;
+    const startY = savedState?.player?.y ?? defaultY;
     this._player = new Player(startX, startY);
     this._world.addChild(this._player.container);
 
@@ -99,7 +120,11 @@ export class Game {
     // -----------------------------------------------------------------------
     // Day / Night cycle & Weather
     // -----------------------------------------------------------------------
-    this._dayNight = new DayNightCycle();
+    this._setLoadingStatus('準備天氣系統...');
+    this._dayNight = new DayNightCycle(
+      undefined,
+      savedState?.dayTime ?? undefined,
+    );
     this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
     this._ui.addChild(this._weather.container);
 
@@ -118,7 +143,10 @@ export class Game {
     // -----------------------------------------------------------------------
     // Game UI (Backpack + Team panels)
     // -----------------------------------------------------------------------
-    this._gameUI = new GameUI();
+    this._gameUI = new GameUI(
+      savedState ?? null,
+      () => this.save(),
+    );
 
     // -----------------------------------------------------------------------
     // Game loop
@@ -127,7 +155,17 @@ export class Game {
 
     // Hide loading screen
     this._reportLoading(100);
+    this._setLoadingStatus('進入王國...');
+    await this._yieldFrame();
     this._hideLoading();
+
+    // -----------------------------------------------------------------------
+    // Save / auto-save
+    // -----------------------------------------------------------------------
+    if (savedState) {
+      this._gameUI.showToast('已載入上次存檔 ✓');
+    }
+    this._startAutoSave();
   }
 
   // ---------------------------------------------------------------------------
@@ -172,12 +210,48 @@ export class Game {
   }
 
   // ---------------------------------------------------------------------------
+  // Save / load
+  // ---------------------------------------------------------------------------
+
+  /** Collect full game state and persist it to localStorage. */
+  save() {
+    const ok = SaveManager.save({
+      seed:    this._seed,
+      player:  { x: this._player.x, y: this._player.y },
+      dayTime: this._dayNight.time,
+      ...this._gameUI.getState(),
+    });
+    this._gameUI.showToast(ok ? '遊戲已儲存 💾' : '儲存失敗 ✗');
+  }
+
+  /** Start auto-save: every AUTO_SAVE_INTERVAL_MS, on tab hide, and on page unload. */
+  _startAutoSave() {
+    this._autoSaveTimer = setInterval(() => this.save(), AUTO_SAVE_INTERVAL_MS);
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this.save();
+    });
+
+    window.addEventListener('beforeunload', () => this.save());
+  }
+
+  // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
 
   _reportLoading(percent) {
     const bar = document.getElementById('loading-bar');
     if (bar) bar.style.width = `${percent}%`;
+  }
+
+  _setLoadingStatus(text) {
+    const el = document.getElementById('loading-status');
+    if (el) el.textContent = text;
+  }
+
+  /** Yields control back to the browser for one animation frame so the UI can repaint. */
+  _yieldFrame() {
+    return new Promise(resolve => requestAnimationFrame(resolve));
   }
 
   _hideLoading() {

@@ -21,10 +21,11 @@ export class MapRenderer {
   }
 
   /**
-   * Build all chunk sprites synchronously.
-   * Call this once after the Pixi app has initialised.
+   * Build all chunk sprites, yielding to the browser every YIELD_EVERY chunks
+   * so the loading progress bar can repaint in real time.
    */
-  build() {
+  async build() {
+    const YIELD_EVERY = 8;
     const chunksX = Math.ceil(MAP_WIDTH  / CHUNK_SIZE);
     const chunksY = Math.ceil(MAP_HEIGHT / CHUNK_SIZE);
     const total   = chunksX * chunksY;
@@ -35,6 +36,9 @@ export class MapRenderer {
         this._buildChunk(cx, cy);
         done++;
         this.onProgress(done, total);
+        if (done % YIELD_EVERY === 0) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
       }
     }
   }
