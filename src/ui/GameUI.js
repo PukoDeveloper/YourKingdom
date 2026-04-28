@@ -1570,10 +1570,12 @@ export class GameUI {
       }
     }
 
-    // Satisfaction drift: each player-owned settlement recovers +2/day toward 0.
+    // Satisfaction drift: each player-owned settlement moves ±2/day toward 0.
     for (const [key, sat] of this._satisfactionMap) {
       if (sat < 0) {
         this._satisfactionMap.set(key, Math.min(0, sat + 2));
+      } else if (sat > 0) {
+        this._satisfactionMap.set(key, Math.max(0, sat - 2));
       }
     }
 
@@ -2539,8 +2541,8 @@ export class GameUI {
     let taxHTML  = '';
     if (isOwnedByPlayer) {
       const baseTax  = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
-      // Satisfaction factor: 0 → 100 %, -100 → 10 %
-      const factor   = 0.1 + 0.9 * ((satisfaction + 100) / 100);
+      // Satisfaction factor: -100 → 10 %, 0 → 100 % (capped at 100 %)
+      const factor   = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
       taxYield       = Math.max(1, Math.round(baseTax * factor));
 
       taxHTML = `
