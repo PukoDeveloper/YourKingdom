@@ -6,7 +6,7 @@ import { Player }           from './entities/Player.js';
 import { Camera }           from './Camera.js';
 import { InputManager }     from './controls/InputManager.js';
 import { VirtualJoystick }  from './controls/VirtualJoystick.js';
-import { TILE_SIZE, TERRAIN_NAMES } from './world/constants.js';
+import { TILE_SIZE, TERRAIN, TERRAIN_NAMES } from './world/constants.js';
 import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
 import { GameUI }           from './ui/GameUI.js';
@@ -221,6 +221,13 @@ export class Game {
         label = `${nation.emblem} ${hit.settlement.name}`;
       }
       this._terrainLabel.textContent = label;
+
+      // Show / hide the enter-facility button
+      const isPort = t === TERRAIN.PORT_GROUND;
+      this._gameUI.setNearbySettlement(
+        hit ? hit.settlement : null,
+        isPort ? 'port' : null,
+      );
     }
 
     // HUD: time & weather
