@@ -235,15 +235,22 @@ export class Game {
       const tileY = Math.floor(this._player.y / TILE_SIZE);
       const hit = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
       if (hit) {
+        const settlIcon = hit.settlement.type === 'castle' ? '🏰' : '🏘️';
+        let nationLine, regionLine;
         if (hit.settlement.playerOwned) {
           const pk = this._gameUI.getPlayerNation();
-          label = `🏴 ${pk.name} · ${hit.settlement.name}`;
+          nationLine = `🏴 ${pk.name}`;
         } else {
           const nation = this._nationSystem.getNation(hit.settlement);
-          label = `${nation.emblem} ${hit.settlement.name}`;
+          nationLine = `${nation.emblem} ${nation.name}`;
         }
+        regionLine = `${settlIcon} ${hit.settlement.name}`;
+        this._terrainLabel.innerHTML =
+          `<span class="hud-nation-line">${nationLine}</span>` +
+          `<span class="hud-region-line">${regionLine}</span>`;
+      } else {
+        this._terrainLabel.textContent = label;
       }
-      this._terrainLabel.textContent = label;
 
       // Show / hide the enter-facility button
       const isPort = t === TERRAIN.PORT_GROUND;

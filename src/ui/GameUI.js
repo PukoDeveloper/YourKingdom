@@ -118,8 +118,8 @@ export class GameUI {
     this._backpackTab  = 'all';
     this._equipSubTab  = 'weapon';
 
-    /** Active nations sub-tab: 'castles' | 'villages' | 'diplomacy' */
-    this._nationsTab = 'castles';
+    /** Active nations sub-tab: only 'diplomacy' is used now */
+    this._nationsTab = 'diplomacy';
 
     /** Active team panel main tab: 'squads' | 'info' */
     this._teamInfoTab = 'squads';
@@ -966,93 +966,8 @@ export class GameUI {
       return;
     }
 
-    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
-    const tab = this._nationsTab;
-
-    const subTabsHTML = `
-      <div class="ns-cat-tabs">
-        <button class="ns-cat-btn${tab === 'castles'   ? ' active' : ''}" data-ns-tab="castles">
-          🏰 城堡 <span class="bp-cnt">${castleSettlements.length}</span>
-        </button>
-        <button class="ns-cat-btn${tab === 'villages'  ? ' active' : ''}" data-ns-tab="villages">
-          🏘 村落 <span class="bp-cnt">${villageSettlements.length}</span>
-        </button>
-        <button class="ns-cat-btn${tab === 'diplomacy' ? ' active' : ''}" data-ns-tab="diplomacy">
-          🤝 外交
-        </button>
-      </div>`;
-
-    if (tab === 'diplomacy') {
-      content.innerHTML = subTabsHTML + '<div id="ns-diplomacy-content"></div>';
-      content.querySelectorAll('.ns-cat-btn').forEach(btn => {
-        btn.addEventListener('click', () => { this._nationsTab = btn.dataset.nsTab; this._renderNations(); });
-      });
-      this._renderDiplomacy();
-      return;
-    }
-
-    const settlements = tab === 'castles' ? castleSettlements : villageSettlements;
-    const cardsHTML = settlements.map((s, i) => {
-      const isPlayer = s.playerOwned;
-      const nation   = isPlayer
-        ? this.getPlayerNation()
-        : this.nationSystem.getNation(s);
-      const flagHTML = nation.flagApp
-        ? renderFlagHTML(nation.flagApp, 36)
-        : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
-      const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
-      const popStr   = s.population.toLocaleString();
-      const playerBadge = isPlayer
-        ? `<span class="sc-player-badge">我方</span>`
-        : '';
-      return `
-        <div class="settlement-card${isPlayer ? ' player-owned' : ''}" data-ns-type="${s.type}" data-ns-idx="${i}"
-             style="border-color: ${nation.color}44; --ns-color: ${nation.color}"
-             role="button" tabindex="0">
-          <div class="sc-header">
-            <span class="sc-flag">${flagHTML}</span>
-            <span class="sc-name">${s.name}</span>
-            ${playerBadge}
-            <span class="sc-arrow">›</span>
-          </div>
-          <div class="sc-meta">
-            <span class="sc-nation-tag" style="border-color:${nation.color}88; color:${nation.color}">
-              ${nation.name}
-            </span>
-            <span class="sc-pop">👥 ${popStr}</span>
-            <span class="sc-eco">${ecoStars}</span>
-          </div>
-          <div class="sc-res">盛產：${s.resources.join('、')}</div>
-        </div>`;
-    }).join('');
-
-    content.innerHTML = subTabsHTML + (
-      settlements.length === 0
-        ? '<p class="ui-empty">此類型暫無聚落</p>'
-        : `<div class="settlement-list">${cardsHTML}</div>`
-    );
-
-    content.querySelectorAll('.ns-cat-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        this._nationsTab = btn.dataset.nsTab;
-        this._renderNations();
-      });
-    });
-
-    content.querySelectorAll('.settlement-card[data-ns-idx]').forEach(card => {
-      const open = () => {
-        const idx  = Number(card.dataset.nsIdx);
-        const type = card.dataset.nsType;
-        const s    = type === 'castle'
-          ? this.nationSystem.castleSettlements[idx]
-          : this.nationSystem.villageSettlements[idx];
-        if (s) this._openSettlementDetail(s);
-      };
-      card.addEventListener('click', open);
-      card.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-      });
-    });
+    content.innerHTML = '<div id="ns-diplomacy-content"></div>';
+    this._renderDiplomacy();
   }
 
   // -------------------------------------------------------------------------
@@ -1068,7 +983,14 @@ export class GameUI {
       return;
     }
 
-    const { nations, castleSettlements } = this.nationSystem;
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+
+    // Group villages by nationId for quick lookup
+    const villagesByNation = {};
+    villageSettlements.forEach((v, idx) => {
+      if (!villagesByNation[v.nationId]) villagesByNation[v.nationId] = [];
+      villagesByNation[v.nationId].push({ s: v, idx });
+    });
 
     const _personalityLabel = (traits) => {
       const p = traits.find(t => ALL_PERSONALITIES.includes(t));
@@ -1077,41 +999,77 @@ export class GameUI {
       return `<span class="dipl-personality" style="color:${color}">${p}</span>`;
     };
 
-    const rowsHTML = nations.map((nation, id) => {
-      const s     = castleSettlements[id];
-      const val   = this.diplomacySystem.getPlayerRelation(id);
-      const level = this.diplomacySystem.getRelationLevel(val);
-      const flagH = nation.flagApp ? renderFlagHTML(nation.flagApp, 28) : `<span>${nation.emblem}</span>`;
+    const nationCardsHTML = nations.map((nation, id) => {
+      const castle  = castleSettlements[id];
+      const val     = this.diplomacySystem.getPlayerRelation(id);
+      const level   = this.diplomacySystem.getRelationLevel(val);
+      const flagH   = nation.flagApp ? renderFlagHTML(nation.flagApp, 32) : `<span>${nation.emblem}</span>`;
       const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
-      const isOwned = s?.playerOwned;
+      const isOwned = castle?.playerOwned;
+      const villages = villagesByNation[id] ?? [];
 
-      return `
-        <div class="dipl-row" data-nation-id="${id}">
-          <div class="dipl-flag">${flagH}</div>
-          <div class="dipl-info">
-            <div class="dipl-name">${nation.name}
-              ${s ? _personalityLabel(s.ruler.traits) : ''}
+      // Relation bar + level header
+      const relVal = val > 0 ? `+${val}` : `${val}`;
+      const headerHTML = `
+        <div class="dn-header">
+          <span class="dn-flag">${flagH}</span>
+          <div class="dn-title-col">
+            <div class="dn-name">
+              ${nation.name}
               ${isOwned ? '<span class="sc-player-badge">我方</span>' : ''}
             </div>
-            <div class="dipl-bar-wrap">
-              <div class="dipl-bar" style="width:${(val + 100) / 2}%;background:${level.color}"></div>
+            <div class="dn-ruler-line">
+              ${castle ? `${castle.ruler.name}（${castle.ruler.role}） ${_personalityLabel(castle.ruler.traits)}` : ''}
             </div>
           </div>
-          <div class="dipl-level" style="color:${level.color}">${level.icon} ${level.label}</div>
-          <div class="dipl-val" style="color:${level.color}">${val > 0 ? '+' : ''}${val}</div>
+          <div class="dn-rel-col">
+            <div class="dn-level" style="color:${level.color}">${level.icon} ${level.label}</div>
+            <div class="dn-val" style="color:${level.color}">${relVal}</div>
+          </div>
           ${!isOwned ? `<button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
                    ${alreadyCondemned ? 'disabled title="今日已譴責"' : ''}>
               ${alreadyCondemned ? '✓ 已譴責' : '📢 譴責'}
             </button>` : ''}
+        </div>
+        <div class="dn-bar-wrap">
+          <div class="dn-bar" style="width:${(val + 100) / 2}%;background:${level.color}"></div>
+        </div>`;
+
+      // Settlement rows
+      const castleRow = castle ? `
+        <div class="dn-settlement-row" data-ns-type="castle" data-ns-idx="${id}" role="button" tabindex="0">
+          <span class="dn-s-icon">🏰</span>
+          <span class="dn-s-name">${castle.name}</span>
+          <span class="dn-s-pop">👥 ${castle.population.toLocaleString()}</span>
+          <span class="dn-s-eco">${'⭐'.repeat(castle.economyLevel)}</span>
+          <span class="dn-s-res">${castle.resources.join('、')}</span>
+          <span class="dn-s-arrow">›</span>
+        </div>` : '';
+
+      const villageRows = villages.map(({ s, idx }) => `
+        <div class="dn-settlement-row" data-ns-type="village" data-ns-idx="${idx}" role="button" tabindex="0">
+          <span class="dn-s-icon">🏘️</span>
+          <span class="dn-s-name">${s.name}</span>
+          <span class="dn-s-pop">👥 ${s.population.toLocaleString()}</span>
+          <span class="dn-s-eco">${'⭐'.repeat(s.economyLevel)}</span>
+          <span class="dn-s-res">${s.resources.join('、')}</span>
+          <span class="dn-s-arrow">›</span>
+        </div>`).join('');
+
+      return `
+        <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44">
+          ${headerHTML}
+          <div class="dn-settlements">${castleRow}${villageRows}</div>
         </div>`;
     }).join('');
 
     el.innerHTML = `
-      <div class="dipl-intro">與各國的外交關係受距離、資源競爭及統治者性格影響。<br>
+      <div class="dipl-intro">各國外交關係受距離、資源競爭及統治者性格影響。<br>
         <span style="color:#ef6c00">傲慢</span>、<span style="color:#e53935">好戰</span>的統治者可能自發惡化關係；
         <span style="color:#66bb6a">溫和</span>的統治者會主動釋出善意。</div>
-      <div class="dipl-list">${rowsHTML}</div>`;
+      <div class="dipl-nation-list">${nationCardsHTML}</div>`;
 
+    // Condemn buttons
     el.querySelectorAll('.dipl-condemn-btn:not([disabled])').forEach(btn => {
       btn.addEventListener('click', () => {
         const nationId = Number(btn.dataset.nationId);
@@ -1123,6 +1081,22 @@ export class GameUI {
         } else {
           this._toast('今日已對此國發出譴責，明日再試。');
         }
+      });
+    });
+
+    // Settlement row clicks → open detail overlay
+    el.querySelectorAll('.dn-settlement-row[data-ns-type]').forEach(row => {
+      const open = () => {
+        const idx  = Number(row.dataset.nsIdx);
+        const type = row.dataset.nsType;
+        const s    = type === 'castle'
+          ? this.nationSystem.castleSettlements[idx]
+          : this.nationSystem.villageSettlements[idx];
+        if (s) this._openSettlementDetail(s);
+      };
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
   }

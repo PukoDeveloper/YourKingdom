@@ -42,6 +42,22 @@
         border-radius: 20px;
         pointer-events: none;
         white-space: nowrap;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+        line-height: 1.4;
+        gap: 1px;
+      }
+      .hud-nation-line {
+        font-size: 11px;
+        opacity: 0.75;
+        letter-spacing: 0.5px;
+      }
+      .hud-region-line {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 1px;
       }
 
       #time-label {
@@ -1503,33 +1519,7 @@
         line-height: 1.6;
         padding: 8px 4px 12px;
         border-bottom: 1px solid rgba(255,255,255,0.08);
-        margin-bottom: 8px;
-      }
-      .dipl-list {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .dipl-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        background: rgba(255,255,255,0.05);
-        border-radius: 10px;
-        padding: 10px 12px;
-        border: 1px solid rgba(255,255,255,0.08);
-      }
-      .dipl-flag { flex-shrink: 0; display: flex; align-items: center; }
-      .dipl-info { flex: 1; min-width: 0; }
-      .dipl-name {
-        font-size: 13px;
-        color: #eee;
-        font-weight: 600;
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-bottom: 4px;
+        margin-bottom: 10px;
       }
       .dipl-personality {
         font-size: 11px;
@@ -1539,32 +1529,6 @@
         background: rgba(255,255,255,0.07);
         border: 1px solid currentColor;
         opacity: 0.9;
-      }
-      .dipl-bar-wrap {
-        height: 6px;
-        background: rgba(255,255,255,0.1);
-        border-radius: 3px;
-        overflow: hidden;
-        margin-top: 2px;
-      }
-      .dipl-bar {
-        height: 100%;
-        border-radius: 3px;
-        transition: width 0.3s;
-        min-width: 2px;
-      }
-      .dipl-level {
-        font-size: 12px;
-        font-weight: 600;
-        white-space: nowrap;
-        flex-shrink: 0;
-      }
-      .dipl-val {
-        font-size: 13px;
-        font-weight: 700;
-        min-width: 32px;
-        text-align: right;
-        flex-shrink: 0;
       }
       .dipl-condemn-btn {
         flex-shrink: 0;
@@ -1589,6 +1553,103 @@
         color: rgba(255,255,255,0.3);
         cursor: default;
       }
+
+      /* --- Nation cards in diplomacy panel --- */
+      .dipl-nation-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .dipl-nation-card {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .dn-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 6px;
+      }
+      .dn-flag { flex-shrink: 0; display: flex; align-items: center; }
+      .dn-title-col { flex: 1; min-width: 0; }
+      .dn-name {
+        font-size: 14px;
+        color: #eee;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .dn-ruler-line {
+        font-size: 11px;
+        color: rgba(255,255,255,0.5);
+        margin-top: 2px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-wrap: wrap;
+      }
+      .dn-rel-col {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        flex-shrink: 0;
+        gap: 1px;
+      }
+      .dn-level {
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .dn-val {
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .dn-bar-wrap {
+        height: 4px;
+        background: rgba(255,255,255,0.1);
+        overflow: hidden;
+        margin: 0 12px 6px;
+        border-radius: 2px;
+      }
+      .dn-bar {
+        height: 100%;
+        border-radius: 2px;
+        transition: width 0.3s;
+        min-width: 2px;
+      }
+      .dn-settlements {
+        border-top: 1px solid rgba(255,255,255,0.07);
+      }
+      .dn-settlement-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 12px;
+        cursor: pointer;
+        transition: background 0.12s;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+      }
+      .dn-settlement-row:last-child { border-bottom: none; }
+      .dn-settlement-row:hover { background: rgba(255,255,255,0.07); }
+      .dn-s-icon { font-size: 14px; flex-shrink: 0; }
+      .dn-s-name {
+        flex: 1;
+        color: #eee;
+        font-size: 13px;
+        font-weight: 600;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .dn-s-pop { font-size: 11px; color: rgba(255,255,255,0.5); white-space: nowrap; }
+      .dn-s-eco { font-size: 10px; white-space: nowrap; }
+      .dn-s-res { font-size: 10px; color: rgba(255,255,255,0.4); white-space: nowrap; }
+      .dn-s-arrow { color: rgba(255,255,255,0.25); font-size: 14px; flex-shrink: 0; }
       .sd-diplomacy-row { margin-top: 4px; }
 
       /* =====================================================================
