@@ -172,6 +172,14 @@ export class GameUI {
      */
     this.onCaptureSettlement = null;
 
+    /**
+     * Callback invoked whenever the player changes their kingdom name, flag,
+     * or any other visual property.  The game uses this to rebuild map
+     * structures so the updated flag is reflected immediately on the map.
+     * @type {(() => void)|null}
+     */
+    this.onPlayerKingdomChanged = null;
+
     if (savedState) {
       this.loadState(savedState);
     } else {
@@ -888,9 +896,17 @@ export class GameUI {
     // Kingdom name input
     const nameInput = content.querySelector('#kp-name-input');
     const nameDisplay = document.getElementById('kp-name-display');
+    let _nameChangeTimer = null;
     nameInput.addEventListener('input', () => {
       this._playerKingdom.name = nameInput.value || DEFAULT_KINGDOM.name;
       nameDisplay.textContent = this._playerKingdom.name;
+      // Debounce map rebuild so it doesn't fire on every keystroke.
+      clearTimeout(_nameChangeTimer);
+      _nameChangeTimer = setTimeout(() => {
+        if (typeof this.onPlayerKingdomChanged === 'function') {
+          this.onPlayerKingdomChanged();
+        }
+      }, 400);
     });
 
     // Kingdom type buttons
@@ -917,6 +933,9 @@ export class GameUI {
           btns.forEach(b => b.classList.remove('selected'));
           btn.classList.add('selected');
           _refreshFlagPreview();
+          if (typeof this.onPlayerKingdomChanged === 'function') {
+            this.onPlayerKingdomChanged();
+          }
         });
       });
     };
@@ -943,14 +962,18 @@ export class GameUI {
 
   /**
    * Return a nation-shaped object representing the player's kingdom.
+   * Uses the flag's background colour as the display colour so every
+   * consumer (settlement detail, map structures, diplomacy panel) reads
+   * from the same computed source.
    * @returns {{ color: string, emblem: string, name: string, flagApp: object }}
    */
   getPlayerNation() {
+    const flagApp = this._getPlayerFlagApp();
     return {
-      color:   '#e2c97e',
+      color:   flagApp.bgColor,
       emblem:  '🏴',
       name:    this._playerKingdom.name,
-      flagApp: this._getPlayerFlagApp(),
+      flagApp,
     };
   }
 
@@ -1003,10 +1026,15 @@ export class GameUI {
       const castle  = castleSettlements[id];
       const val     = this.diplomacySystem.getPlayerRelation(id);
       const level   = this.diplomacySystem.getRelationLevel(val);
-      const flagH   = nation.flagApp ? renderFlagHTML(nation.flagApp, 32) : `<span>${nation.emblem}</span>`;
       const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
       const isOwned = castle?.playerOwned;
       const villages = villagesByNation[id] ?? [];
+
+      // When the player owns this castle, show the player's kingdom identity.
+      const displayNation = isOwned ? this.getPlayerNation() : nation;
+      const flagH = displayNation.flagApp
+        ? renderFlagHTML(displayNation.flagApp, 32)
+        : `<span>${displayNation.emblem}</span>`;
 
       // Relation bar + level header
       const relVal = val > 0 ? `+${val}` : `${val}`;
@@ -1015,7 +1043,7 @@ export class GameUI {
           <span class="dn-flag">${flagH}</span>
           <div class="dn-title-col">
             <div class="dn-name">
-              ${nation.name}
+              ${displayNation.name}
               ${isOwned ? '<span class="sc-player-badge">我方</span>' : ''}
             </div>
             <div class="dn-ruler-line">
@@ -1049,7 +1077,7 @@ export class GameUI {
       const villageRows = villages.map(({ s, idx }) => `
         <div class="dn-settlement-row" data-ns-type="village" data-ns-idx="${idx}" role="button" tabindex="0">
           <span class="dn-s-icon">🏘️</span>
-          <span class="dn-s-name">${s.name}</span>
+          <span class="dn-s-name">${s.name}${s.playerOwned ? '<span class="sc-player-badge">我方</span>' : ''}</span>
           <span class="dn-s-pop">👥 ${s.population.toLocaleString()}</span>
           <span class="dn-s-eco">${'⭐'.repeat(s.economyLevel)}</span>
           <span class="dn-s-res">${s.resources.join('、')}</span>
@@ -1076,7 +1104,7 @@ export class GameUI {
       }
 
       return `
-        <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44">
+        <div class="dipl-nation-card" style="--nc-color:${displayNation.color};border-color:${displayNation.color}44">
           ${headerHTML}
           <div class="dn-settlements">${castleRow}${villageRows}</div>
           ${memoryHTML}
