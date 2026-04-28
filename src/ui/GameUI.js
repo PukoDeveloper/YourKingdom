@@ -2336,6 +2336,29 @@ export class GameUI {
   // -------------------------------------------------------------------------
 
   /**
+   * Derive stable pseudo-random hash inputs for a settlement.
+   * Since we don't have tile coordinates here, we use the settlement's
+   * index within its array (scaled to avoid hash collisions between castles
+   * and villages).
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {{ sx: number, sy: number }}
+   */
+  _settlementHashCoords(settlement) {
+    if (!this.nationSystem) return { sx: 0, sy: 0 };
+    const castleIdx  = this.nationSystem.castleSettlements.indexOf(settlement);
+    if (castleIdx >= 0) {
+      // Castles: spread across a large integer range to minimise collisions.
+      return { sx: castleIdx * 137, sy: castleIdx * 251 };
+    }
+    const villageIdx = this.nationSystem.villageSettlements.indexOf(settlement);
+    if (villageIdx >= 0) {
+      // Villages: offset from castles by +5000 to avoid hash overlap.
+      return { sx: villageIdx * 173 + 5000, sy: villageIdx * 293 + 5000 };
+    }
+    return { sx: 0, sy: 0 };
+  }
+
+  /**
    * @param {import('../systems/BuildingSystem.js').Building} building
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
@@ -2343,27 +2366,9 @@ export class GameUI {
     const content = document.getElementById('location-content');
     if (!content) return;
 
-    const day      = this.diplomacySystem?._currentDay ?? 0;
-    const recruits = BuildingSystem.generateRecruits(
-      settlement.buildings?.[0]?.type ? (this.nationSystem?.castleSettlements?.indexOf(settlement) ?? 0) * 17 : 0,
-      0,
-      0,
-      day,
-    );
-
-    // Use settlement position as seed if available via nationSystem
-    let sx = 0, sy = 0;
-    if (this.nationSystem) {
-      const castleIdx = this.nationSystem.castleSettlements.indexOf(settlement);
-      const villageIdx = this.nationSystem.villageSettlements.indexOf(settlement);
-      if (castleIdx >= 0) {
-        // We don't have mapData here, use castleIdx as a proxy
-        sx = castleIdx * 137; sy = castleIdx * 251;
-      } else if (villageIdx >= 0) {
-        sx = villageIdx * 173 + 500; sy = villageIdx * 293 + 500;
-      }
-    }
-    const actualRecruits = BuildingSystem.generateRecruits(sx, sy, 0, day);
+    const day = this.diplomacySystem?._currentDay ?? 0;
+    const { sx, sy } = this._settlementHashCoords(settlement);
+    const recruits = BuildingSystem.generateRecruits(sx, sy, 0, day);
 
     // Food catalog with prices
     const foodItems = CATALOG_TAVERN_FOOD.map(item => ({
@@ -2385,7 +2390,7 @@ export class GameUI {
         <button class="btn-buy tavern-food-buy" data-id="${item.id}" data-price="${item.price}">購買</button>
       </div>`).join('');
 
-    const recruitHTML = actualRecruits.map((r, i) => {
+    const recruitHTML = recruits.map((r, i) => {
       const statLine = Object.entries(r.stats)
         .map(([k, v]) => `${STAT_LABEL[k] ?? k}:${v}`).join(' ');
       const traitLine = r.traits.length ? r.traits.join('・') : '';
@@ -2436,7 +2441,7 @@ export class GameUI {
       btn.addEventListener('click', () => {
         const idx  = Number(btn.dataset.recruitIdx);
         const cost = Number(btn.dataset.cost);
-        const r    = actualRecruits[idx];
+        const r    = recruits[idx];
         if (!r) return;
         if (this._getGold() < cost) { this._toast('💸 金幣不足！'); return; }
         this._spendGold(cost);
