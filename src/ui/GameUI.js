@@ -806,7 +806,10 @@ export class GameUI {
           <span class="ud-label">移至小隊</span>
           <div class="move-targets">${moveTargetsHTML}</div>
         </div>
-        <button class="btn-remove-member" data-id="${unit.id}">❌ 移除成員</button>
+        <div class="ud-remove-row">
+          <span class="ud-remove-warning">⚠ 移除後將無法復原，請謹慎操作</span>
+          <button class="btn-remove-member" data-id="${unit.id}">❌ 移除成員</button>
+        </div>
       </div>` : ''}
     `;
 
@@ -856,6 +859,7 @@ export class GameUI {
     // Remove member
     overlay.querySelectorAll('.btn-remove-member').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (!window.confirm(`確定要移除 ${unit.name}？\n此操作無法復原。`)) return;
         const uid = Number(btn.dataset.id);
         squad.removeMember(uid);
         this._toast(`${unit.name} 已從小隊移除`);

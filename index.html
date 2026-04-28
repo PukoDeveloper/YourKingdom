@@ -629,6 +629,11 @@
       .btn-remove-gen:hover,
       .btn-remove-sol:hover,
       .btn-remove-member:hover { background: rgba(211,47,47,0.35); }
+      /* Override: unit-detail remove button is intentionally smaller */
+      .btn-remove-member {
+        padding: 4px 10px;
+        font-size: 11px;
+      }
       .soldier-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -815,6 +820,22 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
+      }
+      /* Warning hint above remove-member button */
+      .ud-remove-warning {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: rgba(239,154,154,0.75);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 10px;
+        margin-top: 10px;
+        margin-bottom: 2px;
+      }
+      .ud-remove-row {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
       }
       .unit-no-traits {
         color: rgba(255,255,255,0.3);
