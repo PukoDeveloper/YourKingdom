@@ -2,6 +2,15 @@ import { Container, Graphics } from 'pixi.js';
 import { TILE_SIZE } from './constants.js';
 import { drawCastleBuilding, drawVillageBuilding, drawPortBuilding } from './TileDrawer.js';
 
+/** Convert a CSS hex colour string (e.g. '#C62828') to a numeric value. */
+function _hexToNum(color) {
+  if (typeof color === 'string' && color.startsWith('#')) {
+    const n = parseInt(color.slice(1), 16);
+    if (!isNaN(n)) return n;
+  }
+  return null;
+}
+
 /**
  * Draws large structures (castles, villages, ports) on top of the terrain layer.
  */
@@ -24,8 +33,8 @@ export class StructureRenderer {
       if (nationSystem) {
         const settlement = nationSystem.castleSettlements[i];
         if (settlement) {
-          const nation = nationSystem.getNation(settlement);
-          flagColor = parseInt(nation.color.slice(1), 16);
+          const parsed = _hexToNum(nationSystem.getNation(settlement).color);
+          if (parsed !== null) flagColor = parsed;
         }
       }
       drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
@@ -37,8 +46,8 @@ export class StructureRenderer {
       if (nationSystem) {
         const settlement = nationSystem.villageSettlements[i];
         if (settlement) {
-          const nation = nationSystem.getNation(settlement);
-          flagColor = parseInt(nation.color.slice(1), 16);
+          const parsed = _hexToNum(nationSystem.getNation(settlement).color);
+          if (parsed !== null) flagColor = parsed;
         }
       }
       drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE, flagColor);
