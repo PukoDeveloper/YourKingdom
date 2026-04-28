@@ -615,6 +615,12 @@ export class GameUI {
 
     const _apply = () => {
       if (this.player) this.player.setAppearance(pending);
+      // Sync the hero Unit in the army so the party screen reflects the new look.
+      // The hero is always in squad 0 and cannot be moved to another squad.
+      if (this.army) {
+        const heroUnit = this.army.squads[0]?.members.find(m => m.role === 'hero');
+        if (heroUnit) heroUnit.appearance = charAppearanceFromIndices(pending);
+      }
     };
 
     /**
