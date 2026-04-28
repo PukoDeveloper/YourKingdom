@@ -272,6 +272,22 @@ export class Game {
       );
     }
 
+    // Peace missives: advance messengers and surface arrivals to GameUI.
+    if (this._diplomacySystem) {
+      const missiveResults = this._diplomacySystem.updateMissives(dt);
+      missiveResults.forEach(result => {
+        if (result.type === 'player_offer') {
+          this._gameUI.onPeaceOfferReceived(result.missive);
+        } else if (result.type === 'npc_response') {
+          this._gameUI.onPeaceTreatyResponse(result.missive, result.accepted);
+          if (result.accepted) {
+            this._structureRenderer.rebuild();
+            this._gameUI.refreshNationsPanel();
+          }
+        }
+      });
+    }
+
     // HUD: terrain name (+ nation when inside a settlement)
     if (this._terrainLabel) {
       const t = this._mapData.getTerrainAtWorld(this._player.x, this._player.y);

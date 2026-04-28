@@ -2866,6 +2866,170 @@
         font-size: 11px;
         margin-top: 3px;
       }
+      /* Peace offer action buttons inside inbox */
+      .inbox-peace-actions { display: flex; gap: 8px; margin-top: 8px; }
+      .inbox-accept-btn {
+        padding: 4px 14px;
+        font-size: 12px;
+        border-radius: 6px;
+        border: none;
+        background: #43a047;
+        color: #fff;
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .inbox-accept-btn:hover { background: #2e7d32; }
+      .inbox-ignore-btn {
+        padding: 4px 14px;
+        font-size: 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: transparent;
+        color: rgba(255,255,255,0.5);
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .inbox-ignore-btn:hover { background: rgba(255,255,255,0.05); }
+      .inbox-responded-label {
+        font-size: 11px;
+        color: rgba(255,255,255,0.4);
+        margin-left: 4px;
+      }
+      /* War badge in diplomacy panel */
+      .dipl-war-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        background: #b71c1c;
+        color: #fff;
+        border-radius: 4px;
+        padding: 1px 5px;
+        margin-left: 4px;
+        vertical-align: middle;
+        letter-spacing: 0.03em;
+      }
+      /* Government building: letter button */
+      .gov-letter-btn {
+        display: block;
+        width: 100%;
+        margin: 8px 0 0;
+        padding: 9px 0;
+        font-size: 14px;
+        border-radius: 8px;
+        background: linear-gradient(135deg,#1565c0,#1976d2);
+        color: #fff;
+        border: none;
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        letter-spacing: 0.04em;
+      }
+      .gov-letter-btn:hover { filter: brightness(1.12); }
+      /* Send letter screen */
+      .letter-intro {
+        color: rgba(255,255,255,0.55);
+        font-size: 12px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        margin: 8px 0 12px;
+      }
+      .letter-type-list { display: flex; flex-direction: column; gap: 10px; }
+      .letter-type-card {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 12px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .letter-type-card:hover { background: rgba(255,255,255,0.1); }
+      .ltc-icon { font-size: 28px; flex-shrink: 0; }
+      .ltc-info { flex: 1; min-width: 0; }
+      .ltc-name {
+        color: #e3f2fd;
+        font-size: 14px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+      .ltc-desc {
+        color: rgba(255,255,255,0.5);
+        font-size: 12px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .ltc-arrow { color: rgba(255,255,255,0.4); font-size: 18px; }
+      /* Peace treaty composer form */
+      .treaty-form {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 4px 0;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .treaty-section-title {
+        color: rgba(255,255,255,0.45);
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        margin: 6px 0 2px;
+      }
+      .treaty-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .treaty-check-row { justify-content: space-between; }
+      .treaty-label {
+        color: #ccc;
+        font-size: 13px;
+        flex: 1 1 120px;
+      }
+      .treaty-select, .treaty-input {
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 6px;
+        color: #fff;
+        font-size: 13px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        padding: 5px 8px;
+        flex: 0 1 140px;
+      }
+      .treaty-input[type=number] { flex: 0 1 90px; }
+      .treaty-checkbox { width: 18px; height: 18px; cursor: pointer; flex-shrink: 0; }
+      .treaty-territory-list {
+        flex: 1 1 100%;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 6px;
+        padding: 6px 8px;
+        max-height: 100px;
+        overflow-y: auto;
+      }
+      .treaty-territory-empty { color: rgba(255,255,255,0.35); font-size: 12px; }
+      .treaty-territory-item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #ccc;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 2px 0;
+      }
+      .treaty-note {
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        font-style: italic;
+        margin-top: 4px;
+        line-height: 1.5;
+      }
+      .treaty-send-btn {
+        margin-top: 4px;
+        width: 100%;
+        padding: 10px 0;
+        font-size: 14px;
+        letter-spacing: 0.05em;
+      }
     </style>
   </head>
   <body>

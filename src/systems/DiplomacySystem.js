@@ -54,6 +54,9 @@ const NPC_GOLD_CAP = 3000;
 /** World pixels per second for NPC army marches on open terrain. */
 const NPC_MARCH_SPEED_PX = 240;
 
+/** World pixels per second for peace messengers. */
+const MISSIVE_SPEED_PX = 180;
+
 /** Speed multiplier on FOREST tiles (mirrors Player.js FOREST_SPEED_MULT). */
 const MARCH_FOREST_SPEED_MULT = 0.4;
 
@@ -289,6 +292,22 @@ export class DiplomacySystem {
     /** Monotonically increasing id generator for marches. */
     this._marchNextId = 0;
 
+    /**
+     * Active war pairs. Key: "A:B" where A < B (player = -1).
+     * @type {Set<string>}
+     */
+    this._warPairs = new Set();
+
+    /**
+     * Peace missives currently in transit.
+     * Each entry: { id, senderNationId, receiverNationId, terms, worldX, worldY, _path, _pathSegIdx }
+     * @type {Array<object>}
+     */
+    this._pendingMissives = [];
+
+    /** Monotonically increasing id generator for peace missives. */
+    this._missiveNextId = 0;
+
     this._build(mapData);
     this._initSovereignty();
     this._initNpcState();
@@ -486,6 +505,9 @@ export class DiplomacySystem {
     const nations = this.nationSystem.nations;
     const targetNation = nations[targetNationId];
     if (!targetNation) return;
+
+    // An attack constitutes an act of war.
+    this.declareWar(attackerNationId, targetNationId);
 
     // Direct relation delta for the attacked nation
     const directDelta = victory
@@ -1214,6 +1236,368 @@ export class DiplomacySystem {
   }
 
   // -------------------------------------------------------------------------
+  // War state management
+  // -------------------------------------------------------------------------
+
+  /** @param {number} idA @param {number} idB @returns {string} */
+  _warKey(idA, idB) {
+    const a = Math.min(idA, idB);
+    const b = Math.max(idA, idB);
+    return `${a}:${b}`;
+  }
+
+  /**
+   * Mark two nations as being at war with each other.
+   * @param {number} idA  Nation id (use -1 for player).
+   * @param {number} idB  Nation id (use -1 for player).
+   */
+  declareWar(idA, idB) {
+    if (idA === idB) return;
+    this._warPairs.add(this._warKey(idA, idB));
+  }
+
+  /**
+   * End the war between two nations (called after a peace treaty is accepted).
+   * @param {number} idA
+   * @param {number} idB
+   */
+  endWar(idA, idB) {
+    this._warPairs.delete(this._warKey(idA, idB));
+  }
+
+  /**
+   * Returns true when the two given nations are currently at war.
+   * @param {number} idA
+   * @param {number} idB
+   * @returns {boolean}
+   */
+  isAtWar(idA, idB) {
+    if (idA === idB) return false;
+    return this._warPairs.has(this._warKey(idA, idB));
+  }
+
+  /**
+   * Return the list of nation IDs currently at war with `nationId`.
+   * @param {number} nationId
+   * @returns {number[]}
+   */
+  getWarsInvolving(nationId) {
+    const result = [];
+    for (const key of this._warPairs) {
+      const parts = key.split(':');
+      const a = Number(parts[0]);
+      const b = Number(parts[1]);
+      if (a === nationId) result.push(b);
+      else if (b === nationId) result.push(a);
+    }
+    return result;
+  }
+
+  /**
+   * Scan all settlements for sovereignty conflicts (controller ≠ founding nation)
+   * and register those pairs as being at war. Safe to call multiple times.
+   */
+  _detectCurrentWars() {
+    const { castleSettlements, villageSettlements } = this.nationSystem;
+    [...castleSettlements, ...villageSettlements].forEach(s => {
+      if (s.nationId < 0) return;
+      const ctrl = s.controllingNationId;
+      if (ctrl === s.nationId) return; // no conflict
+      this.declareWar(s.nationId, ctrl);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Peace missive system
+  // -------------------------------------------------------------------------
+
+  /**
+   * Return the world-pixel position of a settlement (castle or village).
+   * @param {import('./NationSystem.js').Settlement} settlement
+   * @returns {{ x: number, y: number }|null}
+   */
+  _getSettlementPx(settlement) {
+    const ci = this.nationSystem.castleSettlements.indexOf(settlement);
+    if (ci >= 0) return _marchCastlePx(this._mapData.castles[ci]);
+    const vi = this.nationSystem.villageSettlements.indexOf(settlement);
+    if (vi >= 0) return _marchVillagePx(this._mapData.villages[vi]);
+    return null;
+  }
+
+  /**
+   * Find the world-pixel position of the player's nearest controlled settlement.
+   * Returns null if the player controls no settlements.
+   * @param {{ x: number, y: number }} fromPx
+   * @returns {{ x: number, y: number }|null}
+   */
+  _findNearestPlayerSettlement(fromPx) {
+    const { castleSettlements, villageSettlements } = this.nationSystem;
+    let bestDist = Infinity;
+    let bestPx = null;
+
+    castleSettlements.forEach((s, idx) => {
+      if (s.controllingNationId !== _PLAYER_NATION_ID) return;
+      const castle = this._mapData.castles[idx];
+      if (!castle) return;
+      const px = _marchCastlePx(castle);
+      const d = (px.x - fromPx.x) ** 2 + (px.y - fromPx.y) ** 2;
+      if (d < bestDist) { bestDist = d; bestPx = px; }
+    });
+
+    villageSettlements.forEach((s, idx) => {
+      if (s.controllingNationId !== _PLAYER_NATION_ID) return;
+      const village = this._mapData.villages[idx];
+      if (!village) return;
+      const px = _marchVillagePx(village);
+      const d = (px.x - fromPx.x) ** 2 + (px.y - fromPx.y) ** 2;
+      if (d < bestDist) { bestDist = d; bestPx = px; }
+    });
+
+    return bestPx;
+  }
+
+  /**
+   * Resolve a settlement key (e.g. "castle:0") back to a Settlement object.
+   * @param {string} key
+   * @returns {import('./NationSystem.js').Settlement|null}
+   */
+  _getSettlementByKey(key) {
+    const parts = key.split(':');
+    const type  = parts[0];
+    const idx   = Number(parts[1]);
+    if (type === 'castle')  return this.nationSystem.castleSettlements[idx]  ?? null;
+    if (type === 'village') return this.nationSystem.villageSettlements[idx] ?? null;
+    return null;
+  }
+
+  /**
+   * Create and dispatch a peace treaty missive.
+   *
+   * Terms object shape:
+   * ```
+   * {
+   *   goldFromSender:          number,  // Gold sender pays receiver
+   *   goldFromNpc:             number,  // Extra gold NPC pays (when NPC sends)
+   *   playerAcknowledgesDefeat: boolean,
+   *   npcAcknowledgesDefeat:   boolean,
+   *   cededBySender:           string[], // Settlement keys sender gives up
+   *   cededByReceiver:         string[], // Settlement keys receiver gives up
+   * }
+   * ```
+   *
+   * @param {{ senderNationId: number, receiverNationId: number, fromSettlement?: object|null, fromPx?: object|null, terms: object }} opts
+   * @returns {boolean}  true if the missive was successfully queued.
+   */
+  sendPeaceTreaty({ senderNationId, receiverNationId, fromSettlement = null, fromPx: explicitFromPx = null, terms }) {
+    const fromPx = explicitFromPx ?? (fromSettlement ? this._getSettlementPx(fromSettlement) : null);
+    if (!fromPx) return false;
+
+    let toPx = null;
+    if (receiverNationId === _PLAYER_NATION_ID) {
+      toPx = this._findNearestPlayerSettlement(fromPx);
+    } else {
+      const castle = this._mapData.castles[receiverNationId];
+      toPx = castle ? _marchCastlePx(castle) : null;
+    }
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      senderNationId,
+      receiverNationId,
+      terms,
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+    });
+    return true;
+  }
+
+  /**
+   * Evaluate whether an NPC nation would accept a peace offer.
+   * @param {number} nationId  Nation evaluating the offer.
+   * @param {object} terms     Treaty terms.
+   * @returns {boolean}
+   */
+  _npcEvaluatePeaceOffer(nationId, terms) {
+    this.updateSurrenderIndex(nationId);
+    const si = this.getSurrenderIndex(nationId) / 100; // 0..1
+    const p  = this._rulerPersonality(this.nationSystem.castleSettlements[nationId]);
+
+    // Base acceptance driven by how desperate the nation is.
+    let chance = si * 0.75;
+
+    // Terms favourable to the NPC improve acceptance.
+    if ((terms.goldFromSender ?? 0) > 0) chance += 0.15;
+    if (terms.playerAcknowledgesDefeat) chance += 0.10;
+    if ((terms.cededBySender ?? []).length > 0) chance += (terms.cededBySender.length) * 0.10;
+
+    // Terms unfavourable to the NPC reduce acceptance.
+    const npcGold = this._npcGold.get(nationId) ?? 0;
+    const requestedGold = terms.goldFromNpc ?? 0;
+    if (requestedGold > 0) {
+      chance -= requestedGold > npcGold ? 0.40 : 0.15;
+    }
+    if (terms.npcAcknowledgesDefeat) chance -= 0.15;
+    if ((terms.cededByReceiver ?? []).length > 0) chance -= (terms.cededByReceiver.length) * 0.15;
+
+    // Personality modifiers.
+    if (p === PERSONALITY_WARLIKE)  chance -= 0.25;
+    if (p === PERSONALITY_ARROGANT) chance -= 0.15;
+    if (p === PERSONALITY_CAUTIOUS) chance += 0.10;
+    if (p === PERSONALITY_GENTLE)   chance += 0.20;
+
+    return Math.random() < Math.max(0, Math.min(1, chance));
+  }
+
+  /**
+   * Apply agreed peace treaty terms.
+   * NPC-side gold changes and territory control are handled here.
+   * Returns the net gold change for the player (caller must apply this to player inventory).
+   *
+   * @param {number} senderNationId   -1 for player.
+   * @param {number} receiverNationId -1 for player.
+   * @param {object} terms
+   * @returns {{ playerGoldGain: number, structureRebuildNeeded: boolean }}
+   */
+  applyPeaceTreaty(senderNationId, receiverNationId, terms) {
+    this.endWar(senderNationId, receiverNationId);
+
+    let playerGoldGain = 0;
+    let structureRebuildNeeded = false;
+
+    // ── Gold from sender to receiver ────────────────────────────────────────
+    const goldFromSender = terms.goldFromSender ?? 0;
+    if (goldFromSender > 0) {
+      if (senderNationId !== _PLAYER_NATION_ID) {
+        const cur = this._npcGold.get(senderNationId) ?? 0;
+        this._npcGold.set(senderNationId, Math.max(0, cur - goldFromSender));
+        if (receiverNationId === _PLAYER_NATION_ID) {
+          playerGoldGain += goldFromSender;
+        } else {
+          const rcur = this._npcGold.get(receiverNationId) ?? 0;
+          this._npcGold.set(receiverNationId, Math.min(NPC_GOLD_CAP, rcur + goldFromSender));
+        }
+      } else {
+        // Player pays NPC
+        playerGoldGain -= goldFromSender;
+      }
+    }
+
+    // ── Additional gold from NPC to player (used in NPC-initiated offers) ───
+    const goldFromNpc = terms.goldFromNpc ?? 0;
+    if (goldFromNpc > 0) {
+      const npcId = senderNationId !== _PLAYER_NATION_ID ? senderNationId : receiverNationId;
+      if (npcId >= 0) {
+        const cur = this._npcGold.get(npcId) ?? 0;
+        this._npcGold.set(npcId, Math.max(0, cur - goldFromNpc));
+      }
+      if (senderNationId === _PLAYER_NATION_ID || receiverNationId === _PLAYER_NATION_ID) {
+        playerGoldGain += goldFromNpc;
+      }
+    }
+
+    // ── Territory ceded by sender → goes to receiver ────────────────────────
+    (terms.cededBySender ?? []).forEach(key => {
+      const s = this._getSettlementByKey(key);
+      if (!s) return;
+      s.controllingNationId = receiverNationId;
+      if (receiverNationId !== _PLAYER_NATION_ID) s.playerOwned = false;
+      this.transferSovereignty(key, senderNationId, receiverNationId);
+      structureRebuildNeeded = true;
+    });
+
+    // ── Territory ceded by receiver → goes to sender ────────────────────────
+    (terms.cededByReceiver ?? []).forEach(key => {
+      const s = this._getSettlementByKey(key);
+      if (!s) return;
+      s.controllingNationId = senderNationId;
+      if (senderNationId !== _PLAYER_NATION_ID) s.playerOwned = false;
+      this.transferSovereignty(key, receiverNationId, senderNationId);
+      structureRebuildNeeded = true;
+    });
+
+    // ── Relation improvement after peace ────────────────────────────────────
+    if (senderNationId === _PLAYER_NATION_ID || receiverNationId === _PLAYER_NATION_ID) {
+      const npcId = senderNationId === _PLAYER_NATION_ID ? receiverNationId : senderNationId;
+      this.modifyPlayerRelation(npcId, 35);
+    } else {
+      this.modifyNpcRelation(senderNationId, receiverNationId, 40);
+    }
+
+    return { playerGoldGain, structureRebuildNeeded };
+  }
+
+  /**
+   * Advance all pending peace missives along their paths.
+   * Call this every game-loop frame from Game.js.
+   *
+   * @param {number} dt  Delta-time in real seconds.
+   * @returns {Array<{ type: 'player_offer'|'npc_response'|'npc_npc', missive: object, accepted?: boolean }>}
+   */
+  updateMissives(dt) {
+    if (this._pendingMissives.length === 0) return [];
+
+    const resolved  = [];
+    const remaining = [];
+
+    for (const m of this._pendingMissives) {
+      const path = m._path;
+      if (!path || path.length < 2) { resolved.push(m); continue; }
+
+      let rem = MISSIVE_SPEED_PX * dt;
+      while (rem > 0 && m._pathSegIdx < path.length - 1) {
+        const next = path[m._pathSegIdx + 1];
+        const dx   = next.x - m.worldX;
+        const dy   = next.y - m.worldY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= rem) {
+          m.worldX = next.x; m.worldY = next.y;
+          rem -= dist; m._pathSegIdx++;
+        } else {
+          const t  = rem / dist;
+          m.worldX += dx * t; m.worldY += dy * t;
+          rem = 0;
+        }
+      }
+
+      if (m._pathSegIdx >= path.length - 1) resolved.push(m);
+      else remaining.push(m);
+    }
+
+    this._pendingMissives = remaining;
+    return resolved.map(m => this._resolveMissive(m));
+  }
+
+  /**
+   * @param {object} missive
+   * @returns {{ type: string, missive: object, accepted?: boolean }}
+   */
+  _resolveMissive(missive) {
+    const { senderNationId, receiverNationId, terms } = missive;
+
+    // NPC receives player's peace offer → evaluate acceptance
+    if (senderNationId === _PLAYER_NATION_ID && receiverNationId >= 0) {
+      const accepted = this._npcEvaluatePeaceOffer(receiverNationId, terms);
+      return { type: 'npc_response', missive, accepted };
+    }
+
+    // Player receives NPC's peace offer → surface to GameUI
+    if (receiverNationId === _PLAYER_NATION_ID && senderNationId >= 0) {
+      return { type: 'player_offer', missive };
+    }
+
+    // NPC-NPC peace (simplified)
+    const accepted = Math.random() < 0.4;
+    if (accepted) {
+      this.applyPeaceTreaty(senderNationId, receiverNationId, terms);
+    }
+    return { type: 'npc_npc', missive, accepted };
+  }
+
+  // -------------------------------------------------------------------------
   // Surrender index
   // -------------------------------------------------------------------------
 
@@ -1491,6 +1875,36 @@ export class DiplomacySystem {
           });
         }
       }
+      // ── NPC peace initiative ──────────────────────────────────────────────
+      // When a nation is under heavy pressure and at war with the player, it may
+      // spontaneously send a peace treaty missive to the nearest player settlement.
+      this.updateSurrenderIndex(id);
+      if (this.getSurrenderIndex(id) > 65 && this.isAtWar(id, _PLAYER_NATION_ID)) {
+        const hasPendingToPlayer = this._pendingMissives.some(
+          m => m.senderNationId === id && m.receiverNationId === _PLAYER_NATION_ID,
+        );
+        if (!hasPendingToPlayer && Math.random() < 0.25) {
+          const fromPx = _marchCastlePx(this._mapData.castles[id]);
+          const toPx   = fromPx ? this._findNearestPlayerSettlement(fromPx) : null;
+          if (fromPx && toPx) {
+            const offeredGold = Math.floor((this._npcGold.get(id) ?? 0) * 0.2);
+            const terms = {
+              goldFromSender: 0,
+              goldFromNpc:    offeredGold,
+              playerAcknowledgesDefeat: false,
+              npcAcknowledgesDefeat:    false,
+              cededBySender:   [],
+              cededByReceiver: [],
+            };
+            this.sendPeaceTreaty({ senderNationId: id, receiverNationId: _PLAYER_NATION_ID, fromPx, terms });
+            events.push({
+              nationId: id,
+              delta:    0,
+              message:  `🕊 ${nationName} 派出和談使者，前往你的領地……`,
+            });
+          }
+        }
+      }
     });
 
     return events;
@@ -1558,7 +1972,7 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][] }} */
+  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][], warPairs: string[] }} */
   getState() {
     return {
       playerRelations: [...this._playerRelations.entries()],
@@ -1568,6 +1982,7 @@ export class DiplomacySystem {
       surrenderIndex:  [...this._surrenderIndex.entries()],
       npcGold:         [...this._npcGold.entries()],
       npcArmies:       [...this._npcArmies.entries()],
+      warPairs:        [...this._warPairs],
     };
   }
 
@@ -1618,5 +2033,13 @@ export class DiplomacySystem {
     }
     // Re-run init to fill any keys missing from the save (e.g., from new settlements).
     this._initNpcState();
+    // Restore war state: use saved pairs if present, otherwise detect from control vs nationality.
+    if (Array.isArray(state.warPairs)) {
+      state.warPairs.forEach(key => {
+        if (typeof key === 'string') this._warPairs.add(key);
+      });
+    } else {
+      this._detectCurrentWars();
+    }
   }
 }
