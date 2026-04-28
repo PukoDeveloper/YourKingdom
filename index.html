@@ -1424,11 +1424,12 @@
       }
       .ap-swatch {
         cursor: pointer;
+        border: 2px solid transparent;
         transition: transform 0.12s, border-color 0.12s;
         touch-action: manipulation;
       }
       .ap-swatch:hover { transform: scale(1.15); }
-      .ap-swatch.selected { border-color: #fff !important; transform: scale(1.12); }
+      .ap-swatch.selected { border-color: #fff; transform: scale(1.12); }
       .ap-choices {
         display: flex;
         gap: 6px;

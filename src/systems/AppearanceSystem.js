@@ -231,8 +231,8 @@ function _headgearHTML(type, headSize, color) {
  */
 export function drawFlagGraphics(g, x, y, w, h, flagApp) {
   const { bgColor, stripeStyle, stripeColor, symbolShape } = flagApp;
-  const bg = _cssToNum(bgColor);
-  const sc = _cssToNum(stripeColor);
+  const bg = cssToNum(bgColor);
+  const sc = cssToNum(stripeColor);
 
   // Background
   g.rect(x, y, w, h).fill(bg);
@@ -381,7 +381,7 @@ function _drawHeadgear(g, r, type, color) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-export function _cssToNum(css) {
+export function cssToNum(css) {
   if (typeof css === 'string' && css.startsWith('#')) {
     const n = parseInt(css.slice(1), 16);
     if (!isNaN(n)) return n;

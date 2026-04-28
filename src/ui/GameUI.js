@@ -12,6 +12,9 @@ import {
   CHAR_MARK_COLORS_CSS,
 } from '../systems/AppearanceSystem.js';
 
+/** Default appearance indices used when no player is available. */
+const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 };
+
 /**
  * GameUI – manages the Backpack and Team DOM panels.
  *
@@ -555,12 +558,12 @@ export class GameUI {
 
     const app = this.player
       ? this.player.appearance
-      : charAppearanceFromIndices({ bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 });
+      : charAppearanceFromIndices(DEFAULT_APPEARANCE_INDICES);
 
     const _swatch = (colors, selectedIdx, dataAttr) =>
       colors.map((c, i) =>
         `<button class="ap-swatch${i === selectedIdx ? ' selected' : ''}" data-${dataAttr}="${i}"
-                 style="background:${c};width:28px;height:28px;border-radius:50%;border:2px solid ${i === selectedIdx ? '#fff' : 'transparent'};cursor:pointer"></button>`
+                 style="background:${c};width:28px;height:28px;border-radius:50%;cursor:pointer"></button>`
       ).join('');
 
     const headgearHTML = CHAR_HEADGEAR_TYPES.map((t, i) =>
@@ -614,41 +617,28 @@ export class GameUI {
       if (this.player) this.player.setAppearance(pending);
     };
 
-    content.querySelectorAll('[data-body]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        pending.bodyColorIdx = Number(btn.dataset.body);
-        content.querySelectorAll('[data-body]').forEach(b => b.style.border = `2px solid transparent`);
-        btn.style.border = `2px solid #fff`;
-        _apply(); _refreshPreview();
+    /**
+     * Wire up swatch/choice buttons for one appearance part.
+     * @param {string} attr      data attribute name (e.g. 'body', 'armor', 'mark')
+     * @param {string} pendingKey key to update in the `pending` object
+     */
+    const _wireSwatches = (attr, pendingKey) => {
+      const btns = content.querySelectorAll(`[data-${attr}]`);
+      btns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          pending[pendingKey] = Number(btn.dataset[attr]);
+          btns.forEach(b => b.classList.remove('selected'));
+          btn.classList.add('selected');
+          _apply();
+          _refreshPreview();
+        });
       });
-    });
+    };
 
-    content.querySelectorAll('[data-headgear]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        pending.headgearIdx = Number(btn.dataset.headgear);
-        content.querySelectorAll('[data-headgear]').forEach(b => b.classList.remove('selected'));
-        btn.classList.add('selected');
-        _apply(); _refreshPreview();
-      });
-    });
-
-    content.querySelectorAll('[data-armor]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        pending.armorColorIdx = Number(btn.dataset.armor);
-        content.querySelectorAll('[data-armor]').forEach(b => b.style.border = `2px solid transparent`);
-        btn.style.border = `2px solid #fff`;
-        _apply(); _refreshPreview();
-      });
-    });
-
-    content.querySelectorAll('[data-mark]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        pending.markColorIdx = Number(btn.dataset.mark);
-        content.querySelectorAll('[data-mark]').forEach(b => b.style.border = `2px solid transparent`);
-        btn.style.border = `2px solid #fff`;
-        _apply(); _refreshPreview();
-      });
-    });
+    _wireSwatches('body',    'bodyColorIdx');
+    _wireSwatches('headgear','headgearIdx');
+    _wireSwatches('armor',   'armorColorIdx');
+    _wireSwatches('mark',    'markColorIdx');
   }
 
   // -------------------------------------------------------------------------
