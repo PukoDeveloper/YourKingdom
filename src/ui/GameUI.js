@@ -2717,7 +2717,7 @@ export class GameUI {
 
     const nations = this.nationSystem.nations;
     // Build list of nations (exclude extinct and player).
-    const activeNations = nations.filter((n, id) => !this.nationSystem.isNationExtinct(id));
+    const activeNations = nations.filter(n => n && !this.nationSystem.isNationExtinct(n.id));
 
     const nationOptions = activeNations.map(n =>
       `<option value="${n.id}">${n.name}</option>`
@@ -3680,7 +3680,7 @@ export class GameUI {
            </div>`
         : '';
       const respondedLabel = (m.isPeaceOffer && m.responded)
-        ? `<span class="inbox-responded-label">${m.read && m._acceptedPeace ? '（已同意）' : '（已無視）'}</span>`
+        ? `<span class="inbox-responded-label">${m._acceptedPeace === true ? '（已同意）' : '（已無視）'}</span>`
         : '';
       return `
         <div class="inbox-row${m.read && (!m.isPeaceOffer || m.responded) ? '' : ' inbox-unread'}" data-idx="${i}">
