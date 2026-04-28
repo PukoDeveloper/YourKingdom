@@ -243,8 +243,9 @@ export class DiplomacySystem {
     const settlements = this.nationSystem.castleSettlements;
 
     settlements.forEach((s, id) => {
-      const p = this._rulerPersonality(s);
-      const roll = Math.random();
+      const p          = this._rulerPersonality(s);
+      const roll       = Math.random();
+      const nationName = this.nationSystem.nations[id]?.name ?? s.name;
 
       if (p === PERSONALITY_ARROGANT && roll < 0.3) {
         // Arrogant ruler condemns the player
@@ -253,7 +254,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${s.name} 的關係惡化 ${delta}。`,
+          message: `${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
         });
       } else if (p === PERSONALITY_WARLIKE && roll < 0.2) {
         // Warlike ruler threatens the player
@@ -262,7 +263,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${s.name} 的關係惡化 ${delta}。`,
+          message: `${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
         });
       } else if (p === PERSONALITY_GENTLE && roll < 0.15) {
         // Gentle ruler sends goodwill
@@ -271,7 +272,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${s.name} 的關係改善 +${delta}。`,
+          message: `${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
         });
       }
     });
