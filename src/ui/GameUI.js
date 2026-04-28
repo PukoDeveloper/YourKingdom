@@ -94,6 +94,9 @@ export class GameUI {
     /** Location screen stage: 'gate' (castle entrance) | 'inside' (facility list). */
     this._locationStage = 'gate';
 
+    /** Settlement currently displayed in the location overlay, or null. */
+    this._locationSettlement = null;
+
     /** Player's custom kingdom state (flag, name, type). */
     this._playerKingdom = { ...DEFAULT_KINGDOM };
 
