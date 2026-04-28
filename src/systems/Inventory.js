@@ -73,4 +73,26 @@ export class Inventory {
   getItems() {
     return [...this._items];
   }
+
+  // -------------------------------------------------------------------------
+  // Persistence
+  // -------------------------------------------------------------------------
+
+  /** @returns {{ nextId: number, items: Array }} serialisable snapshot */
+  getState() {
+    return {
+      nextId: this._nextId,
+      items:  this._items.map(i => ({ ...i })),
+    };
+  }
+
+  /**
+   * Restore inventory from a saved snapshot.
+   * @param {{ nextId: number, items: Array }} state
+   */
+  loadState(state) {
+    if (!state) return;
+    this._items  = (state.items ?? []).map(i => ({ ...i }));
+    this._nextId = state.nextId ?? (this._items.length + 1);
+  }
 }

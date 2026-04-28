@@ -137,4 +137,43 @@ export class Army {
   getSquads() {
     return this.squads;
   }
+
+  // -------------------------------------------------------------------------
+  // Persistence
+  // -------------------------------------------------------------------------
+
+  /** @returns {{ nextUnitId: number, squads: Array }} serialisable snapshot */
+  getState() {
+    return {
+      nextUnitId: this._nextUnitId,
+      squads: this.squads.map(sq => ({
+        id:            sq.id,
+        isPlayerSquad: sq.isPlayerSquad,
+        general:       sq.general  ? { ...sq.general,  stats: { ...sq.general.stats  } } : null,
+        soldiers:      sq.soldiers.map(s => ({ ...s, stats: { ...s.stats } })),
+      })),
+    };
+  }
+
+  /**
+   * Restore army from a saved snapshot.
+   * The game always uses exactly MAX_SQUADS squads, so saved data beyond that
+   * index is intentionally ignored (no data loss – saves are written with the
+   * same fixed squad count).
+   * @param {{ nextUnitId: number, squads: Array }} state
+   */
+  loadState(state) {
+    if (!state) return;
+    this._nextUnitId = state.nextUnitId ?? this._nextUnitId;
+
+    (state.squads ?? []).forEach((sqData, idx) => {
+      const squad = this.squads[idx];
+      if (!squad) return; // saved with more squads than current MAX_SQUADS – skip excess
+
+      squad.general  = sqData.general
+        ? new Unit(sqData.general)
+        : null;
+      squad.soldiers = (sqData.soldiers ?? []).map(u => new Unit(u));
+    });
+  }
 }
