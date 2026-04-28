@@ -73,6 +73,29 @@ export function drawTile(g, localX, localY, terrain) {
       break;
 
     // ------------------------------------------------------------------
+    case TERRAIN.VILLAGE_GROUND:
+      g.rect(x, y, T, T).fill(0xC8A96E);
+      // Dirt path texture
+      g.rect(x + 3,  y + 3,  18, 18).fill(0xBD9B5F);
+      g.rect(x + 27, y + 3,  18, 18).fill(0xBD9B5F);
+      g.rect(x + 3,  y + 27, 18, 18).fill(0xBD9B5F);
+      g.rect(x + 27, y + 27, 18, 18).fill(0xBD9B5F);
+      break;
+
+    // ------------------------------------------------------------------
+    case TERRAIN.PORT_GROUND:
+      g.rect(x, y, T, T).fill(0x8B6914);
+      // Wooden plank lines
+      g.rect(x + 0, y + 10, T, 4).fill(0x7A5C0D);
+      g.rect(x + 0, y + 22, T, 4).fill(0x7A5C0D);
+      g.rect(x + 0, y + 34, T, 4).fill(0x7A5C0D);
+      // Plank vertical grain
+      for (let bx = 6; bx < T; bx += 12) {
+        g.rect(x + bx, y, 2, T).fill(0x6B4E0B);
+      }
+      break;
+
+    // ------------------------------------------------------------------
     default:
       g.rect(x, y, T, T).fill(0x1565C0);
   }
@@ -158,4 +181,93 @@ export function drawCastleBuilding(g, px, py) {
     px + 118, py + 62,
     px + 98, py + 70,
   ]).fill(0xE53935);
+}
+
+// ---------------------------------------------------------------------------
+// Village building (drawn as one structure over 2×2 tile area = 96×96px)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw a village cluster at world-pixel position (px, py).
+ * The village occupies 2×2 tiles = (2 * TILE_SIZE)² pixels.
+ */
+export function drawVillageBuilding(g, px, py) {
+  const S = T * 2; // 96
+
+  // --- Ground base ---
+  g.rect(px, py, S, S).fill(0xC8A96E);
+
+  // --- Dirt road / central square ---
+  g.rect(px + 36, py + 36, 24, 24).fill(0xA0784A);
+
+  // --- House 1 (top-left) ---
+  g.rect(px + 6,  py + 8,  28, 22).fill(0xD4A96A); // wall
+  g.poly([px + 4, py + 8, px + 20, py - 2, px + 36, py + 8]).fill(0xB05050); // roof
+
+  // --- House 2 (top-right) ---
+  g.rect(px + 62, py + 8,  26, 22).fill(0xCCA060); // wall
+  g.poly([px + 60, py + 8, px + 75, py - 2, px + 90, py + 8]).fill(0xA04040); // roof
+
+  // --- House 3 (bottom-left) ---
+  g.rect(px + 6,  py + 62, 28, 22).fill(0xD4A96A); // wall
+  g.poly([px + 4, py + 62, px + 20, py + 52, px + 36, py + 62]).fill(0xB05050); // roof
+
+  // --- Well in central square ---
+  g.circle(px + 48, py + 48, 7).fill(0x7A6040);
+  g.circle(px + 48, py + 48, 4).fill(0x263238);
+
+  // --- Fence segments ---
+  for (let i = 0; i < 4; i++) {
+    g.rect(px + 36 + i * 6, py + 35, 3, 6).fill(0x8B6914);  // top fence
+    g.rect(px + 36 + i * 6, py + 61, 3, 6).fill(0x8B6914);  // bottom fence
+    g.rect(px + 35, py + 36 + i * 6, 6, 3).fill(0x8B6914);  // left fence
+    g.rect(px + 61, py + 36 + i * 6, 6, 3).fill(0x8B6914);  // right fence
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Port building (drawn as one structure over 3×2 tile area = 144×96px)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw a coastal port at world-pixel position (px, py).
+ * The port occupies 3×2 tiles = 144×96 pixels.
+ */
+export function drawPortBuilding(g, px, py) {
+  const W = T * 3; // 144
+  const H = T * 2; // 96
+
+  // --- Wooden dock platform ---
+  g.rect(px, py, W, H).fill(0x8B6914);
+  // Plank lines
+  for (let lx = 0; lx < W; lx += 14) {
+    g.rect(px + lx, py, 2, H).fill(0x6B4E0B);
+  }
+
+  // --- Warehouse / storage building (left side) ---
+  g.rect(px + 6,  py + 10, 44, 54).fill(0xA0784A);
+  g.rect(px + 8,  py + 8,  40, 12).fill(0x8B6330); // roof overhang
+  // Door
+  g.rect(px + 22, py + 42, 12, 22).fill(0x3E2723);
+
+  // --- Crane / loading arm ---
+  g.rect(px + 66, py + 6, 6, 58).fill(0x5D4037);  // vertical post
+  g.rect(px + 66, py + 6, 36, 6).fill(0x5D4037);  // horizontal arm
+  // Hanging rope
+  g.rect(px + 98, py + 12, 3, 26).fill(0x795548);
+  g.circle(px + 100, py + 40, 6).fill(0x424242);   // hook block
+
+  // --- Mooring posts (right edge) ---
+  for (let i = 0; i < 2; i++) {
+    g.circle(px + W - 14, py + 20 + i * 40, 6).fill(0x4E342E);
+    g.rect(px + W - 10, py + 16 + i * 40, 8, 8).fill(0x3E2723);
+  }
+
+  // --- Flag / signal pole ---
+  g.rect(px + W - 20, py + 4, 4, 30).fill(0x8D6E63);
+  g.poly([
+    px + W - 16, py + 4,
+    px + W,      py + 12,
+    px + W - 16, py + 20,
+  ]).fill(0x1565C0);
 }

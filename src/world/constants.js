@@ -4,8 +4,8 @@
 export const TILE_SIZE = 48;
 
 /** Map dimensions in tiles. */
-export const MAP_WIDTH  = 120;
-export const MAP_HEIGHT = 120;
+export const MAP_WIDTH  = 200;
+export const MAP_HEIGHT = 200;
 
 /** Tiles per chunk edge (a chunk is CHUNK_SIZE × CHUNK_SIZE tiles). */
 export const CHUNK_SIZE = 12;
@@ -18,14 +18,18 @@ export const TERRAIN = Object.freeze({
   FOREST:         3,
   MOUNTAIN:       4,
   CASTLE_GROUND:  5,
+  VILLAGE_GROUND: 6,
+  PORT_GROUND:    7,
 });
 
 /** Human-readable Chinese names shown in the HUD. */
 export const TERRAIN_NAMES = {
-  [TERRAIN.WATER]:         '河流 / 湖泊',
-  [TERRAIN.SAND]:          '沙灘',
-  [TERRAIN.GRASS]:         '草原',
-  [TERRAIN.FOREST]:        '森林',
-  [TERRAIN.MOUNTAIN]:      '山地',
-  [TERRAIN.CASTLE_GROUND]: '城堡',
+  [TERRAIN.WATER]:          '河流 / 湖泊',
+  [TERRAIN.SAND]:           '沙灘',
+  [TERRAIN.GRASS]:          '草原',
+  [TERRAIN.FOREST]:         '森林',
+  [TERRAIN.MOUNTAIN]:       '山地',
+  [TERRAIN.CASTLE_GROUND]:  '城堡',
+  [TERRAIN.VILLAGE_GROUND]: '村落',
+  [TERRAIN.PORT_GROUND]:    '沿岸港口',
 };

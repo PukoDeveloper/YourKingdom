@@ -1,10 +1,9 @@
 import { Container, Graphics } from 'pixi.js';
 import { TILE_SIZE } from './constants.js';
-import { drawCastleBuilding } from './TileDrawer.js';
+import { drawCastleBuilding, drawVillageBuilding, drawPortBuilding } from './TileDrawer.js';
 
 /**
- * Draws large castle structures on top of the terrain layer.
- * Each castle occupies 4×4 tiles and is drawn as a single Graphics.
+ * Draws large structures (castles, villages, ports) on top of the terrain layer.
  */
 export class StructureRenderer {
   /**
@@ -12,14 +11,24 @@ export class StructureRenderer {
    */
   constructor(mapData) {
     this.container = new Container();
-    this._build(mapData.castles);
+    this._build(mapData);
   }
 
-  _build(castles) {
+  _build(mapData) {
     const g = new Graphics();
-    for (const { x, y } of castles) {
+
+    for (const { x, y } of mapData.castles) {
       drawCastleBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
     }
+
+    for (const { x, y } of mapData.villages) {
+      drawVillageBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
+    }
+
+    for (const { x, y } of mapData.ports) {
+      drawPortBuilding(g, x * TILE_SIZE, y * TILE_SIZE);
+    }
+
     this.container.addChild(g);
   }
 }
