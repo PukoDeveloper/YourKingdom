@@ -12,7 +12,7 @@
  */
 
 import { Unit } from './Army.js';
-import { generateFlagAppearance } from './AppearanceSystem.js';
+import { FLAG_STRIPE_STYLES, FLAG_STRIPE_COLORS } from './AppearanceSystem.js';
 import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
@@ -72,6 +72,13 @@ const CASTLE_NAME_PREFIXES = [
 
 /** Suffixes for castle names. */
 const CASTLE_NAME_SUFFIXES = ['城', '堡', '關', '砦', '要塞', '城堡'];
+
+/** Maps a nation emblem emoji to a Pixi-drawable symbolShape string. */
+const EMBLEM_TO_SHAPE = {
+  '⚔️': 'cross', '🛡️': 'diamond', '👑': 'crown', '⭐': 'star',
+  '🌙': 'circle', '☀️': 'sun', '⚡': 'bolt', '🔥': 'flame',
+  '🌊': 'wave', '🦅': 'bird', '🐉': 'dragon', '🌿': 'leaf',
+};
 
 // ---------------------------------------------------------------------------
 // Internal hash helpers (seed-deterministic, no imports needed)
@@ -169,7 +176,14 @@ export class NationSystem {
     // One nation per castle
     castles.forEach((c, i) => {
       const tpl     = NATION_TEMPLATES[i % NATION_TEMPLATES.length];
-      const flagApp = generateFlagAppearance(c.x + seed, c.y + i * 37);
+      const seedX = c.x + seed, seedY = c.y + i * 37;
+      const flagApp = {
+        bgColor:     tpl.color,
+        stripeStyle: FLAG_STRIPE_STYLES[Math.floor(_hash(seedX, seedY, 1) * FLAG_STRIPE_STYLES.length)],
+        stripeColor: FLAG_STRIPE_COLORS[Math.floor(_hash(seedX, seedY, 2) * FLAG_STRIPE_COLORS.length)],
+        symbol:      tpl.emblem,
+        symbolShape: EMBLEM_TO_SHAPE[tpl.emblem] ?? 'circle',
+      };
       this.nations.push({ id: i, name: tpl.name, color: tpl.color, emblem: tpl.emblem, flagApp });
     });
 

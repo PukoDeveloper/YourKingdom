@@ -398,6 +398,7 @@ export class DiplomacySystem {
     }
     const delta = -(15 + Math.floor(Math.random() * 11)); // -15 … -25
     this.modifyPlayerRelation(nationId, delta);
+    this._addMemoryEntry(nationId, `玩家公開譴責了我國，關係 ${delta}`, delta);
     this._condemnedToday.add(nationId);
     return { success: true, delta, alreadyDone: false };
   }
@@ -517,10 +518,11 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], nationMemory: [number, object[]][], currentDay: number }} */
+  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number }} */
   getState() {
     return {
       playerRelations: [...this._playerRelations.entries()],
+      npcRelations:    [...this._npcRelations.entries()],
       nationMemory:    [...this._nationMemory.entries()],
       currentDay:      this._currentDay,
     };
@@ -528,13 +530,20 @@ export class DiplomacySystem {
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][], nationMemory?: [number, object[]][], currentDay?: number }|null} state
+   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number }|null} state
    */
   loadState(state) {
     if (!state) return;
     if (Array.isArray(state.playerRelations)) {
       state.playerRelations.forEach(([id, value]) => {
         this._playerRelations.set(Number(id), Math.max(-100, Math.min(100, Number(value))));
+      });
+    }
+    if (Array.isArray(state.npcRelations)) {
+      state.npcRelations.forEach(([key, value]) => {
+        if (typeof key === 'string' && /^\d+:\d+$/.test(key)) {
+          this._npcRelations.set(key, Math.max(-100, Math.min(100, Number(value))));
+        }
       });
     }
     if (Array.isArray(state.nationMemory)) {
