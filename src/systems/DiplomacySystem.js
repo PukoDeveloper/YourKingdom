@@ -1118,10 +1118,10 @@ export class DiplomacySystem {
   }
 
   /**
-   * Find an NPC nation that `id` has a relation with at or below `maxRel`
+   * Find an NPC nation that `id` has a relation with strictly below `maxRel`
    * (the most hostile one).  Returns -1 if none found.
    * @param {number} id
-   * @param {number} maxRel  Upper bound for hostility (e.g. -10 means "at least somewhat hostile").
+   * @param {number} maxRel  Strict upper bound for hostility (e.g. -10 means "relation < -10").
    * @returns {number}
    */
   _findHostileNpc(id, maxRel) {
@@ -1132,16 +1132,16 @@ export class DiplomacySystem {
       if (!n) return;
       if (tid === id) return;
       const rel = this.getRelation(id, tid);
-      if (rel <= worstRel) { worstRel = rel; targetId = tid; }
+      if (rel < worstRel) { worstRel = rel; targetId = tid; }
     });
     return targetId;
   }
 
   /**
-   * Find an NPC nation that `id` has a relation with at or above `minRel`
+   * Find an NPC nation that `id` has a relation with strictly above `minRel`
    * (the friendliest one), excluding the same nation.  Returns -1 if none found.
    * @param {number} id
-   * @param {number} minRel  Lower bound for friendliness (e.g. 0 = at least neutral).
+   * @param {number} minRel  Strict lower bound for friendliness (e.g. 0 = relation > 0).
    * @returns {number}
    */
   _findFriendlyNpc(id, minRel) {
@@ -1152,7 +1152,7 @@ export class DiplomacySystem {
       if (!n) return;
       if (tid === id) return;
       const rel = this.getRelation(id, tid);
-      if (rel >= bestRel) { bestRel = rel; targetId = tid; }
+      if (rel > bestRel) { bestRel = rel; targetId = tid; }
     });
     return targetId;
   }

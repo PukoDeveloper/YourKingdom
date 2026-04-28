@@ -1583,8 +1583,11 @@ export class GameUI {
       // Add all events to inbox with contextual icon extracted from the message.
       events.forEach(ev => {
         const firstChar = ev.message.codePointAt(0);
-        // Check if the message starts with an emoji (surrogate range or high codepoint).
-        const icon = (firstChar > 0x2000) ? String.fromCodePoint(firstChar) : '📜';
+        // Check if the message starts with an emoji in the common emoji blocks:
+        // Misc Symbols (2600-26FF), Dingbats (2700-27BF), Supplemental Symbols (1F300-1FAFF).
+        const isEmoji = (firstChar >= 0x2600 && firstChar <= 0x27BF) ||
+                        (firstChar >= 0x1F300 && firstChar <= 0x1FAFF);
+        const icon = isEmoji ? String.fromCodePoint(firstChar) : '📜';
         const text = ev.message.replace(/^\S+ /, '');
         this._addInboxMessage(icon, text);
       });
