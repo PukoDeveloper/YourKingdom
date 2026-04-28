@@ -94,6 +94,20 @@ export class GameUI {
     `;
     document.body.appendChild(panel);
 
+    // Unit detail overlay (shown when a unit card is clicked)
+    const unitDetail = document.createElement('div');
+    unitDetail.id = 'ui-unit-detail-overlay';
+    unitDetail.innerHTML = `
+      <div id="ui-unit-detail-box">
+        <div id="ui-unit-detail-header">
+          <span id="ui-unit-detail-name"></span>
+          <button id="ui-unit-detail-close">✕</button>
+        </div>
+        <div id="ui-unit-detail-body"></div>
+      </div>
+    `;
+    document.body.appendChild(unitDetail);
+
     // Acquire dialog
     const dlg = document.createElement('div');
     dlg.id = 'ui-acquire-overlay';
@@ -135,6 +149,12 @@ export class GameUI {
     document.getElementById('ui-panel').addEventListener('click', (e) => {
       if (e.target.id === 'ui-panel') this._closePanel();
     });
+
+    // Close unit detail overlay when tapping backdrop or close button
+    document.getElementById('ui-unit-detail-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'ui-unit-detail-overlay') this._closeUnitDetail();
+    });
+    document.getElementById('ui-unit-detail-close').addEventListener('click', () => this._closeUnitDetail());
   }
 
   // -------------------------------------------------------------------------
@@ -243,8 +263,7 @@ export class GameUI {
   }
 
   _renderSquadDetail(squad) {
-    const detail  = document.getElementById('squad-detail');
-    const squads  = this.army.getSquads();
+    const detail = document.getElementById('squad-detail');
     const captain = squad.captain;
 
     const memberCards = [];
@@ -252,55 +271,20 @@ export class GameUI {
       const m = squad.members[i];
       if (m) {
         const isCaptain = m.id === squad.captainId;
-        const isHero    = m.role === 'hero';
-        const isMoving  = this._movingUnitId === m.id;
-
-        const traitsHTML = m.traits.length > 0
-          ? `<div class="unit-traits">${
-              m.traits.map(t =>
-                `<span class="trait-tag${t === TRAIT_CAPTAIN ? ' trait-captain' : ''}">${t}</span>`
-              ).join('')
-            }</div>`
-          : '';
-
-        const captainBtn = (!isCaptain && m.canLead())
-          ? `<button class="btn-set-captain" data-id="${m.id}">⭐設隊長</button>`
-          : '';
-
-        const moveTargetsHTML = isMoving
-          ? squads
-              .filter(s => s.id !== squad.id)
-              .map(s => `<button class="btn-move-to" data-id="${m.id}" data-target="${s.id}"
-                          ${!s.hasCapacity() ? 'disabled' : ''}>
-                          → 小隊${s.id + 1}${s.hasCapacity() ? '' : '（滿）'}
-                        </button>`)
-              .join('')
-          : '';
-
-        const movePanelHTML = isMoving
-          ? `<div class="move-targets">${moveTargetsHTML}</div>`
-          : '';
-
         memberCards.push(`
-          <div class="unit-card member${isCaptain ? ' captain' : ''}${m.active ? '' : ' inactive'}">
-            <span class="unit-badge">${isCaptain ? '⭐隊長' : '👤隊員'}</span>
-            <span class="unit-name">${m.name}</span>
-            <span class="unit-role">${m.role}</span>
-            <button class="btn-toggle-active${m.active ? ' is-active' : ''}" data-id="${m.id}">${m.active ? '✅參戰' : '💤待命'}</button>
-            ${traitsHTML}
-            <div class="unit-stats">攻 ${m.stats.attack}&nbsp;防 ${m.stats.defense}&nbsp;士氣 ${m.stats.morale}</div>
-            <div class="unit-card-actions">
-              ${captainBtn}
-              ${!isHero ? `<button class="btn-move${isMoving ? ' active' : ''}" data-id="${m.id}">🔀移動${isMoving ? '▲' : '▼'}</button>` : ''}
-              ${!isHero ? `<button class="btn-remove-member" data-id="${m.id}">❌移除</button>` : ''}
-            </div>
-            ${movePanelHTML}
+          <div class="unit-card-compact${isCaptain ? ' captain' : ''}${m.active ? '' : ' inactive'}"
+               data-id="${m.id}" role="button" tabindex="0">
+            <span class="ucc-badge">${isCaptain ? '⭐' : '👤'}</span>
+            <span class="ucc-name">${m.name}</span>
+            <span class="ucc-role">${m.role}</span>
+            <span class="ucc-status${m.active ? ' active' : ''}">${m.active ? '參戰' : '待命'}</span>
+            <span class="ucc-arrow">›</span>
           </div>`);
       } else {
         memberCards.push(`
-          <div class="unit-card empty member-empty">
-            <span class="unit-badge">👤隊員</span>
-            <span class="unit-empty">空缺 ${i + 1}</span>
+          <div class="unit-card-compact empty">
+            <span class="ucc-badge">👤</span>
+            <span class="ucc-name ucc-empty">空缺 ${i + 1}</span>
           </div>`);
       }
     }
@@ -315,48 +299,116 @@ export class GameUI {
       </div>
     `;
 
-    // Toggle active status
-    detail.querySelectorAll('.btn-toggle-active').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const uid  = Number(btn.dataset.id);
+    detail.querySelectorAll('.unit-card-compact[data-id]').forEach(card => {
+      const open = () => {
+        const uid  = Number(card.dataset.id);
         const unit = squad.members.find(m => m.id === uid);
-        if (unit) {
-          this.army.setUnitActive(squad.id, uid, !unit.active);
-          this._renderSquadDetail(squad);
-        }
+        if (unit) this._openUnitDetail(unit, squad);
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') open(); });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Unit detail overlay
+  // -------------------------------------------------------------------------
+
+  _openUnitDetail(unit, squad) {
+    const squads    = this.army.getSquads();
+    const isCaptain = unit.id === squad.captainId;
+    const isHero    = unit.role === 'hero';
+
+    const traitsHTML = unit.traits.length > 0
+      ? `<div class="unit-traits">${
+          unit.traits.map(t =>
+            `<span class="trait-tag${t === TRAIT_CAPTAIN ? ' trait-captain' : ''}">${t}</span>`
+          ).join('')
+        }</div>`
+      : '<div class="unit-traits"><span class="unit-no-traits">無特質</span></div>';
+
+    const captainBtn = (!isCaptain && unit.canLead())
+      ? `<button class="btn-set-captain" data-id="${unit.id}">⭐ 設為隊長</button>`
+      : '';
+
+    const moveTargetsHTML = squads
+      .filter(s => s.id !== squad.id)
+      .map(s => `<button class="btn-move-to" data-id="${unit.id}" data-target="${s.id}"
+                  ${!s.hasCapacity() ? 'disabled' : ''}>
+                  → 小隊${s.id + 1}${s.hasCapacity() ? '' : '（滿）'}
+                </button>`)
+      .join('');
+
+    document.getElementById('ui-unit-detail-name').textContent =
+      `${isCaptain ? '⭐ ' : ''}${unit.name}`;
+
+    document.getElementById('ui-unit-detail-body').innerHTML = `
+      <div class="ud-row">
+        <span class="ud-label">職業</span>
+        <span class="ud-value">${unit.role}</span>
+      </div>
+      <div class="ud-row">
+        <span class="ud-label">狀態</span>
+        <button class="btn-toggle-active${unit.active ? ' is-active' : ''}" data-id="${unit.id}">
+          ${unit.active ? '✅ 參戰中' : '💤 待命中'}
+        </button>
+      </div>
+      <div class="ud-row">
+        <span class="ud-label">特質</span>
+        <span class="ud-value">${traitsHTML}</span>
+      </div>
+      <div class="ud-stats-row">
+        <div class="ud-stat"><span class="ud-stat-label">攻擊</span><span class="ud-stat-val">${unit.stats.attack}</span></div>
+        <div class="ud-stat"><span class="ud-stat-label">防禦</span><span class="ud-stat-val">${unit.stats.defense}</span></div>
+        <div class="ud-stat"><span class="ud-stat-label">士氣</span><span class="ud-stat-val">${unit.stats.morale}</span></div>
+      </div>
+      ${!isHero ? `
+      <div class="ud-actions">
+        ${captainBtn}
+        <div class="ud-move-section">
+          <span class="ud-label">移至小隊</span>
+          <div class="move-targets">${moveTargetsHTML}</div>
+        </div>
+        <button class="btn-remove-member" data-id="${unit.id}">❌ 移除成員</button>
+      </div>` : ''}
+    `;
+
+    const overlay = document.getElementById('ui-unit-detail-overlay');
+    overlay.classList.add('visible');
+
+    // Toggle active status
+    overlay.querySelectorAll('.btn-toggle-active').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const uid = Number(btn.dataset.id);
+        this.army.setUnitActive(squad.id, uid, !unit.active);
+        // Re-open with updated unit data from squad
+        this._closeUnitDetail();
+        this._renderSquadDetail(squad);
+        const updated = squad.members.find(m => m.id === uid);
+        if (updated) this._openUnitDetail(updated, squad);
       });
     });
 
     // Set captain
-    detail.querySelectorAll('.btn-set-captain').forEach(btn => {
+    overlay.querySelectorAll('.btn-set-captain').forEach(btn => {
       btn.addEventListener('click', () => {
         const uid = Number(btn.dataset.id);
         if (this.army.setSquadCaptain(squad.id, uid)) {
-          const unit = squad.members.find(m => m.id === uid);
-          this._toast(`${unit?.name ?? '單位'} 已設為隊長`);
+          this._toast(`${unit.name} 已設為隊長`);
+          this._closeUnitDetail();
           this._renderSquadDetail(squad);
         }
       });
     });
 
-    // Toggle move-target panel
-    detail.querySelectorAll('.btn-move').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const uid = Number(btn.dataset.id);
-        this._movingUnitId = this._movingUnitId === uid ? null : uid;
-        this._renderSquadDetail(squad);
-      });
-    });
-
     // Execute move
-    detail.querySelectorAll('.btn-move-to').forEach(btn => {
+    overlay.querySelectorAll('.btn-move-to').forEach(btn => {
       btn.addEventListener('click', () => {
         const uid      = Number(btn.dataset.id);
         const targetId = Number(btn.dataset.target);
-        const unit     = squad.members.find(m => m.id === uid);
         if (this.army.moveUnit(uid, squad.id, targetId)) {
-          this._movingUnitId = null;
-          this._toast(`${unit?.name ?? '單位'} 已移至小隊 ${targetId + 1}`);
+          this._toast(`${unit.name} 已移至小隊 ${targetId + 1}`);
+          this._closeUnitDetail();
           this._renderTeam();
         } else {
           this._toast('移動失敗（目標小隊已滿）');
@@ -365,15 +417,19 @@ export class GameUI {
     });
 
     // Remove member
-    detail.querySelectorAll('.btn-remove-member').forEach(btn => {
+    overlay.querySelectorAll('.btn-remove-member').forEach(btn => {
       btn.addEventListener('click', () => {
-        const uid  = Number(btn.dataset.id);
-        const unit = squad.members.find(m => m.id === uid);
+        const uid = Number(btn.dataset.id);
         squad.removeMember(uid);
-        this._toast(`${unit?.name ?? '單位'} 已從小隊移除`);
+        this._toast(`${unit.name} 已從小隊移除`);
+        this._closeUnitDetail();
         this._renderTeam();
       });
     });
+  }
+
+  _closeUnitDetail() {
+    document.getElementById('ui-unit-detail-overlay').classList.remove('visible');
   }
 
   // -------------------------------------------------------------------------
