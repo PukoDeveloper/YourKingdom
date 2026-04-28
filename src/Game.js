@@ -114,7 +114,7 @@ export class Game {
 
   _update(dt) {
     const dir = this._input.getDirection();
-    this._player.update(dt, dir.x, dir.y);
+    this._player.update(dt, dir.x, dir.y, this._mapData);
 
     this._camera.follow(this._player.x, this._player.y);
     this._camera.update(dt);
