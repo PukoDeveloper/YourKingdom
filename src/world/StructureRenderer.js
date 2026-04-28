@@ -35,7 +35,7 @@ export class StructureRenderer {
 
     /** Return the nation info to use for rendering a settlement. */
     const _nation = (settlement) => {
-      if (settlement?.playerOwned && this._getPlayerNation) {
+      if (settlement?.controllingNationId < 0 && this._getPlayerNation) {
         return this._getPlayerNation();
       }
       return nationSystem ? nationSystem.getNation(settlement) : { color: '#9E9E9E', flagApp: null };
