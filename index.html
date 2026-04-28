@@ -1528,6 +1528,87 @@
         color: #e2c97e;
       }
       .ap-choice:hover:not(.selected) { background: rgba(255,255,255,0.1); color: #eee; }
+      .ap-choice.kp-locked {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+
+      /* Appearance panel – tabs */
+      .ap-main-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .ap-main-tab-btn {
+        flex: 1;
+        padding: 8px 4px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.22);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+      }
+      .ap-main-tab-btn.active {
+        background: rgba(226,201,126,0.18);
+        border-color: #e2c97e;
+        color: #e2c97e;
+      }
+      .ap-main-tab-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: #eee; }
+
+      /* Kingdom tab – preview row */
+      .kp-preview-row {
+        flex-direction: row;
+        justify-content: flex-start;
+        align-items: center;
+        gap: 14px;
+        padding: 14px 0 12px;
+      }
+      .kp-preview-info {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .kp-preview-name {
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .kp-preview-type {
+        color: rgba(255,255,255,0.45);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        letter-spacing: 1px;
+      }
+
+      /* Kingdom tab – name input */
+      .kp-name-input {
+        width: 100%;
+        padding: 8px 12px;
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(226,201,126,0.3);
+        border-radius: 8px;
+        color: #fff;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .kp-name-input:focus {
+        border-color: #e2c97e;
+      }
+
+      /* Kingdom tab – settlement lock hint */
+      .kp-lock-hint {
+        margin-top: 6px;
+        color: rgba(255,200,0,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 11px;
+      }
     </style>
   </head>
   <body>

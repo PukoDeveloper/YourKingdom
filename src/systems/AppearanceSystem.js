@@ -82,6 +82,25 @@ function _idx(arr, seedVal) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Build a flag appearance object from saved index values.
+ * @param {{ bgIdx: number, stripeStyleIdx: number, stripeColorIdx: number, symbolIdx: number }} indices
+ * @returns {{ bgColor: string, stripeStyle: string, stripeColor: string, symbol: string, symbolShape: string }}
+ */
+export function flagAppFromIndices({ bgIdx, stripeStyleIdx, stripeColorIdx, symbolIdx }) {
+  const bi = Math.max(0, Math.min(bgIdx,         FLAG_BG_COLORS.length     - 1));
+  const si = Math.max(0, Math.min(stripeStyleIdx, FLAG_STRIPE_STYLES.length - 1));
+  const ci = Math.max(0, Math.min(stripeColorIdx, FLAG_STRIPE_COLORS.length - 1));
+  const yi = Math.max(0, Math.min(symbolIdx,       FLAG_SYMBOLS.length       - 1));
+  return {
+    bgColor:     FLAG_BG_COLORS[bi],
+    stripeStyle: FLAG_STRIPE_STYLES[si],
+    stripeColor: FLAG_STRIPE_COLORS[ci],
+    symbol:      FLAG_SYMBOLS[yi],
+    symbolShape: _SYMBOL_SHAPES[yi],
+  };
+}
+
+/**
  * Generate a deterministic flag appearance from two seed values.
  * @param {number} s1
  * @param {number} s2
