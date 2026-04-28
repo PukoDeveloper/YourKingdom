@@ -50,11 +50,20 @@ export const GARRISON_TAX_PENALTY_PER_UNIT = 2;
 /** NPC gold cap. */
 const NPC_GOLD_CAP = 3000;
 
-/** Probability that the attacker wins an NPC-initiated war action. */
-const NPC_WAR_VICTORY_CHANCE = 0.45;
+/**
+ * Win-rate threshold for a single squad: if the estimated win chance using only
+ * the first squad falls below this value, the NPC will commit both squads.
+ */
+const NPC_SINGLE_SQUAD_WIN_THRESHOLD = 0.55;
 
-/** Number of garrison units removed from the defeated settlement per NPC war victory. */
+/** Number of garrison units removed from the defending settlement on attacker victory. */
 const NPC_WAR_CASUALTY_COUNT = 2;
+
+/**
+ * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
+ * Defined here to avoid a circular import.
+ */
+const _PLAYER_NATION_ID = -1;
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -612,65 +621,123 @@ export class DiplomacySystem {
   }
 
   /**
-   * Daytime phase: NPC nations assess enemies and may declare war.
+   * Daytime phase: NPC nations assess enemies and may declare war, dispatching
+   * one or both of their garrison squads depending on the estimated win rate.
+   * A victorious attacker captures the settlement (changes controllingNationId).
    * @param {{ message: string }[]} messages
    */
   _npcWarPhase(messages) {
-    const { nations, castleSettlements } = this.nationSystem;
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
 
     castleSettlements.forEach((s, id) => {
-      if (!s || s.controllingNationId !== id) return; // skip if conquered
+      if (!s || s.controllingNationId !== id) return; // nation must hold its home castle
 
       const personality = this._rulerPersonality(s);
       const threshold   = WAR_THRESHOLD[personality] ?? 55;
 
-      // Find the weakest hostile neighbour (relation ≤ -20).
-      let bestTargetId  = -1;
-      let bestWeakness  = threshold; // must beat the threshold to attack
+      // Attacker's two garrison squads at the home castle.
+      const atkKey    = `castle:${id}`;
+      const atkArmies = this._npcArmies.get(atkKey) ?? [];
+      const squad1    = atkArmies[0] ?? [];
+      const squad2    = atkArmies[1] ?? [];
+      if (squad1.length === 0 && squad2.length === 0) return; // no troops to attack with
+
+      // ── Find the best target settlement across all hostile nations ──────────
+      let bestTarget  = null;
+      let bestWeakness = threshold;
 
       nations.forEach((_, tid) => {
         if (tid === id) return;
         const rel = this.getRelation(id, tid);
-        if (rel > -20) return; // not hostile enough
+        if (rel > -20) return; // must be hostile
 
-        const weakness = this._assessEnemyWeakness(id, tid);
-        if (weakness > bestWeakness) {
-          bestWeakness  = weakness;
-          bestTargetId  = tid;
-        }
+        // Evaluate each castle controlled by the target nation.
+        castleSettlements.forEach((ts, tidx) => {
+          if (!ts || ts.controllingNationId !== tid) return;
+          const defStr   = this._settlementGarrisonStrength('castle', tidx);
+          const eco      = ts.economyLevel;
+          // Score: low garrison = easy target; high economy = valuable target.
+          const weakness = Math.max(0, (1 - defStr / 30) * 60) + eco * 4;
+          if (weakness > bestWeakness) {
+            bestWeakness = weakness;
+            bestTarget = { nationId: tid, settlement: ts, type: 'castle', idx: tidx, defStr };
+          }
+        });
+
+        // Evaluate each village controlled by the target nation.
+        villageSettlements.forEach((ts, tidx) => {
+          if (!ts || ts.controllingNationId !== tid) return;
+          const defStr   = this._settlementGarrisonStrength('village', tidx);
+          const eco      = ts.economyLevel;
+          const weakness = Math.max(0, (1 - defStr / 10) * 50) + eco * 3;
+          if (weakness > bestWeakness) {
+            bestWeakness = weakness;
+            bestTarget = { nationId: tid, settlement: ts, type: 'village', idx: tidx, defStr };
+          }
+        });
       });
 
-      if (bestTargetId < 0) return;
+      if (!bestTarget) return;
 
-      const targetSettlement = castleSettlements[bestTargetId];
-      if (!targetSettlement) return;
+      // ── Decide how many squads to send based on estimated win rate ──────────
+      const s1Str    = this._squadStrength(squad1);
+      const s2Str    = this._squadStrength(squad2);
+      const defStr   = bestTarget.defStr;
+      const winRate1 = s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
+      const totalStr = s1Str + s2Str;
+      const winRate2 = totalStr > 0 ? totalStr / (totalStr + defStr + 1) : 0;
 
-      const victory = Math.random() < NPC_WAR_VICTORY_CHANCE;
+      // Commit both squads when a single squad would win less than 55% of the time.
+      const sendBoth = winRate1 < NPC_SINGLE_SQUAD_WIN_THRESHOLD && squad2.length > 0;
+      const winRate  = sendBoth ? winRate2 : winRate1;
+      const victory  = Math.random() < winRate;
+
+      // ── Apply attacker casualties ───────────────────────────────────────────
+      // Victorious attackers lose fewer troops; defeat costs twice as many.
+      // Committing both squads doubles the absolute loss in either outcome.
+      const atkLoss = victory
+        ? (sendBoth ? 2 : 1)   // light losses on victory
+        : (sendBoth ? 4 : 2);  // heavy losses on defeat
+      this.applyGarrisonLosses(atkKey, atkLoss);
+
+      // Record diplomatic ripple effects.
       const attackerName = nations[id]?.name ?? s.name;
       this.recordAttackEvent({
         attackerNationId:    id,
-        targetNationId:      bestTargetId,
-        settlementName:      targetSettlement.name,
+        targetNationId:      bestTarget.nationId,
+        settlementName:      bestTarget.settlement.name,
         attackerDisplayName: attackerName,
         victory,
       });
 
-      // If victorious, reduce the defender's garrison.
+      const defKey = `${bestTarget.type}:${bestTarget.idx}`;
       if (victory) {
-        const defKey    = `castle:${bestTargetId}`;
+        // Capture: transfer control to the attacker.
+        bestTarget.settlement.controllingNationId = id;
+
+        // Clear the defeated garrison.
         const defArmies = this._npcArmies.get(defKey);
-        if (defArmies) {
-          // Remove up to NPC_WAR_CASUALTY_COUNT units from the last occupied squad.
-          for (let sq = defArmies.length - 1; sq >= 0; sq--) {
-            const losses = Math.min(NPC_WAR_CASUALTY_COUNT, defArmies[sq].length);
-            defArmies[sq].splice(defArmies[sq].length - losses, losses);
-            if (losses > 0) break;
+        if (defArmies) defArmies.forEach(sq => { sq.length = 0; });
+
+        // Check whether the defeated nation has been eliminated.
+        const defeatedId = bestTarget.nationId;
+        if (this.nationSystem.isNationExtinct(defeatedId)) {
+          this.handleNationExtinction(defeatedId);
+          const defeatedNation = nations[defeatedId];
+          if (defeatedNation) {
+            messages.push({
+              message: `💀 ${defeatedNation.name} 失去了所有領地，國家滅亡！所有主權移交給玩家。`,
+            });
           }
         }
+      } else {
+        // Failed assault – defender also takes a small loss.
+        this.applyGarrisonLosses(defKey, 1);
       }
 
+      const squadLabel = sendBoth ? '兩支部隊' : '一支部隊';
       messages.push({
-        message: `⚔ ${attackerName} 進攻了 ${nations[bestTargetId]?.name ?? '鄰國'} 的 ${targetSettlement.name}！${victory ? '（勝利）' : '（失敗）'}`,
+        message: `⚔ ${attackerName} 派出${squadLabel}進攻 ${nations[bestTarget.nationId]?.name ?? '鄰國'} 的 ${bestTarget.settlement.name}！${victory ? '（勝利，已佔領）' : '（失敗）'}`,
       });
     });
   }
@@ -767,6 +834,33 @@ export class DiplomacySystem {
 
     castleSettlements.forEach((s, idx) => tryRecruit(s, 'castle', idx));
     villageSettlements.forEach((s, idx) => tryRecruit(s, 'village', idx));
+  }
+
+  /**
+   * Compute the total combat strength of a single garrison squad.
+   * Sums attack + defense + a morale bonus for each unit.
+   * @param {Array<{stats:{attack:number,defense:number,morale:number}}>} squad
+   * @returns {number}
+   */
+  _squadStrength(squad) {
+    if (!squad || squad.length === 0) return 0;
+    return squad.reduce((sum, u) => {
+      const atk    = u.stats?.attack  ?? 5;
+      const def    = u.stats?.defense ?? 5;
+      const morale = u.stats?.morale  ?? 50;
+      return sum + atk + def + Math.floor(morale / 20);
+    }, 0);
+  }
+
+  /**
+   * Return the total garrison strength of a specific settlement.
+   * @param {'castle'|'village'} type
+   * @param {number} idx
+   * @returns {number}
+   */
+  _settlementGarrisonStrength(type, idx) {
+    const armies = this._npcArmies.get(`${type}:${idx}`) ?? [];
+    return armies.reduce((sum, sq) => sum + this._squadStrength(sq), 0);
   }
 
   /**
@@ -949,6 +1043,24 @@ export class DiplomacySystem {
   }
 
   /**
+   * Transfer all sovereignty claims of an extinct nation to the player.
+   * Safe to call multiple times (idempotent once the claim set is empty).
+   * @param {number} nationId  The extinct NPC nation id.
+   */
+  handleNationExtinction(nationId) {
+    if (nationId < 0) return;
+    const sovSet = this._sovereigntyMap.get(nationId);
+    if (!sovSet || sovSet.size === 0) return;
+
+    if (!this._sovereigntyMap.has(_PLAYER_NATION_ID)) {
+      this._sovereigntyMap.set(_PLAYER_NATION_ID, new Set());
+    }
+    const playerSov = this._sovereigntyMap.get(_PLAYER_NATION_ID);
+    sovSet.forEach(key => playerSov.add(key));
+    sovSet.clear();
+  }
+
+  /**
    * Player issues a condemnation against a nation.
    * Limited to once per in-game day per nation.
    *
@@ -985,6 +1097,9 @@ export class DiplomacySystem {
     const nations     = this.nationSystem.nations;
 
     settlements.forEach((s, id) => {
+      // Skip extinct nations – they have no influence and should not condemn anyone.
+      if (this.nationSystem.isNationExtinct(id)) return;
+
       const p          = this._rulerPersonality(s);
       const roll       = Math.random();
       const nationName = nations[id]?.name ?? s.name;
