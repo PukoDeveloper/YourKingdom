@@ -144,6 +144,8 @@ export class Game {
     // -----------------------------------------------------------------------
     window.addEventListener('resize', () => this._onResize());
 
+    this._prevDayTime = this._dayNight.time;
+
     // -----------------------------------------------------------------------
     // Game UI (Backpack + Team panels)
     // -----------------------------------------------------------------------
@@ -189,6 +191,13 @@ export class Game {
 
     // Day / Night cycle
     this._dayNight.update(dt);
+    const prevDayTime = this._prevDayTime;
+    const currDayTime = this._dayNight.time;
+    if (currDayTime < prevDayTime) {
+      // Day has rolled over – consume food for all active members
+      this._gameUI.onDayPassed();
+    }
+    this._prevDayTime = currDayTime;
     const overlay = this._dayNight.getOverlay();
     const og = this._dayNightOverlay;
     og.clear();

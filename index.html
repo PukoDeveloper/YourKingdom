@@ -529,6 +529,81 @@
       .btn-item-discard:hover { background: rgba(211,47,47,0.26); }
 
       /* =====================================================================
+         Team – main tabs (隊伍 / 資訊)
+         ===================================================================== */
+      .team-main-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .team-main-tab-btn {
+        flex: 1;
+        padding: 8px 4px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.22);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+      }
+      .team-main-tab-btn.active {
+        background: rgba(226,201,126,0.18);
+        border-color: #e2c97e;
+        color: #e2c97e;
+      }
+      .team-main-tab-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: #eee; }
+
+      /* Team – info tab */
+      .team-info-section {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(226,201,126,0.15);
+        border-radius: 10px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      .team-info-title {
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        color: rgba(226,201,126,0.8);
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+      }
+      .team-info-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .team-info-row:last-child { border-bottom: none; }
+      .team-info-label { color: rgba(255,255,255,0.5); }
+      .team-info-value { color: #eee; font-weight: 600; }
+      .team-info-value.warn { color: #ff7777; }
+      .team-info-squad-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        padding: 4px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .team-info-squad-row:last-child { border-bottom: none; }
+      .team-info-squad-name { color: rgba(226,201,126,0.9); min-width: 42px; font-size: 13px; }
+      .team-info-squad-stat {
+        color: rgba(255,255,255,0.75);
+        background: rgba(255,255,255,0.07);
+        padding: 2px 7px;
+        border-radius: 4px;
+      }
+
+      /* =====================================================================
          Team – squad tabs
          ===================================================================== */
       .squad-tabs {
