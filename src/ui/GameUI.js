@@ -1,5 +1,6 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
+import { TRAIT_RULER }                     from '../systems/NationSystem.js';
 
 /**
  * GameUI – manages the Backpack and Team DOM panels.
@@ -15,18 +16,25 @@ export class GameUI {
    * @param {{ inventory?: object, army?: object }|null} [savedState]
    *   If provided the UI is initialised from the save instead of the demo seed.
    * @param {() => void} [onSave]  Called when the player presses the save button.
+   * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
    */
-  constructor(savedState = null, onSave = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
-    /** @type {'backpack'|'team'|null} */
+    /** @type {import('../systems/NationSystem.js').NationSystem|null} */
+    this.nationSystem = nationSystem;
+
+    /** @type {'backpack'|'team'|'nations'|null} */
     this._activePanel  = null;
     this._activeSquad  = 0;
 
     /** Active backpack category tab and equipment sub-tab. */
     this._backpackTab  = 'all';
     this._equipSubTab  = 'weapon';
+
+    /** Active nations sub-tab: 'castles' | 'villages' */
+    this._nationsTab = 'castles';
 
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
@@ -108,6 +116,7 @@ export class GameUI {
     tabBar.innerHTML = `
       <button id="btn-backpack" class="ui-tab-btn" title="背包">🎒</button>
       <button id="btn-team"     class="ui-tab-btn" title="隊伍">⚔️</button>
+      <button id="btn-nations"  class="ui-tab-btn" title="王國">🏰</button>
       <button id="btn-save"     class="ui-tab-btn" title="儲存">💾</button>
     `;
     document.body.appendChild(tabBar);
@@ -175,6 +184,21 @@ export class GameUI {
     const toast = document.createElement('div');
     toast.id = 'ui-toast';
     document.body.appendChild(toast);
+
+    // Settlement detail overlay (nations panel → click a settlement)
+    const settlementDetail = document.createElement('div');
+    settlementDetail.id = 'ui-settlement-detail-overlay';
+    settlementDetail.innerHTML = `
+      <div id="ui-settlement-detail-box">
+        <div id="ui-settlement-detail-header">
+          <span id="ui-settlement-detail-icon"></span>
+          <span id="ui-settlement-detail-name"></span>
+          <button id="ui-settlement-detail-close">✕</button>
+        </div>
+        <div id="ui-settlement-detail-body"></div>
+      </div>
+    `;
+    document.body.appendChild(settlementDetail);
   }
 
   // -------------------------------------------------------------------------
@@ -184,6 +208,7 @@ export class GameUI {
   _attachListeners() {
     document.getElementById('btn-backpack').addEventListener('click', () => this._togglePanel('backpack'));
     document.getElementById('btn-team').addEventListener('click',     () => this._togglePanel('team'));
+    document.getElementById('btn-nations').addEventListener('click',  () => this._togglePanel('nations'));
     document.getElementById('ui-panel-close').addEventListener('click', () => this._closePanel());
 
     document.getElementById('btn-save').addEventListener('click', () => {
@@ -208,6 +233,12 @@ export class GameUI {
       if (e.target.id === 'ui-item-detail-overlay') this._closeItemDetail();
     });
     document.getElementById('ui-item-detail-close').addEventListener('click', () => this._closeItemDetail());
+
+    // Close settlement detail overlay when tapping backdrop or close button
+    document.getElementById('ui-settlement-detail-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'ui-settlement-detail-overlay') this._closeSettlementDetail();
+    });
+    document.getElementById('ui-settlement-detail-close').addEventListener('click', () => this._closeSettlementDetail());
   }
 
   // -------------------------------------------------------------------------
@@ -228,10 +259,14 @@ export class GameUI {
     panel.classList.add('visible');
     document.getElementById('btn-backpack').classList.toggle('active', type === 'backpack');
     document.getElementById('btn-team').classList.toggle('active',     type === 'team');
+    document.getElementById('btn-nations').classList.toggle('active',  type === 'nations');
 
     if (type === 'backpack') {
       document.getElementById('ui-panel-title').textContent = '🎒 背包';
       this._renderBackpack();
+    } else if (type === 'nations') {
+      document.getElementById('ui-panel-title').textContent = '🏰 王國';
+      this._renderNations();
     } else {
       document.getElementById('ui-panel-title').textContent = '⚔️ 隊伍';
       this._renderTeam();
@@ -243,6 +278,7 @@ export class GameUI {
     document.getElementById('ui-panel').classList.remove('visible');
     document.getElementById('btn-backpack').classList.remove('active');
     document.getElementById('btn-team').classList.remove('active');
+    document.getElementById('btn-nations').classList.remove('active');
   }
 
   // -------------------------------------------------------------------------
@@ -429,6 +465,148 @@ export class GameUI {
 
   _closeItemDetail() {
     document.getElementById('ui-item-detail-overlay').classList.remove('visible');
+  }
+
+  // -------------------------------------------------------------------------
+  // Nations panel
+  // -------------------------------------------------------------------------
+
+  _renderNations() {
+    const content = document.getElementById('ui-panel-content');
+
+    if (!this.nationSystem) {
+      content.innerHTML = '<p class="ui-empty">王國系統尚未初始化</p>';
+      return;
+    }
+
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+    const tab = this._nationsTab;
+
+    const subTabsHTML = `
+      <div class="ns-cat-tabs">
+        <button class="ns-cat-btn${tab === 'castles'  ? ' active' : ''}" data-ns-tab="castles">
+          🏰 城堡 <span class="bp-cnt">${castleSettlements.length}</span>
+        </button>
+        <button class="ns-cat-btn${tab === 'villages' ? ' active' : ''}" data-ns-tab="villages">
+          🏘 村落 <span class="bp-cnt">${villageSettlements.length}</span>
+        </button>
+      </div>`;
+
+    const settlements = tab === 'castles' ? castleSettlements : villageSettlements;
+    const cardsHTML = settlements.map((s, i) => {
+      const nation = this.nationSystem.getNation(s);
+      const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
+      const popStr   = s.population.toLocaleString();
+      return `
+        <div class="settlement-card" data-ns-type="${s.type}" data-ns-idx="${i}"
+             style="border-color: ${nation.color}44; --ns-color: ${nation.color}"
+             role="button" tabindex="0">
+          <div class="sc-header">
+            <span class="sc-emblem">${nation.emblem}</span>
+            <span class="sc-name">${s.name}</span>
+            <span class="sc-arrow">›</span>
+          </div>
+          <div class="sc-meta">
+            <span class="sc-nation-tag" style="border-color:${nation.color}88; color:${nation.color}">
+              ${nation.name}
+            </span>
+            <span class="sc-pop">👥 ${popStr}</span>
+            <span class="sc-eco">${ecoStars}</span>
+          </div>
+          <div class="sc-res">盛產：${s.resources.join('、')}</div>
+        </div>`;
+    }).join('');
+
+    content.innerHTML = subTabsHTML + (
+      settlements.length === 0
+        ? '<p class="ui-empty">此類型暫無聚落</p>'
+        : `<div class="settlement-list">${cardsHTML}</div>`
+    );
+
+    content.querySelectorAll('.ns-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._nationsTab = btn.dataset.nsTab;
+        this._renderNations();
+      });
+    });
+
+    content.querySelectorAll('.settlement-card[data-ns-idx]').forEach(card => {
+      const open = () => {
+        const idx  = Number(card.dataset.nsIdx);
+        const type = card.dataset.nsType;
+        const s    = type === 'castle'
+          ? this.nationSystem.castleSettlements[idx]
+          : this.nationSystem.villageSettlements[idx];
+        if (s) this._openSettlementDetail(s);
+      };
+      card.addEventListener('click', open);
+      card.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Settlement detail overlay
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _openSettlementDetail(settlement) {
+    const nation    = this.nationSystem.getNation(settlement);
+    const ruler     = settlement.ruler;
+    const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
+    const popStr    = settlement.population.toLocaleString();
+    const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
+
+    const rulerTraitsHTML = ruler.traits.map(t =>
+      `<span class="trait-tag${t === TRAIT_RULER ? ' trait-ruler' : ''}">${t}</span>`
+    ).join('');
+
+    document.getElementById('ui-settlement-detail-icon').textContent = nation.emblem;
+    document.getElementById('ui-settlement-detail-name').textContent = settlement.name;
+    document.getElementById('ui-settlement-detail-body').innerHTML = `
+      <div class="sd-nation-banner" style="background: ${nation.color}22; border-color: ${nation.color}55">
+        <span class="sd-nation-emblem">${nation.emblem}</span>
+        <span class="sd-nation-name" style="color:${nation.color}">${nation.name}</span>
+        <span class="sd-type-tag">${typeLabel}</span>
+      </div>
+      <div class="sd-stats-grid">
+        <div class="sd-stat">
+          <span class="sd-stat-label">人口</span>
+          <span class="sd-stat-val">👥 ${popStr}</span>
+        </div>
+        <div class="sd-stat">
+          <span class="sd-stat-label">經濟</span>
+          <span class="sd-stat-val">${ecoStars}</span>
+        </div>
+      </div>
+      <div class="sd-row">
+        <span class="sd-label">盛產資源</span>
+        <span class="sd-value">${settlement.resources.join('、')}</span>
+      </div>
+      <div class="sd-ruler-section">
+        <div class="sd-ruler-title">👑 統治者</div>
+        <div class="sd-ruler-card">
+          <div class="sd-ruler-name">${ruler.name}
+            <span class="sd-ruler-role">${ruler.role}</span>
+          </div>
+          <div class="sd-ruler-traits">${rulerTraitsHTML}</div>
+          <div class="sd-ruler-stats">
+            <div class="sd-r-stat"><span>攻擊</span><strong>${ruler.stats.attack}</strong></div>
+            <div class="sd-r-stat"><span>防禦</span><strong>${ruler.stats.defense}</strong></div>
+            <div class="sd-r-stat"><span>士氣</span><strong>${ruler.stats.morale}</strong></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('ui-settlement-detail-overlay').classList.add('visible');
+  }
+
+  _closeSettlementDetail() {
+    document.getElementById('ui-settlement-detail-overlay').classList.remove('visible');
   }
 
   // -------------------------------------------------------------------------
