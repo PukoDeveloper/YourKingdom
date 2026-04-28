@@ -47,6 +47,7 @@ const MAX_DURATION = 100;  // seconds maximum state duration
 const FLASH_DURATION = 0.15;
 
 /** Number of rain drops rendered on screen. */
+const DROP_COUNT = 200;
 
 // ---------------------------------------------------------------------------
 // WeatherSystem
