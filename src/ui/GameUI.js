@@ -64,6 +64,15 @@ const _BATTLE_THEMES = {
 };
 
 /**
+ * Amount of HP a unit recovers per in-game day (10% of maxHp, minimum 1).
+ * @param {number} maxHp
+ * @returns {number}
+ */
+function _dailyHpRecovery(maxHp) {
+  return Math.max(1, Math.floor(maxHp * 0.1));
+}
+
+/**
  * GameUI – manages the Backpack and Team DOM panels.
  *
  * Attach it to the game after init:
@@ -129,6 +138,13 @@ export class GameUI {
 
     /** Number of settlements (castles + villages) the player currently controls. */
     this._playerSettlementCount = 0;
+
+    /**
+     * Set of settlement keys the player has captured.
+     * Keys are formatted as "castle:<idx>" or "village:<idx>".
+     * @type {Set<string>}
+     */
+    this._capturedSettlements = new Set();
 
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
@@ -921,17 +937,26 @@ export class GameUI {
 
     const settlements = tab === 'castles' ? castleSettlements : villageSettlements;
     const cardsHTML = settlements.map((s, i) => {
-      const nation   = this.nationSystem.getNation(s);
-      const flagHTML = nation.flagApp ? renderFlagHTML(nation.flagApp, 36) : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
+      const isPlayer = this.isPlayerSettlement(s);
+      const nation   = isPlayer
+        ? { color: '#e2c97e', emblem: '🏴', name: this._playerKingdom.name, flagApp: null }
+        : this.nationSystem.getNation(s);
+      const flagHTML = !isPlayer && nation.flagApp
+        ? renderFlagHTML(nation.flagApp, 36)
+        : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
       const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
       const popStr   = s.population.toLocaleString();
+      const playerBadge = isPlayer
+        ? `<span class="sc-player-badge">我方</span>`
+        : '';
       return `
-        <div class="settlement-card" data-ns-type="${s.type}" data-ns-idx="${i}"
+        <div class="settlement-card${isPlayer ? ' player-owned' : ''}" data-ns-type="${s.type}" data-ns-idx="${i}"
              style="border-color: ${nation.color}44; --ns-color: ${nation.color}"
              role="button" tabindex="0">
           <div class="sc-header">
             <span class="sc-flag">${flagHTML}</span>
             <span class="sc-name">${s.name}</span>
+            ${playerBadge}
             <span class="sc-arrow">›</span>
           </div>
           <div class="sc-meta">
@@ -982,20 +1007,29 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const nation    = this.nationSystem.getNation(settlement);
+    const isPlayer  = this.isPlayerSettlement(settlement);
+    const nation    = isPlayer
+      ? { color: '#e2c97e', emblem: '🏴', name: this._playerKingdom.name, flagApp: null }
+      : this.nationSystem.getNation(settlement);
     const ruler     = settlement.ruler;
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
-    const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
+    const flagHTML  = !isPlayer && nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
     const rulerTraitsHTML = ruler.traits.map(t =>
       `<span class="trait-tag${t === TRAIT_RULER ? ' trait-ruler' : ''}">${t}</span>`
     ).join('');
 
+    const playerBanner = isPlayer ? `
+      <div class="sd-player-banner">
+        🏴 ${this._playerKingdom.name} · 已佔領
+      </div>` : '';
+
     document.getElementById('ui-settlement-detail-icon').innerHTML = flagHTML;
     document.getElementById('ui-settlement-detail-name').textContent = settlement.name;
     document.getElementById('ui-settlement-detail-body').innerHTML = `
+      ${playerBanner}
       <div class="sd-nation-banner" style="background: ${nation.color}22; border-color: ${nation.color}55">
         <span class="sd-nation-flag">${flagHTML}</span>
         <span class="sd-nation-name" style="color:${nation.color}">${nation.name}</span>
@@ -1108,10 +1142,12 @@ export class GameUI {
       const totalDefense = activeMembers.reduce((s, m) => s + m.stats.defense, 0);
       const totalMorale  = activeMembers.reduce((s, m) => s + m.stats.morale,  0);
       const avgMorale    = activeMembers.length > 0 ? Math.round(totalMorale / activeMembers.length) : 0;
+      const woundedCount = sq.members.reduce((n, m) => n + (m.stats.hp <= 0 ? 1 : 0), 0);
       return {
         id:           sq.id,
         totalMembers: sq.members.length,
         activeCount:  activeMembers.length,
+        woundedCount,
         totalAttack,
         totalDefense,
         combatPower:  totalAttack + totalDefense,
@@ -1122,6 +1158,7 @@ export class GameUI {
     const totalMembers  = squadStats.reduce((s, sq) => s + sq.totalMembers, 0);
     const totalActive   = squadStats.reduce((s, sq) => s + sq.activeCount,  0);
     const totalCombat   = squadStats.reduce((s, sq) => s + sq.combatPower,  0);
+    const totalWounded  = squadStats.reduce((s, sq) => s + sq.woundedCount, 0);
 
     // Food stats
     const foodItems      = this.inventory.getItems().filter(i => i.type === 'food');
@@ -1150,6 +1187,10 @@ export class GameUI {
           <span class="team-info-value">${totalActive} 人</span>
         </div>
         <div class="team-info-row">
+          <span class="team-info-label">重傷人數</span>
+          <span class="team-info-value${totalWounded > 0 ? ' warn' : ''}">${totalWounded} 人</span>
+        </div>
+        <div class="team-info-row">
           <span class="team-info-label">總戰力</span>
           <span class="team-info-value">${totalCombat}</span>
         </div>
@@ -1161,6 +1202,7 @@ export class GameUI {
           <div class="team-info-squad-row">
             <span class="team-info-squad-name">小隊${sq.id + 1}</span>
             <span class="team-info-squad-stat">${sq.activeCount}/${sq.totalMembers} 人</span>
+            ${sq.woundedCount > 0 ? `<span class="team-info-squad-stat warn">傷 ${sq.woundedCount}</span>` : ''}
             <span class="team-info-squad-stat">攻 ${sq.totalAttack}</span>
             <span class="team-info-squad-stat">防 ${sq.totalDefense}</span>
             <span class="team-info-squad-stat">士氣 ${sq.avgMorale}</span>
@@ -1187,27 +1229,50 @@ export class GameUI {
   }
 
   /**
-   * Called once per in-game day to consume food for all active members.
+   * Called once per in-game day to consume food for all active members
+   * and to recover HP for wounded soldiers.
    * Each active member consumes 1 food unit per day.
+   * Every unit recovers 10 % of their maxHp per day (minimum 1).
    */
   onDayPassed() {
     const squads = this.army.getSquads();
     const totalActive = squads.reduce((sum, sq) =>
       sum + sq.members.filter(m => m.active).length, 0);
 
-    if (totalActive === 0) return;
+    if (totalActive > 0) {
+      let toConsume = totalActive;
+      const foodItems = this.inventory.getItems().filter(i => i.type === 'food');
+      for (const item of foodItems) {
+        if (toConsume <= 0) break;
+        const deduct = Math.min(item.quantity, toConsume);
+        this.inventory.removeItem(item.id, deduct);
+        toConsume -= deduct;
+      }
 
-    let toConsume = totalActive;
-    const foodItems = this.inventory.getItems().filter(i => i.type === 'food');
-    for (const item of foodItems) {
-      if (toConsume <= 0) break;
-      const deduct = Math.min(item.quantity, toConsume);
-      this.inventory.removeItem(item.id, deduct);
-      toConsume -= deduct;
+      if (toConsume > 0) {
+        this._toast(`⚠ 糧食不足！缺少 ${toConsume} 份糧食`);
+      }
     }
 
-    if (toConsume > 0) {
-      this._toast(`⚠ 糧食不足！缺少 ${toConsume} 份糧食`);
+    // Daily HP recovery for all wounded units.
+    // Each unit recovers 10% of their maxHp per day (minimum 1).
+    let recoveredCount = 0;
+    squads.forEach(sq => {
+      sq.members.forEach(m => {
+        if (m.stats.hp < m.stats.maxHp) {
+          const wasDown = m.stats.hp <= 0;
+          const recovery = _dailyHpRecovery(m.stats.maxHp);
+          m.stats.hp = Math.min(m.stats.maxHp, m.stats.hp + recovery);
+          // Re-enable unit once it has recovered from incapacitation.
+          if (wasDown && m.stats.hp > 0) {
+            recoveredCount++;
+          }
+        }
+      });
+    });
+
+    if (recoveredCount > 0) {
+      this._toast(`💊 ${recoveredCount} 名士兵已從重傷中恢復，可重新參戰！`);
     }
 
     if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
@@ -1225,15 +1290,27 @@ export class GameUI {
       if (m) {
         const isCaptain = m.id === squad.captainId;
         const avatarHTML = m.appearance ? renderCharHTML(m.appearance, 32) : '';
+        const hpPct    = m.stats.maxHp > 0 ? Math.max(0, Math.round(m.stats.hp / m.stats.maxHp * 100)) : 0;
+        const isDown   = m.stats.hp <= 0;
+        const hpColor  = isDown ? '#e53935' : hpPct <= 30 ? '#ff8f00' : '#43a047';
+        const statusLabel = isDown ? '重傷' : (m.active ? '參戰' : '待命');
+        const statusClass = isDown ? ' wounded' : (m.active ? ' active' : '');
         memberCards.push(`
-          <div class="unit-card-compact${isCaptain ? ' captain' : ''}${m.active ? '' : ' inactive'}"
+          <div class="unit-card-compact${isCaptain ? ' captain' : ''}${m.active && !isDown ? '' : ' inactive'}"
                data-id="${m.id}" role="button" tabindex="0">
             <span class="ucc-avatar">${avatarHTML}</span>
             <span class="ucc-badge">${isCaptain ? '⭐' : ''}</span>
-            <span class="ucc-name">${m.name}</span>
-            <span class="ucc-role">${m.role}</span>
-            <span class="ucc-status${m.active ? ' active' : ''}">${m.active ? '參戰' : '待命'}</span>
-            <span class="ucc-arrow">›</span>
+            <div class="ucc-info">
+              <div class="ucc-top">
+                <span class="ucc-name">${m.name}</span>
+                <span class="ucc-role">${m.role}</span>
+                <span class="ucc-status${statusClass}">${statusLabel}</span>
+                <span class="ucc-arrow">›</span>
+              </div>
+              <div class="ucc-hp-bar-wrap">
+                <div class="ucc-hp-bar" style="width:${hpPct}%;background:${hpColor}"></div>
+              </div>
+            </div>
           </div>`);
       } else {
         memberCards.push(`
@@ -1297,16 +1374,43 @@ export class GameUI {
     document.getElementById('ui-unit-detail-name').textContent =
       `${isCaptain ? '⭐ ' : ''}${unit.name}`;
 
+    const hpPct   = unit.stats.maxHp > 0 ? Math.max(0, Math.round(unit.stats.hp / unit.stats.maxHp * 100)) : 0;
+    const isDown  = unit.stats.hp <= 0;
+    const hpColor = isDown ? '#e53935' : hpPct <= 30 ? '#ff8f00' : '#43a047';
+    const daysToRecover = isDown || unit.stats.hp < unit.stats.maxHp
+      ? Math.ceil((unit.stats.maxHp - unit.stats.hp) / _dailyHpRecovery(unit.stats.maxHp))
+      : 0;
+    const hpStatusText = isDown
+      ? `重傷（約 ${daysToRecover} 天恢復）`
+      : unit.stats.hp < unit.stats.maxHp
+        ? `受傷（約 ${daysToRecover} 天全癒）`
+        : '健康';
+    const hpHTML = `
+      <div class="ud-hp-section">
+        <div class="ud-hp-label-row">
+          <span class="ud-hp-label">生命值</span>
+          <span class="ud-hp-nums">${Math.ceil(unit.stats.hp)} / ${Math.ceil(unit.stats.maxHp)}</span>
+          <span class="ud-hp-status" style="color:${hpColor}">${hpStatusText}</span>
+        </div>
+        <div class="ud-hp-bar-wrap">
+          <div class="ud-hp-bar" style="width:${hpPct}%;background:${hpColor}"></div>
+        </div>
+      </div>`;
+
     document.getElementById('ui-unit-detail-body').innerHTML = `
+      ${hpHTML}
       <div class="ud-row">
         <span class="ud-label">職業</span>
         <span class="ud-value">${unit.role}</span>
       </div>
       <div class="ud-row">
         <span class="ud-label">狀態</span>
-        <button class="btn-toggle-active${unit.active ? ' is-active' : ''}" data-id="${unit.id}">
-          ${unit.active ? '✅ 參戰中' : '💤 待命中'}
-        </button>
+        ${isDown
+          ? `<span class="ud-value ud-wounded">🤕 重傷中，靜養恢復</span>`
+          : `<button class="btn-toggle-active${unit.active ? ' is-active' : ''}" data-id="${unit.id}">
+              ${unit.active ? '✅ 參戰中' : '💤 待命中'}
+            </button>`
+        }
       </div>
       <div class="ud-row">
         <span class="ud-label">特質</span>
@@ -1679,23 +1783,23 @@ export class GameUI {
    */
   _calculatePlayerForce(squadIds) {
     const squads  = this.army.getSquads().filter(s => squadIds.includes(s.id));
-    const members = squads.flatMap(s => s.members.filter(m => m.active));
+    // Only active, able-bodied units (hp > 0) participate.
+    const members = squads.flatMap(s => s.members.filter(m => m.active && m.stats.hp > 0));
 
-    const totalAtk = members.reduce((sum, m) => sum + m.stats.attack,  0);
-    const totalDef = members.reduce((sum, m) => sum + m.stats.defense, 0);
-    const moraleSum = members.reduce((sum, m) => sum + m.stats.morale, 0);
-    const avgMor = members.length > 0
-      ? Math.round(moraleSum / members.length)
-      : 0;
-    const maxHp = Math.max(1, Math.floor(totalDef * 5 + members.length * 20));
+    const totalAtk   = members.reduce((sum, m) => sum + m.stats.attack,  0);
+    const totalDef   = members.reduce((sum, m) => sum + m.stats.defense, 0);
+    const moraleSum  = members.reduce((sum, m) => sum + m.stats.morale,  0);
+    const avgMor     = members.length > 0 ? Math.round(moraleSum / members.length) : 0;
+    const totalHp    = members.reduce((sum, m) => sum + m.stats.hp,      0);
+    const totalMaxHp = members.reduce((sum, m) => sum + m.stats.maxHp,   0);
 
     return {
       memberCount: members.length,
       attack:  totalAtk,
       defense: totalDef,
       morale:  avgMor,
-      hp:      maxHp,
-      maxHp,
+      hp:      Math.max(1, totalHp),
+      maxHp:   Math.max(1, totalMaxHp),
       members,
     };
   }
@@ -1892,9 +1996,22 @@ export class GameUI {
         retreat: { icon: '🏃', label: '撤退',     cls: 'btl-result-retreat'},
       };
       const r = resultMeta[result] ?? resultMeta.retreat;
+      const alreadyCaptured = result === 'victory' && this.isPlayerSettlement(settlement);
+      const captureBtn = result === 'victory' && !alreadyCaptured
+        ? `<button id="btn-battle-capture" class="btn-battle-capture">🏴 佔領 ${settlement.name}</button>`
+        : result === 'victory' && alreadyCaptured
+          ? `<div class="btl-captured-badge">🏴 已佔領</div>`
+          : '';
       actionsEl.innerHTML = `
         <div class="btl-result ${r.cls}">${r.icon} ${r.label}</div>
+        ${captureBtn}
         <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
+      if (result === 'victory' && !alreadyCaptured) {
+        actionsEl.querySelector('#btn-battle-capture').addEventListener('click', () => {
+          this._captureSettlement(settlement);
+          this._renderBattleScene(); // re-render to flip button → badge
+        });
+      }
       actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
     } else {
       actionsEl.innerHTML = `
@@ -1939,7 +2056,19 @@ export class GameUI {
     }
 
     state.enemy.hp  = Math.max(0, state.enemy.hp  - playerDmg);
-    state.player.hp = Math.max(0, state.player.hp - enemyDmg);
+
+    // Distribute enemy damage to individual units proportionally to their maxHp.
+    const aliveMembers = state.player.members.filter(m => m.stats.hp > 0);
+    if (aliveMembers.length > 0) {
+      const totalAliveMaxHp = aliveMembers.reduce((sum, m) => sum + m.stats.maxHp, 0);
+      aliveMembers.forEach(m => {
+        const share = (m.stats.maxHp / totalAliveMaxHp) * enemyDmg;
+        m.stats.hp = Math.max(0, m.stats.hp - share);
+      });
+    }
+    // Sync aggregate HP from individual unit totals.
+    state.player.hp = Math.max(0, state.player.members.reduce((sum, m) => sum + m.stats.hp, 0));
+
     state.log.push(logMsg);
 
     // Check end conditions
@@ -1964,28 +2093,108 @@ export class GameUI {
   }
 
   _closeBattleScene() {
+    // Mark units with hp ≤ 0 as inactive (wounded – needs recovery time).
+    if (this._battleState) {
+      let woundedCount = 0;
+      this._battleState.player.members.forEach(m => {
+        if (m.stats.hp <= 0) {
+          m.active = false;
+          woundedCount++;
+        }
+      });
+      if (woundedCount > 0) {
+        this._toast(`⚠ ${woundedCount} 名士兵受重傷，需要靜養恢復！`);
+      }
+    }
+
     document.getElementById('battle-scene-overlay')?.classList.remove('visible');
     this._battleState = null;
   }
 
-  /** @returns {{ inventory: object, army: object, playerKingdom: object }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[] }} serialisable snapshot */
   getState() {
     return {
-      inventory:     this.inventory.getState(),
-      army:          this.army.getState(),
-      playerKingdom: { ...this._playerKingdom },
+      inventory:            this.inventory.getState(),
+      army:                 this.army.getState(),
+      playerKingdom:        { ...this._playerKingdom },
+      capturedSettlements:  [...this._capturedSettlements],
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object, playerKingdom?: object }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[] }} state
    */
   loadState(state) {
     if (!state) return;
     if (state.inventory)     this.inventory.loadState(state.inventory);
     if (state.army)          this.army.loadState(state.army);
     if (state.playerKingdom) this._playerKingdom = { ...DEFAULT_KINGDOM, ...state.playerKingdom };
+    if (Array.isArray(state.capturedSettlements)) {
+      this._capturedSettlements = new Set(state.capturedSettlements);
+      this._playerSettlementCount = this._capturedSettlements.size;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Settlement capture helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build a stable string key for a settlement (used in `_capturedSettlements`).
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {string} e.g. "castle:0" or "village:3"
+   */
+  _settlementKey(settlement) {
+    if (!this.nationSystem) return '';
+    const arr = settlement.type === 'castle'
+      ? this.nationSystem.castleSettlements
+      : this.nationSystem.villageSettlements;
+    const idx = arr.indexOf(settlement);
+    return idx >= 0 ? `${settlement.type}:${idx}` : '';
+  }
+
+  /**
+   * Returns true when the player currently controls the given settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {boolean}
+   */
+  isPlayerSettlement(settlement) {
+    const key = this._settlementKey(settlement);
+    return key !== '' && this._capturedSettlements.has(key);
+  }
+
+  /**
+   * Mark a settlement as captured by the player:
+   * - Records it in `_capturedSettlements`
+   * - Updates `_playerSettlementCount`
+   * - Awards gold + the settlement's resources as spoils
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _captureSettlement(settlement) {
+    const key = this._settlementKey(settlement);
+    if (!key || this._capturedSettlements.has(key)) return;
+
+    this._capturedSettlements.add(key);
+    this._playerSettlementCount = this._capturedSettlements.size;
+
+    // Award gold based on economy level and type.
+    const goldReward = settlement.type === 'castle'
+      ? 50 + settlement.economyLevel * 20
+      : 20 + settlement.economyLevel * 10;
+    this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: goldReward });
+
+    // Award one unit of each of the settlement's resources.
+    const iconMap = {
+      '木材': '🪵', '農產': '🌾', '礦石': '⛏️', '絲綢': '🧵',
+      '煤炭': '🪨', '草藥': '🌿', '魚獲': '🐟', '皮毛': '🦊',
+      '食鹽': '🧂', '陶器': '🏺',
+    };
+    settlement.resources.forEach(res => {
+      this.inventory.addItem({
+        name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: 5,
+      });
+    });
   }
 
   /**
