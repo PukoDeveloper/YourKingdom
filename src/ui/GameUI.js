@@ -130,6 +130,13 @@ export class GameUI {
     /** Number of settlements (castles + villages) the player currently controls. */
     this._playerSettlementCount = 0;
 
+    /**
+     * Set of settlement keys the player has captured.
+     * Keys are formatted as "castle:<idx>" or "village:<idx>".
+     * @type {Set<string>}
+     */
+    this._capturedSettlements = new Set();
+
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
 
@@ -921,17 +928,26 @@ export class GameUI {
 
     const settlements = tab === 'castles' ? castleSettlements : villageSettlements;
     const cardsHTML = settlements.map((s, i) => {
-      const nation   = this.nationSystem.getNation(s);
-      const flagHTML = nation.flagApp ? renderFlagHTML(nation.flagApp, 36) : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
+      const isPlayer = this.isPlayerSettlement(s);
+      const nation   = isPlayer
+        ? { color: '#e2c97e', emblem: '🏴', name: this._playerKingdom.name, flagApp: null }
+        : this.nationSystem.getNation(s);
+      const flagHTML = !isPlayer && nation.flagApp
+        ? renderFlagHTML(nation.flagApp, 36)
+        : `<span class="sc-emblem-fallback">${nation.emblem}</span>`;
       const ecoStars = '⭐'.repeat(s.economyLevel) + '☆'.repeat(5 - s.economyLevel);
       const popStr   = s.population.toLocaleString();
+      const playerBadge = isPlayer
+        ? `<span class="sc-player-badge">我方</span>`
+        : '';
       return `
-        <div class="settlement-card" data-ns-type="${s.type}" data-ns-idx="${i}"
+        <div class="settlement-card${isPlayer ? ' player-owned' : ''}" data-ns-type="${s.type}" data-ns-idx="${i}"
              style="border-color: ${nation.color}44; --ns-color: ${nation.color}"
              role="button" tabindex="0">
           <div class="sc-header">
             <span class="sc-flag">${flagHTML}</span>
             <span class="sc-name">${s.name}</span>
+            ${playerBadge}
             <span class="sc-arrow">›</span>
           </div>
           <div class="sc-meta">
@@ -982,20 +998,29 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const nation    = this.nationSystem.getNation(settlement);
+    const isPlayer  = this.isPlayerSettlement(settlement);
+    const nation    = isPlayer
+      ? { color: '#e2c97e', emblem: '🏴', name: this._playerKingdom.name, flagApp: null }
+      : this.nationSystem.getNation(settlement);
     const ruler     = settlement.ruler;
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
-    const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
+    const flagHTML  = !isPlayer && nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
     const rulerTraitsHTML = ruler.traits.map(t =>
       `<span class="trait-tag${t === TRAIT_RULER ? ' trait-ruler' : ''}">${t}</span>`
     ).join('');
 
+    const playerBanner = isPlayer ? `
+      <div class="sd-player-banner">
+        🏴 ${this._playerKingdom.name} · 已佔領
+      </div>` : '';
+
     document.getElementById('ui-settlement-detail-icon').innerHTML = flagHTML;
     document.getElementById('ui-settlement-detail-name').textContent = settlement.name;
     document.getElementById('ui-settlement-detail-body').innerHTML = `
+      ${playerBanner}
       <div class="sd-nation-banner" style="background: ${nation.color}22; border-color: ${nation.color}55">
         <span class="sd-nation-flag">${flagHTML}</span>
         <span class="sd-nation-name" style="color:${nation.color}">${nation.name}</span>
@@ -1962,9 +1987,22 @@ export class GameUI {
         retreat: { icon: '🏃', label: '撤退',     cls: 'btl-result-retreat'},
       };
       const r = resultMeta[result] ?? resultMeta.retreat;
+      const alreadyCaptured = result === 'victory' && this.isPlayerSettlement(settlement);
+      const captureBtn = result === 'victory' && !alreadyCaptured
+        ? `<button id="btn-battle-capture" class="btn-battle-capture">🏴 佔領 ${settlement.name}</button>`
+        : result === 'victory' && alreadyCaptured
+          ? `<div class="btl-captured-badge">🏴 已佔領</div>`
+          : '';
       actionsEl.innerHTML = `
         <div class="btl-result ${r.cls}">${r.icon} ${r.label}</div>
+        ${captureBtn}
         <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
+      if (result === 'victory' && !alreadyCaptured) {
+        actionsEl.querySelector('#btn-battle-capture').addEventListener('click', () => {
+          this._captureSettlement(settlement);
+          this._renderBattleScene(); // re-render to flip button → badge
+        });
+      }
       actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
     } else {
       actionsEl.innerHTML = `
@@ -2066,24 +2104,95 @@ export class GameUI {
     this._battleState = null;
   }
 
-  /** @returns {{ inventory: object, army: object, playerKingdom: object }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[] }} serialisable snapshot */
   getState() {
     return {
-      inventory:     this.inventory.getState(),
-      army:          this.army.getState(),
-      playerKingdom: { ...this._playerKingdom },
+      inventory:            this.inventory.getState(),
+      army:                 this.army.getState(),
+      playerKingdom:        { ...this._playerKingdom },
+      capturedSettlements:  [...this._capturedSettlements],
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object, playerKingdom?: object }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[] }} state
    */
   loadState(state) {
     if (!state) return;
     if (state.inventory)     this.inventory.loadState(state.inventory);
     if (state.army)          this.army.loadState(state.army);
     if (state.playerKingdom) this._playerKingdom = { ...DEFAULT_KINGDOM, ...state.playerKingdom };
+    if (Array.isArray(state.capturedSettlements)) {
+      this._capturedSettlements = new Set(state.capturedSettlements);
+      this._playerSettlementCount = this._capturedSettlements.size;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Settlement capture helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Build a stable string key for a settlement (used in `_capturedSettlements`).
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {string} e.g. "castle:0" or "village:3"
+   */
+  _settlementKey(settlement) {
+    if (!this.nationSystem) return '';
+    const arr = settlement.type === 'castle'
+      ? this.nationSystem.castleSettlements
+      : this.nationSystem.villageSettlements;
+    const idx = arr.indexOf(settlement);
+    return idx >= 0 ? `${settlement.type}:${idx}` : '';
+  }
+
+  /**
+   * Returns true when the player currently controls the given settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {boolean}
+   */
+  isPlayerSettlement(settlement) {
+    const key = this._settlementKey(settlement);
+    return key !== '' && this._capturedSettlements.has(key);
+  }
+
+  /**
+   * Mark a settlement as captured by the player:
+   * - Records it in `_capturedSettlements`
+   * - Updates `_playerSettlementCount`
+   * - Awards gold + the settlement's resources as spoils
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _captureSettlement(settlement) {
+    const key = this._settlementKey(settlement);
+    if (!key || this._capturedSettlements.has(key)) return;
+
+    this._capturedSettlements.add(key);
+    this._playerSettlementCount = this._capturedSettlements.size;
+
+    // Award gold based on economy level and type.
+    const goldReward = settlement.type === 'castle'
+      ? 50 + settlement.economyLevel * 20
+      : 20 + settlement.economyLevel * 10;
+    this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: goldReward });
+
+    // Award one unit of each of the settlement's resources.
+    const iconMap = {
+      '木材': '🪵', '農產': '🌾', '礦石': '⛏️', '絲綢': '🧵',
+      '煤炭': '🪨', '草藥': '🌿', '魚獲': '🐟', '皮毛': '🦊',
+      '食鹽': '🧂', '陶器': '🏺',
+    };
+    settlement.resources.forEach(res => {
+      this.inventory.addItem({
+        name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: 5,
+      });
+    });
+
+    // Update kingdom-type gating.
+    if (this._playerSettlementCount === 1) {
+      // First capture – keep current type or upgrade to 王國 if allowed.
+    }
   }
 
   /**
