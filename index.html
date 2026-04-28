@@ -2779,6 +2779,93 @@
         margin-top: 10px;
         width: 100%;
       }
+
+      /* =====================================================================
+         Inbox panel
+         ===================================================================== */
+      .inbox-tab-btn {
+        position: relative;
+      }
+      .inbox-badge {
+        position: absolute;
+        top: -4px;
+        right: -4px;
+        background: #e53935;
+        color: #fff;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 16px;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        border-radius: 8px;
+        text-align: center;
+        pointer-events: none;
+      }
+      .inbox-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .inbox-count {
+        color: rgba(255,255,255,0.4);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+      }
+      .inbox-clear-btn {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        padding: 5px 12px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+      }
+      .inbox-clear-btn:hover { background: rgba(255,255,255,0.12); color: #eee; }
+      .inbox-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .inbox-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 10px 12px;
+        transition: border-color 0.15s;
+      }
+      .inbox-row.inbox-unread {
+        background: rgba(226,201,126,0.07);
+        border-color: rgba(226,201,126,0.35);
+      }
+      .inbox-icon {
+        font-size: 20px;
+        min-width: 24px;
+        text-align: center;
+        line-height: 1.4;
+      }
+      .inbox-body { flex: 1; min-width: 0; }
+      .inbox-text {
+        color: #ddd;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
+        word-break: break-all;
+      }
+      .inbox-day {
+        color: rgba(255,255,255,0.35);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 11px;
+        margin-top: 3px;
+      }
     </style>
   </head>
   <body>

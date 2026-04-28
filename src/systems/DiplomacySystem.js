@@ -14,6 +14,47 @@
  */
 
 import { MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
+import { BuildingSystem, BLDG_TAVERN } from './BuildingSystem.js';
+
+// ---------------------------------------------------------------------------
+// NPC AI constants
+// ---------------------------------------------------------------------------
+
+/** Maximum number of armies (squads) a castle settlement can garrison. */
+export const NPC_CASTLE_MAX_ARMIES = 2;
+/** Maximum number of armies (squads) a village settlement can garrison. */
+export const NPC_VILLAGE_MAX_ARMIES = 1;
+/** Maximum units per NPC squad. */
+export const NPC_SQUAD_MAX_MEMBERS = 10;
+
+/** Minimum weakness score (0-100) required to consider attacking, by personality. */
+const WAR_THRESHOLD = {
+  '好戰': 20,
+  '傲慢': 35,
+  '狡猾': 55,
+  '謹慎': 70,
+  '溫和': 90,
+};
+
+/** Gold earned per day per economy level for each controlled settlement type. */
+const TAX_PER_ECON_CASTLE  = 15;
+const TAX_PER_ECON_VILLAGE = 5;
+
+/**
+ * Gold deducted from a settlement's tax income for each garrisoned soldier.
+ * Represents the economic burden of maintaining a standing army.
+ * Exported so GameUI can apply the same penalty to player-collected taxes.
+ */
+export const GARRISON_TAX_PENALTY_PER_UNIT = 2;
+
+/** NPC gold cap. */
+const NPC_GOLD_CAP = 3000;
+
+/** Probability that the attacker wins an NPC-initiated war action. */
+const NPC_WAR_VICTORY_CHANCE = 0.45;
+
+/** Number of garrison units removed from the defeated settlement per NPC war victory. */
+const NPC_WAR_CASUALTY_COUNT = 2;
 
 // ---------------------------------------------------------------------------
 // Public constants
@@ -124,13 +165,30 @@ export class DiplomacySystem {
      * Surrender index per nation (0 – 100).
      * A higher value indicates a nation is more likely to consider surrendering.
      * Factors: enemy combined strength, occupied home territories, ruler traits, ally count.
-     * Maintained but not yet used for AI decision-making.
      * @type {Map<number, number>}
      */
     this._surrenderIndex = new Map();
 
+    /**
+     * NPC gold treasury per nation.
+     * Key: nationId; Value: gold amount.
+     * @type {Map<number, number>}
+     */
+    this._npcGold = new Map();
+
+    /**
+     * NPC garrison armies per settlement.
+     * Key: settlement key ("castle:0", "village:3").
+     * Value: array of squads; each squad is an array of plain unit objects.
+     * Castle supports up to NPC_CASTLE_MAX_ARMIES squads, village up to NPC_VILLAGE_MAX_ARMIES.
+     * Each plain unit: { name, role, traits, stats: { attack, defense, morale, hp, maxHp } }
+     * @type {Map<string, Array<Array<{name:string,role:string,traits:string[],stats:object}>>>}
+     */
+    this._npcArmies = new Map();
+
     this._build(mapData);
     this._initSovereignty();
+    this._initNpcState();
   }
 
   // -------------------------------------------------------------------------
@@ -403,6 +461,394 @@ export class DiplomacySystem {
   }
 
   /**
+   * Initialise NPC gold and garrison armies.
+   * Called once after world generation; safe to call again (idempotent – only
+   * fills entries that are not yet present so loadState() data is preserved).
+   */
+  _initNpcState() {
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+
+    // Gold: each nation starts with economy-weighted treasury.
+    nations.forEach((_, id) => {
+      if (!this._npcGold.has(id)) {
+        const eco = castleSettlements[id]?.economyLevel ?? 3;
+        this._npcGold.set(id, eco * 80);
+      }
+    });
+
+    // Garrison armies for each castle (2 squads max).
+    castleSettlements.forEach((s, idx) => {
+      const key = `castle:${idx}`;
+      if (!this._npcArmies.has(key)) {
+        this._npcArmies.set(key, this._generateInitialGarrison('castle', s, idx));
+      }
+    });
+
+    // Garrison armies for each village (1 squad max).
+    villageSettlements.forEach((s, idx) => {
+      const key = `village:${idx}`;
+      if (!this._npcArmies.has(key)) {
+        this._npcArmies.set(key, this._generateInitialGarrison('village', s, idx));
+      }
+    });
+  }
+
+  /**
+   * Generate the initial garrison squads for a settlement deterministically.
+   * @param {'castle'|'village'} type
+   * @param {import('./NationSystem.js').Settlement} settlement
+   * @param {number} idx  Settlement index (used as part of the hash seed).
+   * @returns {Array<Array<object>>}  Array of squads (each squad = array of unit objects).
+   */
+  _generateInitialGarrison(type, settlement, idx) {
+    const isCastle  = type === 'castle';
+    const maxSquads = isCastle ? NPC_CASTLE_MAX_ARMIES : NPC_VILLAGE_MAX_ARMIES;
+    const eco       = settlement.economyLevel;
+    // Number of initial units per squad: 1 for eco 1 → 7 for eco 5 (roughly eco * 1.5)
+    const unitsPerSquad = Math.floor(eco * 1.5);
+    const squads = [];
+
+    const ROLES  = ['劍士', '弓手', '長槍兵', '騎兵', '斥候'];
+    const TRAITS = [['重步兵'], ['神射手'], [], [], ['輕步兵']];
+    const SURNAMES = ['趙', '錢', '孫', '李', '周', '吳', '鄭', '王', '馮', '陳'];
+    const GIVEN    = ['文', '武', '德', '仁', '義', '禮', '智', '信', '忠', '勇'];
+
+    for (let sq = 0; sq < maxSquads; sq++) {
+      const squad = [];
+      for (let u = 0; u < unitsPerSquad; u++) {
+        const seed = (idx * 37 + sq * 13 + u * 7 + settlement.population) % 10000;
+        const roleIdx    = seed % ROLES.length;
+        const surnameIdx = (seed * 3 + sq) % SURNAMES.length;
+        const givenIdx   = (seed * 7 + u)  % GIVEN.length;
+        const atk = 4 + Math.floor(eco * 1.2) + (seed % 4);
+        const def = 3 + Math.floor(eco * 1.0) + ((seed * 2) % 4);
+        const mor = 45 + eco * 5 + (seed % 15);
+        const maxHp = 50 + def * 5;
+        squad.push({
+          name:   SURNAMES[surnameIdx] + GIVEN[givenIdx],
+          role:   ROLES[roleIdx],
+          traits: [...TRAITS[roleIdx]],
+          stats:  { attack: atk, defense: def, morale: mor, hp: maxHp, maxHp },
+        });
+      }
+      squads.push(squad);
+    }
+    return squads;
+  }
+
+  /**
+   * Compute the settlement hash coordinates used for tavern roster keys.
+   * Mirrors the formula in GameUI._settlementHashCoords so NPC and player
+   * share the same key-space.
+   * @param {'castle'|'village'} type
+   * @param {number} idx
+   * @returns {{ sx: number, sy: number }}
+   */
+  _settlementHashCoords(type, idx) {
+    if (type === 'castle') {
+      return { sx: idx * 137, sy: idx * 251 };
+    }
+    return { sx: idx * 173 + 5000, sy: idx * 293 + 5000 };
+  }
+
+  // -------------------------------------------------------------------------
+  // NPC AI – phase-based actions
+  // -------------------------------------------------------------------------
+
+  /**
+   * Dispatch phase-based NPC AI.
+   * Called by GameUI.onPhaseChanged() when a day/night phase transition occurs.
+   *
+   * @param {'清晨'|'白天'|'黃昏'|'夜晚'} phase
+   * @param {Map<string, {lastVisitDay: number, recruitedIndices: number[]}>} tavernState
+   *   The shared tavern state map from GameUI (mutated in-place for competition).
+   * @returns {{ message: string }[]}  Player-visible notification messages.
+   */
+  onPhaseChanged(phase, tavernState) {
+    const messages = [];
+    if (phase === '清晨') {
+      this._npcTaxPhase(messages);
+    } else if (phase === '白天') {
+      this._npcWarPhase(messages);
+    } else if (phase === '黃昏') {
+      this._npcRecruitPhase(tavernState, messages);
+    }
+    return messages;
+  }
+
+  /**
+   * Morning phase: NPC nations collect taxes from their controlled settlements.
+   * @param {{ message: string }[]} messages
+   */
+  _npcTaxPhase(messages) {
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+
+    nations.forEach((nation, id) => {
+      if (!nation) return;
+      let income = 0;
+
+      castleSettlements.forEach((s, idx) => {
+        if (s.controllingNationId !== id) return;
+        const gross   = s.economyLevel * TAX_PER_ECON_CASTLE;
+        const garrisonUnits = (this._npcArmies.get(`castle:${idx}`) ?? [])
+          .reduce((sum, sq) => sum + sq.length, 0);
+        const penalty = garrisonUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+        income += Math.max(0, gross - penalty);
+      });
+      villageSettlements.forEach((s, idx) => {
+        if (s.controllingNationId !== id) return;
+        const gross   = s.economyLevel * TAX_PER_ECON_VILLAGE;
+        const garrisonUnits = (this._npcArmies.get(`village:${idx}`) ?? [])
+          .reduce((sum, sq) => sum + sq.length, 0);
+        const penalty = garrisonUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+        income += Math.max(0, gross - penalty);
+      });
+
+      if (income > 0) {
+        const cur = this._npcGold.get(id) ?? 0;
+        this._npcGold.set(id, Math.min(NPC_GOLD_CAP, cur + income));
+      }
+    });
+  }
+
+  /**
+   * Daytime phase: NPC nations assess enemies and may declare war.
+   * @param {{ message: string }[]} messages
+   */
+  _npcWarPhase(messages) {
+    const { nations, castleSettlements } = this.nationSystem;
+
+    castleSettlements.forEach((s, id) => {
+      if (!s || s.controllingNationId !== id) return; // skip if conquered
+
+      const personality = this._rulerPersonality(s);
+      const threshold   = WAR_THRESHOLD[personality] ?? 55;
+
+      // Find the weakest hostile neighbour (relation ≤ -20).
+      let bestTargetId  = -1;
+      let bestWeakness  = threshold; // must beat the threshold to attack
+
+      nations.forEach((_, tid) => {
+        if (tid === id) return;
+        const rel = this.getRelation(id, tid);
+        if (rel > -20) return; // not hostile enough
+
+        const weakness = this._assessEnemyWeakness(id, tid);
+        if (weakness > bestWeakness) {
+          bestWeakness  = weakness;
+          bestTargetId  = tid;
+        }
+      });
+
+      if (bestTargetId < 0) return;
+
+      const targetSettlement = castleSettlements[bestTargetId];
+      if (!targetSettlement) return;
+
+      const victory = Math.random() < NPC_WAR_VICTORY_CHANCE;
+      const attackerName = nations[id]?.name ?? s.name;
+      this.recordAttackEvent({
+        attackerNationId:    id,
+        targetNationId:      bestTargetId,
+        settlementName:      targetSettlement.name,
+        attackerDisplayName: attackerName,
+        victory,
+      });
+
+      // If victorious, reduce the defender's garrison.
+      if (victory) {
+        const defKey    = `castle:${bestTargetId}`;
+        const defArmies = this._npcArmies.get(defKey);
+        if (defArmies) {
+          // Remove up to NPC_WAR_CASUALTY_COUNT units from the last occupied squad.
+          for (let sq = defArmies.length - 1; sq >= 0; sq--) {
+            const losses = Math.min(NPC_WAR_CASUALTY_COUNT, defArmies[sq].length);
+            defArmies[sq].splice(defArmies[sq].length - losses, losses);
+            if (losses > 0) break;
+          }
+        }
+      }
+
+      messages.push({
+        message: `⚔ ${attackerName} 進攻了 ${nations[bestTargetId]?.name ?? '鄰國'} 的 ${targetSettlement.name}！${victory ? '（勝利）' : '（失敗）'}`,
+      });
+    });
+  }
+
+  /**
+   * Dusk phase: NPC nations recruit from taverns in their settlements.
+   * Uses the shared tavernState so NPCs compete with the player.
+   * @param {Map<string, {lastVisitDay: number, recruitedIndices: number[]}>} tavernState
+   * @param {{ message: string }[]} messages
+   */
+  _npcRecruitPhase(tavernState, messages) {
+    if (!tavernState) return;
+
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+    const day = this._currentDay;
+
+    const tryRecruit = (s, settlementType, idx) => {
+      const nationId = s.controllingNationId;
+      if (nationId < 0) return; // player-owned
+
+      // Check if this settlement has a tavern.
+      const hasTavern = s.buildings?.some(b => b.type === BLDG_TAVERN);
+      if (!hasTavern) return;
+
+      const armyKey   = `${settlementType}:${idx}`;
+      const armies    = this._npcArmies.get(armyKey);
+      if (!armies) return;
+
+      const maxSquads = settlementType === 'castle' ? NPC_CASTLE_MAX_ARMIES : NPC_VILLAGE_MAX_ARMIES;
+
+      // Count current total garrison size.
+      const totalUnits = armies.reduce((sum, sq) => sum + sq.length, 0);
+      const capacity   = maxSquads * NPC_SQUAD_MAX_MEMBERS;
+      if (totalUnits >= capacity) return; // garrison is full
+
+      // Get or initialise tavern state.
+      const { sx, sy } = this._settlementHashCoords(settlementType, idx);
+      const tKey = `${sx}_${sy}`;
+      let tState = tavernState.get(tKey);
+      if (!tState || day - tState.lastVisitDay >= 5) {
+        tState = { lastVisitDay: day, recruitedIndices: [] };
+        tavernState.set(tKey, tState);
+      }
+
+      const recruits = BuildingSystem.generateRecruits(sx, sy, 0, tState.lastVisitDay);
+
+      for (let i = 0; i < recruits.length; i++) {
+        if (tState.recruitedIndices.includes(i)) continue; // already taken
+        const r = recruits[i];
+        // Re-fetch gold on each iteration so multiple purchases within one
+        // phase correctly deduct from the running total.
+        const currentGold = this._npcGold.get(nationId) ?? 0;
+        if (currentGold < r.hireCost) continue;
+
+        // Check army capacity again (we may have just filled a slot above).
+        const filledNow = armies.reduce((sum, sq) => sum + sq.length, 0);
+        if (filledNow >= capacity) break;
+
+        // Find the first squad with space.
+        let targetSquad = armies.find(sq => sq.length < NPC_SQUAD_MAX_MEMBERS);
+        if (!targetSquad) {
+          if (armies.length < maxSquads) {
+            targetSquad = [];
+            armies.push(targetSquad);
+          } else {
+            break;
+          }
+        }
+
+        // Deduct gold and add recruit.
+        this._npcGold.set(nationId, currentGold - r.hireCost);
+        tState.recruitedIndices.push(i);
+        targetSquad.push({
+          name:   r.name,
+          role:   r.role,
+          traits: [...r.traits],
+          stats:  {
+            attack:  r.stats.attack,
+            defense: r.stats.defense,
+            morale:  r.stats.morale,
+            hp:      50 + r.stats.defense * 5,
+            maxHp:   50 + r.stats.defense * 5,
+          },
+        });
+
+        const nationName = nations[nationId]?.name ?? '';
+        messages.push({
+          message:    `🍺 ${nationName} 在 ${s.name} 的酒館招募了 ${r.name}（${r.role}）`,
+          settlementKey: armyKey,
+        });
+        break; // one recruit per settlement per dusk
+      }
+    };
+
+    castleSettlements.forEach((s, idx) => tryRecruit(s, 'castle', idx));
+    villageSettlements.forEach((s, idx) => tryRecruit(s, 'village', idx));
+  }
+
+  /**
+   * Assess how "weak" a target nation currently is from an attacker's perspective.
+   * Returns a score in [0, 100]: higher = weaker = easier target.
+   *
+   * Factors:
+   *   - Economy weakness : (5 - avgEconomy) / 5 × 30
+   *   - Territory losses : (lost / total) × 40
+   *   - Army weakness    : max(0, 1 - armySize / 20) × 30
+   *
+   * @param {number} attackerId  Nation id of the attacker (unused for now but available for future asymmetry).
+   * @param {number} targetId    Nation id of the target.
+   * @returns {number}
+   */
+  _assessEnemyWeakness(attackerId, targetId) {
+    const { castleSettlements, villageSettlements } = this.nationSystem;
+    const allSettlements = [...castleSettlements, ...villageSettlements];
+
+    const own   = allSettlements.filter(s => s.nationId === targetId);
+    const total = own.length;
+    if (total === 0) return 100; // extinct nation
+
+    const lost   = own.filter(s => s.controllingNationId !== targetId).length;
+    const lossRatio = lost / total;
+
+    const avgEco = own.reduce((sum, s) => sum + s.economyLevel, 0) / total;
+    const ecoWeakness = Math.max(0, (5 - avgEco) / 5 * 30);
+
+    // Army size across all controlled settlements.
+    const castleSet = new Set(castleSettlements);
+    let armySize = 0;
+    allSettlements.forEach(s => {
+      if (s.controllingNationId !== targetId) return;
+      const isCastle = castleSet.has(s);
+      const sType = isCastle ? 'castle' : 'village';
+      const sArr  = isCastle ? castleSettlements : villageSettlements;
+      const sIdx  = sArr.indexOf(s);
+      const key     = `${sType}:${sIdx}`;
+      const armies  = this._npcArmies.get(key);
+      if (armies) armySize += armies.reduce((sum, sq) => sum + sq.length, 0);
+    });
+    const armyWeakness = Math.max(0, (1 - armySize / 20) * 30);
+
+    return Math.min(100, Math.round(ecoWeakness + lossRatio * 40 + armyWeakness));
+  }
+
+  /**
+   * Return the current NPC gold for a nation.
+   * @param {number} nationId
+   * @returns {number}
+   */
+  getNpcGold(nationId) {
+    return this._npcGold.get(nationId) ?? 0;
+  }
+
+  /**
+   * Return the garrison armies for a settlement.
+   * @param {string} settlementKey  e.g. "castle:0" or "village:3"
+   * @returns {Array<Array<object>>}
+   */
+  getNpcArmies(settlementKey) {
+    return this._npcArmies.get(settlementKey) ?? [];
+  }
+
+  /**
+   * Reduce a settlement's garrison by removing wounded/killed units after a battle.
+   * @param {string} settlementKey
+   * @param {number} losses  Number of units to remove.
+   */
+  applyGarrisonLosses(settlementKey, losses) {
+    const armies = this._npcArmies.get(settlementKey);
+    if (!armies || losses <= 0) return;
+    let remaining = losses;
+    for (let sq = armies.length - 1; sq >= 0 && remaining > 0; sq--) {
+      const remove = Math.min(remaining, armies[sq].length);
+      armies[sq].splice(armies[sq].length - remove, remove);
+      remaining -= remove;
+    }
+  }
+
+  /**
    * Return the settlement keys this nation claims sovereignty over.
    * @param {number} nationId
    * @returns {string[]}
@@ -551,7 +997,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
+          message: `📢 ${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
         });
       } else if (p === PERSONALITY_WARLIKE && roll < 0.2) {
         // Warlike ruler threatens the player
@@ -561,7 +1007,7 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
+          message: `⚠ ${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
         });
       } else if (p === PERSONALITY_GENTLE && roll < 0.15) {
         // Gentle ruler sends goodwill
@@ -571,8 +1017,79 @@ export class DiplomacySystem {
         events.push({
           nationId: id,
           delta,
-          message: `${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
+          message: `🕊 ${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
         });
+      }
+
+      // ── NPC-NPC diplomatic events ─────────────────────────────────────────
+      // Each nation also interacts with other NPC nations based on personality.
+
+      // Arrogant rulers publicly condemn hostile neighbours.
+      if (p === PERSONALITY_ARROGANT && Math.random() < 0.18) {
+        const targetId = this._findHostileNpc(id, -10);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = -(Math.floor(Math.random() * 8) + 5); // -5 … -12
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者公開譴責了 ${targetName}，關係 ${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 公開譴責了我國，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `📢 ${nationName} 的 ${s.ruler.name} 公開譴責了 ${targetName}，兩國關係惡化 ${delta}。`,
+          });
+        }
+      }
+
+      // Warlike rulers issue threats to hostile neighbours.
+      if (p === PERSONALITY_WARLIKE && Math.random() < 0.18) {
+        const targetId = this._findHostileNpc(id, -10);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = -(Math.floor(Math.random() * 7) + 4); // -4 … -10
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者向 ${targetName} 發出戰爭威脅，關係 ${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 向我國發出戰爭威脅，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `⚠ ${nationName} 的 ${s.ruler.name} 向 ${targetName} 發出戰爭威脅，兩國關係緊張 ${delta}。`,
+          });
+        }
+      }
+
+      // Cunning rulers issue subtle insults toward rivals.
+      if (p === PERSONALITY_CUNNING && Math.random() < 0.12) {
+        const targetId = this._findHostileNpc(id, -5);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = -(Math.floor(Math.random() * 5) + 3); // -3 … -7
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者暗中侮辱了 ${targetName}，關係 ${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 暗中侮辱了我國，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `💬 ${nationName} 的 ${s.ruler.name} 暗中散播對 ${targetName} 的不利傳言，關係 ${delta}。`,
+          });
+        }
+      }
+
+      // Gentle rulers extend goodwill gestures toward neutral or friendly neighbours.
+      if (p === PERSONALITY_GENTLE && Math.random() < 0.15) {
+        const targetId = this._findFriendlyNpc(id, 0);
+        if (targetId >= 0) {
+          const targetName = nations[targetId]?.name ?? '鄰國';
+          const delta = Math.floor(Math.random() * 5) + 3; // +3 … +7
+          this.modifyNpcRelation(id, targetId, delta);
+          this._addMemoryEntry(id, `我方統治者向 ${targetName} 釋出善意，關係 +${delta}`, delta);
+          this._addMemoryEntry(targetId, `${nationName} 向我國釋出善意，關係 +${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `🕊 ${nationName} 的 ${s.ruler.name} 向 ${targetName} 遞出橄欖枝，兩國關係改善 +${delta}。`,
+          });
+        }
       }
 
       // Warlike / arrogant nations may launch NPC-NPC attacks
@@ -604,13 +1121,53 @@ export class DiplomacySystem {
           events.push({
             nationId: id,
             delta:    0,
-            message:  `${s.ruler.name}（${s.ruler.role}）率兵進攻 ${nations[targetId]?.name ?? '鄰國'} 的 ${settlementName}！`,
+            message:  `⚔ ${s.ruler.name}（${s.ruler.role}）率兵進攻 ${nations[targetId]?.name ?? '鄰國'} 的 ${settlementName}！`,
           });
         }
       }
     });
 
     return events;
+  }
+
+  /**
+   * Find an NPC nation that `id` has a relation with strictly below `maxRel`
+   * (the most hostile one).  Returns -1 if none found.
+   * @param {number} id
+   * @param {number} maxRel  Strict upper bound for hostility (e.g. -10 means "relation < -10").
+   * @returns {number}
+   */
+  _findHostileNpc(id, maxRel) {
+    const nations = this.nationSystem.nations;
+    let worstRel = maxRel;
+    let targetId = -1;
+    nations.forEach((n, tid) => {
+      if (!n) return;
+      if (tid === id) return;
+      const rel = this.getRelation(id, tid);
+      if (rel < worstRel) { worstRel = rel; targetId = tid; }
+    });
+    return targetId;
+  }
+
+  /**
+   * Find an NPC nation that `id` has a relation with strictly above `minRel`
+   * (the friendliest one), excluding the same nation.  Returns -1 if none found.
+   * @param {number} id
+   * @param {number} minRel  Strict lower bound for friendliness (e.g. 0 = relation > 0).
+   * @returns {number}
+   */
+  _findFriendlyNpc(id, minRel) {
+    const nations = this.nationSystem.nations;
+    let bestRel = minRel;
+    let targetId = -1;
+    nations.forEach((n, tid) => {
+      if (!n) return;
+      if (tid === id) return;
+      const rel = this.getRelation(id, tid);
+      if (rel > bestRel) { bestRel = rel; targetId = tid; }
+    });
+    return targetId;
   }
 
   /**
@@ -635,7 +1192,7 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][] }} */
+  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][] }} */
   getState() {
     return {
       playerRelations: [...this._playerRelations.entries()],
@@ -643,12 +1200,14 @@ export class DiplomacySystem {
       nationMemory:    [...this._nationMemory.entries()],
       currentDay:      this._currentDay,
       surrenderIndex:  [...this._surrenderIndex.entries()],
+      npcGold:         [...this._npcGold.entries()],
+      npcArmies:       [...this._npcArmies.entries()],
     };
   }
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number, surrenderIndex?: [number, number][] }|null} state
+   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number, surrenderIndex?: [number, number][], npcGold?: [number, number][], npcArmies?: [string, object[][][]][] }|null} state
    */
   loadState(state) {
     if (!state) return;
@@ -679,5 +1238,19 @@ export class DiplomacySystem {
         this._surrenderIndex.set(Number(id), Math.max(0, Math.min(100, Number(value))));
       });
     }
+    if (Array.isArray(state.npcGold)) {
+      state.npcGold.forEach(([id, value]) => {
+        this._npcGold.set(Number(id), Math.max(0, Math.min(NPC_GOLD_CAP, Number(value))));
+      });
+    }
+    if (Array.isArray(state.npcArmies)) {
+      state.npcArmies.forEach(([key, squads]) => {
+        if (typeof key === 'string' && Array.isArray(squads)) {
+          this._npcArmies.set(key, squads.map(sq => (Array.isArray(sq) ? sq : [])));
+        }
+      });
+    }
+    // Re-run init to fill any keys missing from the save (e.g., from new settlements).
+    this._initNpcState();
   }
 }
