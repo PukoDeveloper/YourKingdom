@@ -1,5 +1,5 @@
-import { Inventory }       from '../systems/Inventory.js';
-import { Army, MAX_SOLDIERS } from '../systems/Army.js';
+import { Inventory }                      from '../systems/Inventory.js';
+import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
 
 /**
  * GameUI – manages the Backpack and Team DOM panels.
@@ -23,6 +23,9 @@ export class GameUI {
     /** @type {'backpack'|'team'|null} */
     this._activePanel  = null;
     this._activeSquad  = 0;
+
+    /** Id of the unit whose move-target panel is currently open, or null. */
+    this._movingUnitId = null;
 
     /** Callback invoked when the player manually triggers a save. */
     this.onSave = onSave;
@@ -49,13 +52,17 @@ export class GameUI {
     this.inventory.addItem({ name: '速度符',   type: 'consumable',  icon: '💨', quantity: 1,
       description: '短暫提升移動速度' });
 
-    // Demo soldiers already in squad 0
-    this.army.acquireUnit({ name: '趙一',   type: 'soldier', role: '劍士',  stats: { attack: 8,  defense: 6  } });
-    this.army.acquireUnit({ name: '錢二',   type: 'soldier', role: '弓手',  stats: { attack: 10, defense: 3  } });
-    this.army.acquireUnit({ name: '孫三',   type: 'soldier', role: '長槍兵', stats: { attack: 7,  defense: 8  } });
-    // Demo general for squad 2
-    this.army.acquireUnit({ name: '李四',   type: 'general', role: '武將',  stats: { attack: 12, defense: 9, morale: 80 } });
-    this.army.acquireUnit({ name: '王五',   type: 'soldier', role: '劍士',  stats: { attack: 9,  defense: 7  } });
+    // Squad 0 – already has the hero; add three more members
+    this.army.acquireUnit({ name: '趙一', role: '劍士',   traits: ['重步兵'],           stats: { attack: 8,  defense: 6  } }, 0);
+    this.army.acquireUnit({ name: '錢二', role: '弓手',   traits: ['神射手'],           stats: { attack: 10, defense: 3  } }, 0);
+    this.army.acquireUnit({ name: '孫三', role: '長槍兵', traits: [],                   stats: { attack: 7,  defense: 8  } }, 0);
+
+    // Squad 1 – a captain-capable general leads
+    this.army.acquireUnit({ name: '李四', role: '武將',   traits: [TRAIT_CAPTAIN, '策略家'], stats: { attack: 12, defense: 9, morale: 80 } }, 1);
+    this.army.acquireUnit({ name: '周六', role: '騎兵',   traits: [],                   stats: { attack: 11, defense: 5  } }, 1);
+
+    // Squad 2 – another captain-capable leader
+    this.army.acquireUnit({ name: '王五', role: '劍士',   traits: [TRAIT_CAPTAIN],      stats: { attack: 9,  defense: 7  } }, 2);
   }
 
   // -------------------------------------------------------------------------
@@ -226,7 +233,8 @@ export class GameUI {
 
     content.querySelectorAll('.squad-tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        this._activeSquad = Number(btn.dataset.squad);
+        this._activeSquad  = Number(btn.dataset.squad);
+        this._movingUnitId = null;
         this._renderTeam();
       });
     });
@@ -235,80 +243,134 @@ export class GameUI {
   }
 
   _renderSquadDetail(squad) {
-    const detail = document.getElementById('squad-detail');
+    const detail  = document.getElementById('squad-detail');
+    const squads  = this.army.getSquads();
+    const captain = squad.captain;
 
-    // General slot
-    const genHTML = squad.general
-      ? `<div class="unit-card general">
-           <div class="unit-badge">⭐ 將領</div>
-           <div class="unit-name">${squad.general.name}</div>
-           <div class="unit-role">${squad.general.role}</div>
-           <div class="unit-stats">
-             攻 ${squad.general.stats.attack}&nbsp;
-             防 ${squad.general.stats.defense}&nbsp;
-             士氣 ${squad.general.stats.morale}
-           </div>
-           ${(squad.isPlayerSquad && squad.general?.role === 'hero')
-             ? ''
-             : `<button class="btn-remove-gen">解除</button>`}
-         </div>`
-      : `<div class="unit-card empty">
-           <div class="unit-badge">⭐ 將領</div>
-           <div class="unit-empty">（空缺）</div>
-         </div>`;
+    const memberCards = [];
+    for (let i = 0; i < MAX_MEMBERS; i++) {
+      const m = squad.members[i];
+      if (m) {
+        const isCaptain = m.id === squad.captainId;
+        const isHero    = m.role === 'hero';
+        const isMoving  = this._movingUnitId === m.id;
 
-    // Soldier slots
-    const soldierCards = [];
-    for (let i = 0; i < MAX_SOLDIERS; i++) {
-      const s = squad.soldiers[i];
-      if (s) {
-        soldierCards.push(`
-          <div class="unit-card soldier">
-            <div class="unit-badge">🗡 士兵</div>
-            <div class="unit-name">${s.name}</div>
-            <div class="unit-role">${s.role}</div>
-            <div class="unit-stats">攻 ${s.stats.attack}&nbsp;防 ${s.stats.defense}</div>
-            <button class="btn-remove-sol" data-id="${s.id}">移除</button>
+        const traitsHTML = m.traits.length > 0
+          ? `<div class="unit-traits">${
+              m.traits.map(t =>
+                `<span class="trait-tag${t === TRAIT_CAPTAIN ? ' trait-captain' : ''}">${t}</span>`
+              ).join('')
+            }</div>`
+          : '';
+
+        const captainBtn = (!isCaptain && m.canLead())
+          ? `<button class="btn-set-captain" data-id="${m.id}">⭐設隊長</button>`
+          : '';
+
+        const moveTargetsHTML = isMoving
+          ? squads
+              .filter(s => s.id !== squad.id)
+              .map(s => `<button class="btn-move-to" data-id="${m.id}" data-target="${s.id}"
+                          ${!s.hasCapacity() ? 'disabled' : ''}>
+                          → 小隊${s.id + 1}${s.hasCapacity() ? '' : '（滿）'}
+                        </button>`)
+              .join('')
+          : '';
+
+        const movePanelHTML = isMoving
+          ? `<div class="move-targets">${moveTargetsHTML}</div>`
+          : '';
+
+        memberCards.push(`
+          <div class="unit-card member${isCaptain ? ' captain' : ''}${m.active ? '' : ' inactive'}">
+            <span class="unit-badge">${isCaptain ? '⭐隊長' : '👤隊員'}</span>
+            <span class="unit-name">${m.name}</span>
+            <span class="unit-role">${m.role}</span>
+            <button class="btn-toggle-active${m.active ? ' is-active' : ''}" data-id="${m.id}">${m.active ? '✅參戰' : '💤待命'}</button>
+            ${traitsHTML}
+            <div class="unit-stats">攻 ${m.stats.attack}&nbsp;防 ${m.stats.defense}&nbsp;士氣 ${m.stats.morale}</div>
+            <div class="unit-card-actions">
+              ${captainBtn}
+              ${!isHero ? `<button class="btn-move${isMoving ? ' active' : ''}" data-id="${m.id}">🔀移動${isMoving ? '▲' : '▼'}</button>` : ''}
+              ${!isHero ? `<button class="btn-remove-member" data-id="${m.id}">❌移除</button>` : ''}
+            </div>
+            ${movePanelHTML}
           </div>`);
       } else {
-        soldierCards.push(`
-          <div class="unit-card empty soldier-empty">
-            <div class="unit-badge">🗡 士兵</div>
-            <div class="unit-empty">空缺 ${i + 1}</div>
+        memberCards.push(`
+          <div class="unit-card empty member-empty">
+            <span class="unit-badge">👤隊員</span>
+            <span class="unit-empty">空缺 ${i + 1}</span>
           </div>`);
       }
     }
 
     detail.innerHTML = `
       <div class="squad-stat">
-        士兵 ${squad.soldiers.length} / ${MAX_SOLDIERS}
-        ${squad.general ? '' : '&nbsp;⚠ 無將領，無法部署'}
+        成員 ${squad.members.length} / ${MAX_MEMBERS}
+        ${captain ? `&nbsp;｜&nbsp;隊長：${captain.name}` : '&nbsp;⚠ 無隊長'}
       </div>
-      <div class="unit-section">
-        <div class="section-label">將領</div>
-        ${genHTML}
-      </div>
-      <div class="unit-section">
-        <div class="section-label">士兵</div>
-        <div class="soldier-grid">${soldierCards.join('')}</div>
+      <div class="member-list">
+        ${memberCards.join('')}
       </div>
     `;
 
-    // Remove general
-    const removeGenBtn = detail.querySelector('.btn-remove-gen');
-    if (removeGenBtn) {
-      removeGenBtn.addEventListener('click', () => {
-        const genName = squad.general?.name ?? '將領';
-        squad.setGeneral(null);
-        this._toast(`${genName} 已解除`);
-        this._renderTeam();
-      });
-    }
-
-    // Remove soldiers
-    detail.querySelectorAll('.btn-remove-sol').forEach(btn => {
+    // Toggle active status
+    detail.querySelectorAll('.btn-toggle-active').forEach(btn => {
       btn.addEventListener('click', () => {
-        squad.removeSoldier(Number(btn.dataset.id));
+        const uid  = Number(btn.dataset.id);
+        const unit = squad.members.find(m => m.id === uid);
+        if (unit) {
+          this.army.setUnitActive(squad.id, uid, !unit.active);
+          this._renderSquadDetail(squad);
+        }
+      });
+    });
+
+    // Set captain
+    detail.querySelectorAll('.btn-set-captain').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const uid = Number(btn.dataset.id);
+        if (this.army.setSquadCaptain(squad.id, uid)) {
+          const unit = squad.members.find(m => m.id === uid);
+          this._toast(`${unit?.name ?? '單位'} 已設為隊長`);
+          this._renderSquadDetail(squad);
+        }
+      });
+    });
+
+    // Toggle move-target panel
+    detail.querySelectorAll('.btn-move').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const uid = Number(btn.dataset.id);
+        this._movingUnitId = this._movingUnitId === uid ? null : uid;
+        this._renderSquadDetail(squad);
+      });
+    });
+
+    // Execute move
+    detail.querySelectorAll('.btn-move-to').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const uid      = Number(btn.dataset.id);
+        const targetId = Number(btn.dataset.target);
+        const unit     = squad.members.find(m => m.id === uid);
+        if (this.army.moveUnit(uid, squad.id, targetId)) {
+          this._movingUnitId = null;
+          this._toast(`${unit?.name ?? '單位'} 已移至小隊 ${targetId + 1}`);
+          this._renderTeam();
+        } else {
+          this._toast('移動失敗（目標小隊已滿）');
+        }
+      });
+    });
+
+    // Remove member
+    detail.querySelectorAll('.btn-remove-member').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const uid  = Number(btn.dataset.id);
+        const unit = squad.members.find(m => m.id === uid);
+        squad.removeMember(uid);
+        this._toast(`${unit?.name ?? '單位'} 已從小隊移除`);
         this._renderTeam();
       });
     });
@@ -322,29 +384,22 @@ export class GameUI {
    * Call this when the player earns a new unit (e.g., after battle).
    * Shows a dialog asking the player what to do with the unit.
    *
-   * @param {{name:string, type:'general'|'soldier', role:string, stats?:Object}} unitData
+   * @param {{name:string, role:string, traits?:string[], stats?:Object}} unitData
    */
   tryAcquireUnit(unitData) {
-    // Check availability before creating the real unit
     const squads   = this.army.getSquads();
-    let canPlace   = false;
+    const canPlace = squads.some(s => s.hasCapacity());
 
-    if (unitData.type === 'general') {
-      canPlace = squads.some(s => !s.isPlayerSquad && s.general === null);
-    } else {
-      canPlace = squads.some(s => s.general !== null && s.hasSoldierCapacity());
-    }
-
-    const typeName = unitData.type === 'general' ? '將領' : '士兵';
     const dlg      = document.getElementById('ui-acquire-overlay');
     const placeBtn = document.getElementById('btn-acq-place');
 
     document.getElementById('ui-acquire-title').textContent =
-      `獲得了${typeName}：${unitData.name}`;
-    document.getElementById('ui-acquire-desc').textContent =
-      canPlace
-        ? `角色：${unitData.role}　攻 ${unitData.stats?.attack ?? '?'}　防 ${unitData.stats?.defense ?? '?'}`
-        : `目前沒有空位安置此${typeName}，請選擇處理方式：`;
+      `獲得了新角色：${unitData.name}`;
+
+    const traits = unitData.traits?.length ? `　特質：${unitData.traits.join('、')}` : '';
+    document.getElementById('ui-acquire-desc').textContent = canPlace
+      ? `職業：${unitData.role}　攻 ${unitData.stats?.attack ?? '?'}　防 ${unitData.stats?.defense ?? '?'}${traits}`
+      : '目前所有小隊都已滿員，請選擇處理方式：';
 
     placeBtn.disabled = !canPlace;
     dlg.classList.add('visible');

@@ -14,7 +14,7 @@
  */
 
 const SAVE_KEY     = 'yk_save';
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 2;
 
 export class SaveManager {
   /** @returns {boolean} true when a compatible save exists in localStorage */

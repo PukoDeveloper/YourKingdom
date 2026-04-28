@@ -1,10 +1,12 @@
 /**
  * Army system – manages up to 3 squads.
- * Each squad has 1 general slot and up to MAX_SOLDIERS soldier slots.
+ * Each squad holds up to MAX_MEMBERS members (no separate general slot).
+ * Any member that has the TRAIT_CAPTAIN trait can be set as the squad captain.
  */
 
-export const MAX_SOLDIERS = 10;
-export const MAX_SQUADS   = 3;
+export const MAX_MEMBERS   = 10;
+export const MAX_SQUADS    = 3;
+export const TRAIT_CAPTAIN = '隊長';
 
 // ---------------------------------------------------------------------------
 // Unit
@@ -12,14 +14,28 @@ export const MAX_SQUADS   = 3;
 
 export class Unit {
   /**
-   * @param {{id:number, name:string, type:'general'|'soldier', role:string, stats?:Object}} opts
+   * @param {{
+   *   id:      number,
+   *   name:    string,
+   *   role:    string,
+   *   traits?: string[],
+   *   stats?:  Object,
+   *   active?: boolean
+   * }} opts
    */
-  constructor({ id, name, type, role, stats = {} }) {
-    this.id    = id;
-    this.name  = name;
-    this.type  = type;  // 'general' | 'soldier'
-    this.role  = role;  // e.g. 'hero', 'swordsman', 'archer'
-    this.stats = { attack: 5, defense: 5, morale: 50, ...stats };
+  constructor({ id, name, role, traits = [], stats = {}, active = true }) {
+    this.id     = id;
+    this.name   = name;
+    this.role   = role;
+    this.traits = [...traits];
+    this.stats  = { attack: 5, defense: 5, morale: 50, ...stats };
+    /** Whether this unit participates in battle. */
+    this.active = active !== false;
+  }
+
+  /** @returns {boolean} true when the unit carries the captain trait */
+  canLead() {
+    return this.traits.includes(TRAIT_CAPTAIN);
   }
 }
 
@@ -36,42 +52,56 @@ export class Squad {
     this.id            = id;
     this.isPlayerSquad = isPlayerSquad;
 
-    /** @type {Unit|null} */
-    this.general  = null;
-
     /** @type {Unit[]} */
-    this.soldiers = [];
+    this.members = [];
+
+    /** @type {number|null} id of the unit currently serving as captain */
+    this.captainId = null;
   }
 
-  /** @param {Unit|null} unit */
-  setGeneral(unit) {
-    this.general = unit;
+  /** @returns {Unit|null} */
+  get captain() {
+    return this.members.find(m => m.id === this.captainId) ?? null;
   }
 
   /**
    * @param {Unit} unit
    * @returns {boolean} true if added successfully
    */
-  addSoldier(unit) {
-    if (this.soldiers.length >= MAX_SOLDIERS) return false;
-    this.soldiers.push(unit);
+  addMember(unit) {
+    if (this.members.length >= MAX_MEMBERS) return false;
+    this.members.push(unit);
     return true;
   }
 
   /**
+   * Remove a member by id. Clears captainId if the removed unit was captain.
+   * @param {number} unitId
+   * @returns {Unit|null} the removed unit, or null if not found
+   */
+  removeMember(unitId) {
+    const idx = this.members.findIndex(m => m.id === unitId);
+    if (idx === -1) return null;
+    if (this.captainId === unitId) this.captainId = null;
+    return this.members.splice(idx, 1)[0];
+  }
+
+  /**
+   * Assign a captain. Returns false if the unit is not in this squad or
+   * does not have the TRAIT_CAPTAIN trait.
    * @param {number} unitId
    * @returns {boolean}
    */
-  removeSoldier(unitId) {
-    const idx = this.soldiers.findIndex(s => s.id === unitId);
-    if (idx === -1) return false;
-    this.soldiers.splice(idx, 1);
+  setCaptain(unitId) {
+    const unit = this.members.find(m => m.id === unitId);
+    if (!unit || !unit.canLead()) return false;
+    this.captainId = unitId;
     return true;
   }
 
   /** @returns {boolean} */
-  hasSoldierCapacity() {
-    return this.soldiers.length < MAX_SOLDIERS;
+  hasCapacity() {
+    return this.members.length < MAX_MEMBERS;
   }
 }
 
@@ -90,47 +120,102 @@ export class Army {
       new Squad(2),
     ];
 
-    // The player character is always the general of Squad 0.
+    // The player hero is always the first member of Squad 0 and its captain.
     const hero = new Unit({
-      id:    this._nextUnitId++,
-      name:  playerName,
-      type:  'general',
-      role:  'hero',
-      stats: { attack: 10, defense: 10, morale: 100 },
+      id:     this._nextUnitId++,
+      name:   playerName,
+      role:   'hero',
+      traits: [TRAIT_CAPTAIN],
+      stats:  { attack: 10, defense: 10, morale: 100 },
     });
-    this.squads[0].setGeneral(hero);
+    this.squads[0].members.push(hero);
+    this.squads[0].captainId = hero.id;
   }
 
   // -------------------------------------------------------------------------
 
   /**
-   * Try to place a newly acquired unit into the first available slot.
+   * Acquire a new unit and place it in the first squad that has capacity
+   * (or a specific squad when squadId is supplied).
    *
-   * - Generals go to the first squad that has no general (skipping the player
-   *   squad whose general is always the hero).
-   * - Soldiers go to the first squad that has a general AND free soldier slots.
+   * If the target squad has no captain yet and the new unit can lead, it is
+   * automatically promoted to captain.
    *
-   * @param {{name:string, type:'general'|'soldier', role:string, stats?:Object}} unitData
+   * @param {{name:string, role:string, traits?:string[], stats?:Object}} unitData
+   * @param {number|null} [squadId] optional target squad id
    * @returns {{ placed: boolean, unit: Unit, squad?: Squad }}
    */
-  acquireUnit(unitData) {
-    const unit = new Unit({ ...unitData, id: this._nextUnitId++ });
+  acquireUnit(unitData, squadId = null) {
+    const unit = new Unit({ ...unitData, id: this._nextUnitId++, traits: unitData.traits ?? [] });
 
-    if (unit.type === 'general') {
-      const squad = this.squads.find(s => !s.isPlayerSquad && s.general === null);
-      if (squad) {
-        squad.setGeneral(unit);
-        return { placed: true, unit, squad };
+    const squad = squadId !== null
+      ? this.squads.find(s => s.id === squadId && s.hasCapacity())
+      : this.squads.find(s => s.hasCapacity());
+
+    if (squad) {
+      squad.addMember(unit);
+      if (squad.captainId === null && unit.canLead()) {
+        squad.captainId = unit.id;
       }
-    } else {
-      const squad = this.squads.find(s => s.general !== null && s.hasSoldierCapacity());
-      if (squad) {
-        squad.addSoldier(unit);
-        return { placed: true, unit, squad };
-      }
+      return { placed: true, unit, squad };
     }
 
     return { placed: false, unit };
+  }
+
+  /**
+   * Move a unit from one squad to another.
+   * The player hero (role === 'hero') cannot be moved.
+   *
+   * @param {number} unitId
+   * @param {number} fromSquadId
+   * @param {number} toSquadId
+   * @returns {boolean}
+   */
+  moveUnit(unitId, fromSquadId, toSquadId) {
+    if (fromSquadId === toSquadId) return false;
+    const fromSquad = this.squads.find(s => s.id === fromSquadId);
+    const toSquad   = this.squads.find(s => s.id === toSquadId);
+    if (!fromSquad || !toSquad || !toSquad.hasCapacity()) return false;
+
+    const unit = fromSquad.members.find(m => m.id === unitId);
+    if (!unit || unit.role === 'hero') return false;
+
+    fromSquad.removeMember(unitId);
+    toSquad.addMember(unit);
+    if (toSquad.captainId === null && unit.canLead()) {
+      toSquad.captainId = unit.id;
+    }
+    return true;
+  }
+
+  /**
+   * Toggle whether a unit participates in battle.
+   *
+   * @param {number} squadId
+   * @param {number} unitId
+   * @param {boolean} active
+   * @returns {boolean}
+   */
+  setUnitActive(squadId, unitId, active) {
+    const squad = this.squads.find(s => s.id === squadId);
+    if (!squad) return false;
+    const unit = squad.members.find(m => m.id === unitId);
+    if (!unit) return false;
+    unit.active = active;
+    return true;
+  }
+
+  /**
+   * Set the captain of a squad.
+   *
+   * @param {number} squadId
+   * @param {number} unitId
+   * @returns {boolean}
+   */
+  setSquadCaptain(squadId, unitId) {
+    const squad = this.squads.find(s => s.id === squadId);
+    return squad ? squad.setCaptain(unitId) : false;
   }
 
   /** @returns {Squad[]} */
@@ -149,17 +234,18 @@ export class Army {
       squads: this.squads.map(sq => ({
         id:            sq.id,
         isPlayerSquad: sq.isPlayerSquad,
-        general:       sq.general  ? { ...sq.general,  stats: { ...sq.general.stats  } } : null,
-        soldiers:      sq.soldiers.map(s => ({ ...s, stats: { ...s.stats } })),
+        captainId:     sq.captainId,
+        members:       sq.members.map(m => ({
+          ...m,
+          stats:  { ...m.stats },
+          traits: [...m.traits],
+        })),
       })),
     };
   }
 
   /**
    * Restore army from a saved snapshot.
-   * The game always uses exactly MAX_SQUADS squads, so saved data beyond that
-   * index is intentionally ignored (no data loss – saves are written with the
-   * same fixed squad count).
    * @param {{ nextUnitId: number, squads: Array }} state
    */
   loadState(state) {
@@ -168,12 +254,10 @@ export class Army {
 
     (state.squads ?? []).forEach((sqData, idx) => {
       const squad = this.squads[idx];
-      if (!squad) return; // saved with more squads than current MAX_SQUADS – skip excess
+      if (!squad) return;
 
-      squad.general  = sqData.general
-        ? new Unit(sqData.general)
-        : null;
-      squad.soldiers = (sqData.soldiers ?? []).map(u => new Unit(u));
+      squad.members   = (sqData.members ?? []).map(u => new Unit(u));
+      squad.captainId = sqData.captainId ?? null;
     });
   }
 }
