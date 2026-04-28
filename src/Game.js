@@ -1,4 +1,4 @@
-import { Application, Container } from 'pixi.js';
+import { Application, Container, Graphics } from 'pixi.js';
 import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
@@ -7,6 +7,8 @@ import { Camera }           from './Camera.js';
 import { InputManager }     from './controls/InputManager.js';
 import { VirtualJoystick }  from './controls/VirtualJoystick.js';
 import { TILE_SIZE, TERRAIN_NAMES } from './world/constants.js';
+import { DayNightCycle }    from './world/DayNightCycle.js';
+import { WeatherSystem }    from './world/WeatherSystem.js';
 
 export class Game {
   async init() {
@@ -35,6 +37,11 @@ export class Game {
     /** UI container: fixed on screen, holds joystick. */
     this._ui = new Container();
     this.app.stage.addChild(this._ui);
+
+    // Day/night overlay sits between the world and the UI so it tints the world
+    // but does not dim the joystick or HUD labels.
+    this._dayNightOverlay = new Graphics();
+    this.app.stage.addChildAt(this._dayNightOverlay, 1); // index 1 = above _world
 
     // -----------------------------------------------------------------------
     // World content
@@ -89,9 +96,18 @@ export class Game {
     this._ui.addChild(this._joystick.container);
 
     // -----------------------------------------------------------------------
+    // Day / Night cycle & Weather
+    // -----------------------------------------------------------------------
+    this._dayNight = new DayNightCycle();
+    this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
+    this._ui.addChild(this._weather.container);
+
+    // -----------------------------------------------------------------------
     // HUD DOM refs
     // -----------------------------------------------------------------------
     this._terrainLabel = document.getElementById('terrain-label');
+    this._timeLabel    = document.getElementById('time-label');
+    this._weatherLabel = document.getElementById('weather-label');
 
     // -----------------------------------------------------------------------
     // Resize handler
@@ -114,16 +130,38 @@ export class Game {
 
   _update(dt) {
     const dir = this._input.getDirection();
-    this._player.update(dt, dir.x, dir.y);
+    this._player.update(dt, dir.x, dir.y, this._mapData);
 
     this._camera.follow(this._player.x, this._player.y);
     this._camera.update(dt);
     this._camera.apply(this._world);
 
+    // Day / Night cycle
+    this._dayNight.update(dt);
+    const overlay = this._dayNight.getOverlay();
+    const og = this._dayNightOverlay;
+    og.clear();
+    if (overlay.alpha > 0.005) {
+      og.rect(0, 0, this.app.screen.width, this.app.screen.height)
+        .fill({ color: overlay.color, alpha: overlay.alpha });
+    }
+
+    // Weather
+    this._weather.update(dt);
+
     // HUD: terrain name
     if (this._terrainLabel) {
       const t = this._mapData.getTerrainAtWorld(this._player.x, this._player.y);
       this._terrainLabel.textContent = TERRAIN_NAMES[t] ?? '';
+    }
+
+    // HUD: time & weather
+    if (this._timeLabel) {
+      this._timeLabel.textContent =
+        `${this._dayNight.getPhaseName()}  ${this._dayNight.getTimeString()}`;
+    }
+    if (this._weatherLabel) {
+      this._weatherLabel.textContent = this._weather.getName();
     }
   }
 
@@ -146,6 +184,7 @@ export class Game {
   _onResize() {
     this._camera.resize(this.app.screen.width, this.app.screen.height);
     this._joystick.resize(this.app.screen.width, this.app.screen.height);
+    this._weather.resize(this.app.screen.width, this.app.screen.height);
     this._camera.apply(this._world);
   }
 }

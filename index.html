@@ -44,6 +44,36 @@
         white-space: nowrap;
       }
 
+      #time-label {
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 13px;
+        letter-spacing: 1px;
+        padding: 5px 14px;
+        border-radius: 20px;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+
+      #weather-label {
+        position: fixed;
+        top: 14px;
+        right: 14px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #b3e5fc;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 13px;
+        letter-spacing: 1px;
+        padding: 5px 14px;
+        border-radius: 20px;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+
       /* Loading overlay */
       #loading {
         position: fixed;
@@ -113,6 +143,8 @@
 
     <div id="game-container"></div>
     <div id="terrain-label">草原</div>
+    <div id="time-label">清晨  06:28</div>
+    <div id="weather-label">☀ 晴天</div>
     <div id="hint">WASD / 搖桿 移動</div>
 
     <script type="module" src="/src/main.js"></script>
