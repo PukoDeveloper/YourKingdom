@@ -1146,6 +1146,9 @@ export class GameUI {
       const villages = villagesByController[id] ?? [];
       const isExtinct = !castleControlled && villages.length === 0;
 
+      // Extinct nations are completely removed from the panel.
+      if (isExtinct) return '';
+
       const val     = this.diplomacySystem.getPlayerRelation(id);
       const level   = this.diplomacySystem.getRelationLevel(val);
       const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
@@ -1161,7 +1164,6 @@ export class GameUI {
           <div class="dn-title-col">
             <div class="dn-name">
               ${nation.name}
-              ${isExtinct ? '<span class="sc-extinct-badge">已滅亡</span>' : ''}
             </div>
             <div class="dn-ruler-line">
               ${castle ? `${castle.ruler.name}（${castle.ruler.role}） ${_personalityLabel(castle.ruler.traits)}` : ''}
@@ -1171,10 +1173,10 @@ export class GameUI {
             <div class="dn-level" style="color:${level.color}">${level.icon} ${level.label}</div>
             <div class="dn-val" style="color:${level.color}">${relVal}</div>
           </div>
-          ${!isExtinct ? `<button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
+          <button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
                    ${alreadyCondemned ? 'disabled title="今日已譴責"' : ''}>
               ${alreadyCondemned ? '✓ 已譴責' : '📢 譴責'}
-            </button>` : ''}
+            </button>
         </div>
         <div class="dn-bar-wrap">
           <div class="dn-bar" style="width:${(val + 100) / 2}%;background:${level.color}"></div>
@@ -1194,7 +1196,7 @@ export class GameUI {
               <span class="dn-s-arrow">›</span>
             </div>`;
         } else {
-          // Castle has been captured by the player
+          // Castle has been captured (by another NPC or the player)
           castleRowHTML = `
             <div class="dn-settlement-row dn-captured-row" data-ns-type="castle" data-ns-idx="${id}" role="button" tabindex="0">
               <span class="dn-s-icon">🏰</span>
@@ -1236,9 +1238,8 @@ export class GameUI {
         </div>`;
       }
 
-      const extStyle = isExtinct ? 'opacity:0.5' : '';
       return `
-        <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44;${extStyle}">
+        <div class="dipl-nation-card" style="--nc-color:${nation.color};border-color:${nation.color}44">
           ${headerHTML}
           <div class="dn-settlements">${castleRowHTML}${villageRows}</div>
           ${memoryHTML}
@@ -3244,7 +3245,13 @@ export class GameUI {
     if (this.nationSystem && settlement.nationId >= 0) {
       const foundingNation = this.nationSystem.nations[settlement.nationId];
       if (foundingNation && this.nationSystem.isNationExtinct(settlement.nationId)) {
-        this._addInboxMessage('🏴', `${foundingNation.name} 失去了所有領地，國家滅亡！`);
+        // Transfer all sovereignty claims to the player.
+        if (this.diplomacySystem) {
+          this.diplomacySystem.handleNationExtinction(settlement.nationId);
+        }
+        this._addInboxMessage('🏴', `${foundingNation.name} 失去了所有領地，國家滅亡！所有主權移交給玩家。`);
+        // Refresh diplomacy panel immediately if it is open.
+        if (this._activePanel === 'nations') this._renderNations();
       }
     }
   }
@@ -3269,6 +3276,24 @@ export class GameUI {
   /** Public helper – display a toast notification. */
   showToast(msg) {
     this._toast(msg);
+  }
+
+  /**
+   * Add a system/world-event message to the inbox with an explicit icon.
+   * Used by Game.js to surface NPC march events without going through onPhaseChanged.
+   * @param {string} icon
+   * @param {string} text
+   */
+  addSystemMessage(icon, text) {
+    this._addInboxMessage(icon, text);
+  }
+
+  /**
+   * Re-render the nations / diplomacy panel if it is currently visible.
+   * Call this after any external event that changes settlement ownership.
+   */
+  refreshNationsPanel() {
+    if (this._activePanel === 'nations') this._renderNations();
   }
 
   // -------------------------------------------------------------------------

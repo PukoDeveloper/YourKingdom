@@ -2,6 +2,7 @@ import { Application, Container, Graphics } from 'pixi.js';
 import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
+import { NpcArmyRenderer }  from './world/NpcArmyRenderer.js';
 import { Player }           from './entities/Player.js';
 import { Camera }           from './Camera.js';
 import { InputManager }     from './controls/InputManager.js';
@@ -96,6 +97,10 @@ export class Game {
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
     await this._yieldFrame();
+
+    // NPC army marching tokens (above structures, below the player)
+    this._npcArmyRenderer = new NpcArmyRenderer(this._nationSystem);
+    this._world.addChild(this._npcArmyRenderer.container);
 
     // Player
     this._setLoadingStatus('召喚玩家...');
@@ -248,6 +253,23 @@ export class Game {
 
     // Weather
     this._weather.update(dt);
+
+    // NPC army marches: advance progress and resolve arrivals.
+    if (this._diplomacySystem && this._npcArmyRenderer) {
+      const { messages, structureRebuildNeeded } =
+        this._diplomacySystem.updateMarches(dt, this._mapData);
+      if (messages.length > 0) {
+        messages.forEach(m => this._gameUI.addSystemMessage('⚔', m.message));
+      }
+      if (structureRebuildNeeded) {
+        this._structureRenderer.rebuild();
+        this._gameUI.refreshNationsPanel();
+      }
+      this._npcArmyRenderer.sync(
+        this._diplomacySystem.getPendingMarches(),
+        this._mapData,
+      );
+    }
 
     // HUD: terrain name (+ nation when inside a settlement)
     if (this._terrainLabel) {
