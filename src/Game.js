@@ -228,6 +228,10 @@ export class Game {
     this._hudTileY = -1;
     /** @type {object|null} */
     this._hudHit   = null;
+    /** @type {string} Cached terrain label for the current tile. */
+    this._hudLabel = '';
+    /** @type {boolean} Whether the day/night overlay was visible last frame. */
+    this._prevOverlayVisible = false;
 
     // Restore built roads from save data.
     if (savedState) {
@@ -319,11 +323,15 @@ export class Game {
     }
     const overlay = this._dayNight.getOverlay();
     const og = this._dayNightOverlay;
-    og.clear();
-    if (overlay.alpha > 0.005) {
-      og.rect(0, 0, this.app.screen.width, this.app.screen.height)
-        .fill({ color: overlay.color, alpha: overlay.alpha });
+    const overlayVisible = overlay.alpha > 0.005;
+    if (overlayVisible || this._prevOverlayVisible) {
+      og.clear();
+      if (overlayVisible) {
+        og.rect(0, 0, this.app.screen.width, this.app.screen.height)
+          .fill({ color: overlay.color, alpha: overlay.alpha });
+      }
     }
+    this._prevOverlayVisible = overlayVisible;
 
     // Weather
     this._weather.update(dt);
@@ -338,6 +346,7 @@ export class Game {
       if (structureRebuildNeeded) {
         this._structureRenderer.rebuild();
         this._gameUI.refreshNationsPanel();
+        this._hudTileX = -1; // force terrain label refresh next frame
       }
       this._npcArmyRenderer.sync(
         this._diplomacySystem.getPendingMarches(),
@@ -372,6 +381,15 @@ export class Game {
           const nation = this._nationSystem.nations[result.missive.receiverNationId];
           this._gameUI.addSystemMessage('⚔', `已向 ${nation?.name ?? '對方'} 正式宣戰！`);
           this._gameUI.refreshNationsPanel();
+        } else if (result.type === 'npc_trade_request') {
+          this._gameUI.onNpcTradeRequest(result.missive);
+        } else if (result.type === 'npc_nap_proposal') {
+          this._gameUI.onNpcNapProposal(result.missive);
+        } else if (result.type === 'npc_mpp_proposal') {
+          this._gameUI.onNpcMppProposal(result.missive);
+        } else if (result.type === 'npc_gift_delivered') {
+          this._gameUI.onNpcGiftDelivered(result.missive, result.gold, result.relDelta);
+          this._gameUI.refreshNationsPanel();
         }
       });
       // Sync messenger tokens with updated positions.
@@ -387,8 +405,6 @@ export class Game {
 
     // HUD: terrain name (+ nation when inside a settlement)
     if (this._terrainLabel) {
-      const t = this._mapData.getTerrainAtWorld(this._player.x, this._player.y);
-      let label = TERRAIN_NAMES[t] ?? '';
       const tileX = Math.floor(this._player.x / TILE_SIZE);
       const tileY = Math.floor(this._player.y / TILE_SIZE);
 
@@ -399,6 +415,11 @@ export class Game {
         this._hudTileX = tileX;
         this._hudTileY = tileY;
         this._hudHit   = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
+
+        // Cache terrain label for the non-settlement case; use tile coords directly
+        // (equivalent to getTerrainAtWorld but avoids the per-call pixel→tile division).
+        const t = this._mapData.getTerrain(tileX, tileY);
+        this._hudLabel = TERRAIN_NAMES[t] ?? '';
 
         this._gameUI.setNearbySettlement(
           this._hudHit ? this._hudHit.settlement : null,
@@ -449,11 +470,16 @@ export class Game {
           nationLine = `${nation.emblem} ${nation.name}`;
         }
         regionLine = `${settlIcon} ${hit.settlement.name}`;
-        this._terrainLabel.innerHTML =
+        const newHTML =
           `<span class="hud-nation-line">${nationLine}</span>` +
           `<span class="hud-region-line">${regionLine}</span>`;
+        // Only write innerHTML when content has actually changed to avoid
+        // forcing a browser re-parse on every frame.
+        if (this._terrainLabel.innerHTML !== newHTML) {
+          this._terrainLabel.innerHTML = newHTML;
+        }
       } else {
-        this._terrainLabel.textContent = label;
+        this._terrainLabel.textContent = this._hudLabel;
       }
     }
 

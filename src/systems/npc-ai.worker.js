@@ -94,6 +94,22 @@ const NPC_BUILD_COSTS = {
 /** Minimum player-relation threshold for NPCs to propose a trade route. */
 const TRADE_ROUTE_MIN_RELATION = -10;
 
+/** Minimum player-relation threshold for NPCs to propose a NAP to the player. */
+const NAP_TO_PLAYER_REL_MIN = -40;
+const NAP_TO_PLAYER_REL_MAX =  30;
+
+/** Minimum player-relation threshold for NPCs to propose an MPP to the player. */
+const MPP_TO_PLAYER_REL_MIN = 50;
+
+/** Minimum player-relation threshold for NPCs to send a goodwill gift. */
+const GIFT_TO_PLAYER_REL_MIN = -20;
+
+/** Minimum gold for an NPC to send a gift (must have something to spare). */
+const GIFT_MIN_GOLD = 80;
+
+/** Maximum gold an NPC will give away as a gift per event. */
+const GIFT_MAX_AMOUNT = 60;
+
 /** Minimum gold required before a meticulous NPC considers building construction. */
 const METICULOUS_BUILD_THRESHOLD = 80;
 
@@ -411,6 +427,72 @@ function _decideForNation(
           type:     'trade_request',
           priority: PRIORITY_DIPLOMATIC,
         };
+      }
+    }
+  }
+
+  // 3d. NAP proposal to the player.
+  {
+    const relWithPlayer = relPlayer.get(id) ?? 0;
+    const atWarWithPlayer = _isAtWar(warSet, id, _PLAYER_NATION_ID);
+    const hasNapWithPlayer = _hasNap(napSet, id, _PLAYER_NATION_ID);
+    if (!atWarWithPlayer && !hasNapWithPlayer &&
+        relWithPlayer >= NAP_TO_PLAYER_REL_MIN && relWithPlayer < NAP_TO_PLAYER_REL_MAX) {
+      let chance = 0.06 + diplomatBonus;
+      if (personality === PERSONALITY_GENTLE)   chance += 0.06;
+      if (personality === PERSONALITY_CAUTIOUS) chance += 0.04;
+      if (personality === PERSONALITY_WARLIKE)  chance -= 0.06;
+      if (personality === PERSONALITY_ARROGANT) chance -= 0.04;
+      if (!missiveSet.has(id) && Math.random() < Math.max(0, chance)) {
+        return {
+          nationId: id,
+          type:     'nap_proposal_to_player',
+          priority: PRIORITY_DIPLOMATIC,
+        };
+      }
+    }
+  }
+
+  // 3e. MPP proposal to the player.
+  {
+    const relWithPlayer = relPlayer.get(id) ?? 0;
+    const atWarWithPlayer = _isAtWar(warSet, id, _PLAYER_NATION_ID);
+    const hasMppWithPlayer = _hasMpp(mppSet, id, _PLAYER_NATION_ID);
+    if (!atWarWithPlayer && !hasMppWithPlayer && relWithPlayer >= MPP_TO_PLAYER_REL_MIN) {
+      let chance = 0.04 + diplomatBonus;
+      if (personality === PERSONALITY_GENTLE)   chance += 0.08;
+      if (personality === PERSONALITY_CAUTIOUS) chance += 0.04;
+      if (personality === PERSONALITY_WARLIKE)  chance -= 0.05;
+      if (!missiveSet.has(id) && Math.random() < Math.max(0, chance)) {
+        return {
+          nationId: id,
+          type:     'mpp_proposal_to_player',
+          priority: PRIORITY_DIPLOMATIC,
+        };
+      }
+    }
+  }
+
+  // 3f. Goodwill gift to the player (relation-building).
+  {
+    const relWithPlayer = relPlayer.get(id) ?? 0;
+    const gold = goldMap.get(id) ?? 0;
+    if (relWithPlayer >= GIFT_TO_PLAYER_REL_MIN && gold >= GIFT_MIN_GOLD) {
+      let chance = 0.04 + diplomatBonus;
+      if (personality === PERSONALITY_GENTLE)   chance += 0.07;
+      if (personality === PERSONALITY_CUNNING)  chance += 0.04; // gifts as investment
+      if (personality === PERSONALITY_WARLIKE)  chance -= 0.04;
+      if (personality === PERSONALITY_ARROGANT) chance -= 0.03;
+      if (!missiveSet.has(id) && Math.random() < Math.max(0, chance)) {
+        const amount = Math.min(GIFT_MAX_AMOUNT, Math.floor(gold * 0.15));
+        if (amount > 0) {
+          return {
+            nationId:   id,
+            type:       'gift_to_player',
+            goldAmount: amount,
+            priority:   PRIORITY_DIPLOMATIC,
+          };
+        }
       }
     }
   }

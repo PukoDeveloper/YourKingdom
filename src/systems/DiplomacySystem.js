@@ -151,6 +151,35 @@ const NPC_NPC_PEACE_ACCEPT_CHANCE = 0.4;
 const JOINT_WAR_HOSTILITY_THRESHOLD = -30;
 
 /**
+ * Minimum / maximum NPC-NPC relation for a spontaneous NAP proposal.
+ * Must be hostile enough to need reassurance but not yet at war.
+ */
+const NAP_PROPOSAL_REL_MIN = -50;
+const NAP_PROPOSAL_REL_MAX =  20;
+
+/** Minimum NPC-NPC relation for a spontaneous MPP proposal. */
+const MPP_PROPOSAL_REL_MIN = 45;
+
+/** Minimum player-relation threshold for an NPC to propose a trade route. */
+const TRADE_ROUTE_MIN_RELATION = -10;
+
+/** Minimum / maximum player-relation for an NPC to propose a NAP to the player. */
+const NAP_TO_PLAYER_REL_MIN = -40;
+const NAP_TO_PLAYER_REL_MAX =  30;
+
+/** Minimum player-relation for an NPC to propose an MPP to the player. */
+const MPP_TO_PLAYER_REL_MIN = 50;
+
+/** Minimum player-relation for an NPC to send a goodwill gift. */
+const GIFT_TO_PLAYER_REL_MIN = -20;
+
+/** Minimum NPC gold before a gift can be sent (must have something to spare). */
+const GIFT_MIN_GOLD = 80;
+
+/** Maximum gold amount an NPC will give as a one-time gift. */
+const GIFT_MAX_AMOUNT = 60;
+
+/**
  * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
  * Defined here to avoid a circular import.
  */
@@ -1652,9 +1681,133 @@ export class DiplomacySystem {
     const { nations, castleSettlements } = this.nationSystem;
 
     // Consume all diplomacy-type decisions from the worker.
-    const napDecisions   = this._drainWorkerDecisions('nap_proposal');
-    const mppDecisions   = this._drainWorkerDecisions('mpp_proposal');
-    const tradeDecisions = this._drainWorkerDecisions('trade_request');
+    const napDecisions        = this._drainWorkerDecisions('nap_proposal');
+    const mppDecisions        = this._drainWorkerDecisions('mpp_proposal');
+    const tradeDecisions      = this._drainWorkerDecisions('trade_request');
+    const napToPlayerDecisions = this._drainWorkerDecisions('nap_proposal_to_player');
+    const mppToPlayerDecisions = this._drainWorkerDecisions('mpp_proposal_to_player');
+    const giftDecisions        = this._drainWorkerDecisions('gift_to_player');
+
+    // ── Inline fallback when the Web Worker is unavailable ──────────────────
+    // In environments without Web Worker support the arrays above are always
+    // empty, so NPC-NPC diplomatic events would never fire.  Evaluate each
+    // nation's diplomatic opportunities directly on the main thread instead.
+    if (!this._aiWorker) {
+      // castleSettlements is parallel to nations: index `id` is both the castle
+      // settlement index and its founding nation's id.
+      castleSettlements.forEach((s, id) => {
+        if (!s || s.controllingNationId !== id) return;
+        if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
+
+        const personality   = this._rulerPersonality(s);
+        const rulerTraits   = s.ruler?.traits ?? [];
+        const diplomatBonus = rulerTraits.includes('善交際') ? 0.20 : 0.0;
+        const relWithPlayer = this.getPlayerRelation(id);
+
+        // NAP proposal: target the nation with the best (least hostile) relation
+        // in the "wary but not yet an enemy" band.
+        if (!napDecisions.some(d => d.nationId === id)) {
+          let napTargetId = -1, napBestRel = NAP_PROPOSAL_REL_MIN - 1;
+          // nations is parallel to castleSettlements; array index is the nation id.
+          nations.forEach((n, targetId) => {
+            if (!n || targetId === id) return;
+            if (this.isAtWar(id, targetId) || this.hasNonAggressionPact(id, targetId)) return;
+            const rel = this.getRelation(id, targetId);
+            if (rel >= NAP_PROPOSAL_REL_MIN && rel < NAP_PROPOSAL_REL_MAX && rel > napBestRel) {
+              napBestRel = rel; napTargetId = targetId;
+            }
+          });
+          if (napTargetId >= 0) {
+            let chance = 0.08 + diplomatBonus;
+            if (personality === PERSONALITY_GENTLE)   chance += 0.05;
+            if (personality === PERSONALITY_CAUTIOUS) chance += 0.03;
+            if (personality === PERSONALITY_WARLIKE)  chance -= 0.05;
+            if (Math.random() < Math.max(0, chance)) {
+              napDecisions.push({ nationId: id, targetNationId: napTargetId });
+            }
+          }
+        }
+
+        // MPP proposal: target the nation with the highest friendly relation.
+        if (!mppDecisions.some(d => d.nationId === id)) {
+          let mppTargetId = -1, mppBestRel = MPP_PROPOSAL_REL_MIN - 1;
+          // nations is parallel to castleSettlements; array index is the nation id.
+          nations.forEach((n, targetId) => {
+            if (!n || targetId === id) return;
+            if (this.hasMutualProtectionPact(id, targetId)) return;
+            const rel = this.getRelation(id, targetId);
+            if (rel >= MPP_PROPOSAL_REL_MIN && rel > mppBestRel) {
+              mppBestRel = rel; mppTargetId = targetId;
+            }
+          });
+          if (mppTargetId >= 0) {
+            let chance = 0.06 + diplomatBonus;
+            if (personality === PERSONALITY_GENTLE)   chance += 0.08;
+            if (personality === PERSONALITY_CAUTIOUS) chance += 0.04;
+            if (personality === PERSONALITY_WARLIKE)  chance -= 0.06;
+            if (Math.random() < Math.max(0, chance)) {
+              mppDecisions.push({ nationId: id, targetNationId: mppTargetId });
+            }
+          }
+        }
+
+        // Trade route request to player.
+        if (!tradeDecisions.some(d => d.nationId === id) &&
+            !this.hasTradeRoute(id, _PLAYER_NATION_ID)) {
+          if (relWithPlayer >= TRADE_ROUTE_MIN_RELATION) {
+            const cunningAdj = personality === PERSONALITY_CUNNING ? 0.03 : 0.0;
+            const chance = 0.05 + diplomatBonus + cunningAdj;
+            if (Math.random() < Math.max(0, chance)) {
+              tradeDecisions.push({ nationId: id });
+            }
+          }
+        }
+
+        // NAP proposal to player.
+        if (!napToPlayerDecisions.some(d => d.nationId === id) &&
+            !this.isAtWar(id, _PLAYER_NATION_ID) &&
+            !this.hasNonAggressionPact(id, _PLAYER_NATION_ID) &&
+            relWithPlayer >= NAP_TO_PLAYER_REL_MIN && relWithPlayer < NAP_TO_PLAYER_REL_MAX) {
+          let chance = 0.06 + diplomatBonus;
+          if (personality === PERSONALITY_GENTLE)   chance += 0.06;
+          if (personality === PERSONALITY_CAUTIOUS) chance += 0.04;
+          if (personality === PERSONALITY_WARLIKE)  chance -= 0.06;
+          if (personality === PERSONALITY_ARROGANT) chance -= 0.04;
+          if (Math.random() < Math.max(0, chance)) {
+            napToPlayerDecisions.push({ nationId: id });
+          }
+        }
+
+        // MPP proposal to player.
+        if (!mppToPlayerDecisions.some(d => d.nationId === id) &&
+            !this.isAtWar(id, _PLAYER_NATION_ID) &&
+            !this.hasMutualProtectionPact(id, _PLAYER_NATION_ID) &&
+            relWithPlayer >= MPP_TO_PLAYER_REL_MIN) {
+          let chance = 0.04 + diplomatBonus;
+          if (personality === PERSONALITY_GENTLE)   chance += 0.08;
+          if (personality === PERSONALITY_CAUTIOUS) chance += 0.04;
+          if (personality === PERSONALITY_WARLIKE)  chance -= 0.05;
+          if (Math.random() < Math.max(0, chance)) {
+            mppToPlayerDecisions.push({ nationId: id });
+          }
+        }
+
+        // Goodwill gift to player.
+        const gold = this._npcGold.get(id) ?? 0;
+        if (!giftDecisions.some(d => d.nationId === id) &&
+            relWithPlayer >= GIFT_TO_PLAYER_REL_MIN && gold >= GIFT_MIN_GOLD) {
+          let chance = 0.04 + diplomatBonus;
+          if (personality === PERSONALITY_GENTLE)   chance += 0.07;
+          if (personality === PERSONALITY_CUNNING)  chance += 0.04;
+          if (personality === PERSONALITY_WARLIKE)  chance -= 0.04;
+          if (personality === PERSONALITY_ARROGANT) chance -= 0.03;
+          if (Math.random() < Math.max(0, chance)) {
+            const amount = Math.min(GIFT_MAX_AMOUNT, Math.floor(gold * 0.15));
+            if (amount > 0) giftDecisions.push({ nationId: id, goldAmount: amount });
+          }
+        }
+      });
+    }
 
     // ── NPC-NPC NAP proposals ───────────────────────────────────────────────
     napDecisions.forEach(d => {
@@ -1721,6 +1874,56 @@ export class DiplomacySystem {
       this.sendTradeRouteMissive({ senderNationId: nationId, fromPx });
       const nationName = nations[nationId]?.name ?? '一國';
       messages.push({ message: `📨 ${nationName} 派使者前來商討貿易路線……` });
+    });
+
+    // ── NPC NAP proposals to player ─────────────────────────────────────────
+    napToPlayerDecisions.forEach(d => {
+      const { nationId } = d;
+      if (nationId < 0) return;
+      if (this.isAtWar(nationId, _PLAYER_NATION_ID)) return;
+      if (this.hasNonAggressionPact(nationId, _PLAYER_NATION_ID)) return;
+      // Require NPC to still hold its own castle.
+      const s = castleSettlements[nationId];
+      if (!s || s.controllingNationId !== nationId) return;
+      const fromPx = _marchCastlePx(this._mapData.castles[nationId]);
+      if (!fromPx) return;
+      if (this.sendNapProposalToPlayer({ senderNationId: nationId, fromPx })) {
+        const nationName = nations[nationId]?.name ?? '一國';
+        const rulerName  = s.ruler?.name ?? '';
+        messages.push({ message: `☮ ${nationName}${rulerName ? ' 的 ' + rulerName : ''} 派使者前來商議互不侵犯條約……` });
+      }
+    });
+
+    // ── NPC MPP proposals to player ──────────────────────────────────────────
+    mppToPlayerDecisions.forEach(d => {
+      const { nationId } = d;
+      if (nationId < 0) return;
+      if (this.isAtWar(nationId, _PLAYER_NATION_ID)) return;
+      if (this.hasMutualProtectionPact(nationId, _PLAYER_NATION_ID)) return;
+      const s = castleSettlements[nationId];
+      if (!s || s.controllingNationId !== nationId) return;
+      const fromPx = _marchCastlePx(this._mapData.castles[nationId]);
+      if (!fromPx) return;
+      if (this.sendMppProposalToPlayer({ senderNationId: nationId, fromPx })) {
+        const nationName = nations[nationId]?.name ?? '一國';
+        const rulerName  = s.ruler?.name ?? '';
+        messages.push({ message: `🛡 ${nationName}${rulerName ? ' 的 ' + rulerName : ''} 派使者前來商議互保條約……` });
+      }
+    });
+
+    // ── NPC goodwill gifts to player ─────────────────────────────────────────
+    giftDecisions.forEach(d => {
+      const { nationId, goldAmount } = d;
+      if (nationId < 0 || !(goldAmount > 0)) return;
+      const s = castleSettlements[nationId];
+      if (!s || s.controllingNationId !== nationId) return;
+      const fromPx = _marchCastlePx(this._mapData.castles[nationId]);
+      if (!fromPx) return;
+      if (this.sendGiftToPlayer({ senderNationId: nationId, fromPx, goldAmount })) {
+        const nationName = nations[nationId]?.name ?? '一國';
+        const rulerName  = s.ruler?.name ?? '';
+        messages.push({ message: `🎁 ${nationName}${rulerName ? ' 的 ' + rulerName : ''} 派使者攜帶禮物前來……` });
+      }
     });
   }
 
@@ -2404,6 +2607,88 @@ export class DiplomacySystem {
   }
 
   /**
+   * Dispatch a NAP proposal missive from an NPC nation to the player.
+   * When the missive arrives, the player will be prompted to accept or decline.
+   *
+   * @param {{ senderNationId: number, fromPx: {x:number,y:number} }} opts
+   * @returns {boolean}  true if the missive was successfully queued.
+   */
+  sendNapProposalToPlayer({ senderNationId, fromPx }) {
+    if (!fromPx) return false;
+    const toPx = this._findNearestPlayerSettlement(fromPx);
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'nap_proposal',
+      senderNationId,
+      receiverNationId: _PLAYER_NATION_ID,
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+      messengerMoveSpeed: DEFAULT_MESSENGER_MOVE_SPEED,
+    });
+    return true;
+  }
+
+  /**
+   * Dispatch an MPP proposal missive from an NPC nation to the player.
+   * When the missive arrives, the player will be prompted to accept or decline.
+   *
+   * @param {{ senderNationId: number, fromPx: {x:number,y:number} }} opts
+   * @returns {boolean}  true if the missive was successfully queued.
+   */
+  sendMppProposalToPlayer({ senderNationId, fromPx }) {
+    if (!fromPx) return false;
+    const toPx = this._findNearestPlayerSettlement(fromPx);
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'mpp_proposal',
+      senderNationId,
+      receiverNationId: _PLAYER_NATION_ID,
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+      messengerMoveSpeed: DEFAULT_MESSENGER_MOVE_SPEED,
+    });
+    return true;
+  }
+
+  /**
+   * Dispatch a goodwill gift missive from an NPC nation to the player.
+   * The gift is applied automatically when the messenger arrives.
+   *
+   * @param {{ senderNationId: number, fromPx: {x:number,y:number}, goldAmount: number }} opts
+   * @returns {boolean}  true if the missive was successfully queued.
+   */
+  sendGiftToPlayer({ senderNationId, fromPx, goldAmount }) {
+    if (!fromPx || !(goldAmount > 0)) return false;
+    const toPx = this._findNearestPlayerSettlement(fromPx);
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'npc_gift',
+      senderNationId,
+      receiverNationId: _PLAYER_NATION_ID,
+      goldAmount:       Math.max(1, Math.floor(goldAmount)),
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+      messengerMoveSpeed: DEFAULT_MESSENGER_MOVE_SPEED,
+    });
+    return true;
+  }
+
+  /**
    * Evaluate whether an NPC nation would accept a peace offer.
    * @param {number} nationId  Nation evaluating the offer.
    * @param {object} terms     Treaty terms.
@@ -2647,6 +2932,31 @@ export class DiplomacySystem {
     if (type === 'trade_request') {
       // Surface to the player (GameUI decides whether to accept/reject via UI).
       return { type: 'npc_trade_request', missive };
+    }
+
+    // ── NPC NAP proposal to player ───────────────────────────────────────────
+    if (type === 'nap_proposal') {
+      // Surface to the player for accept / reject.
+      return { type: 'npc_nap_proposal', missive };
+    }
+
+    // ── NPC MPP proposal to player ───────────────────────────────────────────
+    if (type === 'mpp_proposal') {
+      // Surface to the player for accept / reject.
+      return { type: 'npc_mpp_proposal', missive };
+    }
+
+    // ── NPC goodwill gift to player ──────────────────────────────────────────
+    if (type === 'npc_gift') {
+      const gold = missive.goldAmount ?? 0;
+      // Deduct gold from the NPC treasury.
+      const curGold = this._npcGold.get(senderNationId) ?? 0;
+      this._npcGold.set(senderNationId, Math.max(0, curGold - gold));
+      // Relation bump for the gesture.
+      const relDelta = Math.min(15 + Math.floor(gold / 10), 25);
+      this.modifyPlayerRelation(senderNationId, relDelta);
+      this._addMemoryEntry(senderNationId, `我方統治者主動贈禮給玩家（🪙${gold}），加深友誼 +${relDelta}`, relDelta);
+      return { type: 'npc_gift_delivered', missive, gold, relDelta };
     }
 
     // ── Peace treaty ────────────────────────────────────────────────────────

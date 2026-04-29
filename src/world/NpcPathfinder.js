@@ -98,6 +98,14 @@ function _heuristic(ax, ay, bx, by) {
 }
 
 // ---------------------------------------------------------------------------
+// Reusable A* buffers (allocated once; reset per call with fill())
+// Safe because JavaScript is single-threaded on the main thread.
+// ---------------------------------------------------------------------------
+
+const _gCostBuf    = new Float64Array(MAP_WIDTH * MAP_HEIGHT);
+const _cameFromBuf = new Int32Array(MAP_WIDTH * MAP_HEIGHT);
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -134,8 +142,11 @@ export function buildPath(mapData, fromPx, toPx) {
 
   // ── A* search ───────────────────────────────────────────────────────────
   const openSet  = new MinHeap();
-  const gCost    = new Float64Array(MAP_WIDTH * MAP_HEIGHT).fill(Infinity);
-  const cameFrom = new Int32Array(MAP_WIDTH * MAP_HEIGHT).fill(-1);
+  // Reuse module-level buffers to avoid 480 KB of allocation per call.
+  _gCostBuf.fill(Infinity);
+  _cameFromBuf.fill(-1);
+  const gCost    = _gCostBuf;
+  const cameFrom = _cameFromBuf;
 
   const startKey = _key(sx, sy);
   gCost[startKey] = 0;

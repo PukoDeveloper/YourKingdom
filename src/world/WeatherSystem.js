@@ -91,9 +91,11 @@ export class WeatherSystem {
       const opts  = TRANSITIONS[this._state];
       this._state = opts[Math.floor(Math.random() * opts.length)];
       this._timer = this._randomDuration();
-      // Reinitialise drops when entering a rain state so they aren't pre-placed
+      // Reinitialise drops when entering a rain state so they aren't pre-placed.
+      // Reuse the existing objects (always DROP_COUNT items from the constructor)
+      // to avoid allocating a fresh array on every weather transition.
       if (this._state === WEATHER.RAIN || this._state === WEATHER.STORM) {
-        this._drops = Array.from({ length: DROP_COUNT }, () => this._newDrop(false));
+        for (const d of this._drops) Object.assign(d, this._newDrop(false));
       }
     }
 
