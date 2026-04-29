@@ -163,6 +163,14 @@ export function buildPath(mapData, fromPx, toPx) {
         const cost    = _terrainCost(terrain);
         if (cost === IMPASSABLE) continue;
 
+        // Prevent diagonal corner cutting: require both orthogonal neighbours
+        // of a diagonal step to be passable, so entities cannot slip through
+        // a gap between two diagonally-touching impassable tiles.
+        if (dx !== 0 && dy !== 0) {
+          if (_terrainCost(mapData.getTerrain(cx + dx, cy)) === IMPASSABLE) continue;
+          if (_terrainCost(mapData.getTerrain(cx, cy + dy)) === IMPASSABLE) continue;
+        }
+
         // Diagonal moves cost √2 times the terrain cost.
         const moveCost = (dx !== 0 && dy !== 0) ? cost * Math.SQRT2 : cost;
         const nKey     = _key(nx, ny);

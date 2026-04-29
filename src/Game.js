@@ -3,6 +3,7 @@ import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
 import { RoadRenderer }     from './world/RoadRenderer.js';
+import { MapBuildingRenderer } from './world/MapBuildingRenderer.js';
 import { NpcArmyRenderer }  from './world/NpcArmyRenderer.js';
 import { MissiveRenderer }  from './world/MissiveRenderer.js';
 import { WorkerRenderer }   from './world/WorkerRenderer.js';
@@ -99,6 +100,10 @@ export class Game {
     // Road overlay (drawn on top of terrain, below structures).
     this._roadRenderer = new RoadRenderer();
     this._world.addChild(this._roadRenderer.container);
+
+    // Map-building overlay (lumber camps, mines, bridges) – above roads.
+    this._mapBuildingRenderer = new MapBuildingRenderer();
+    this._world.addChild(this._mapBuildingRenderer.container);
 
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
@@ -205,10 +210,15 @@ export class Game {
     // Cached road-tile Set (rebuilt whenever roads change; passed to Player every frame).
     this._builtRoadTileSet = new Set();
 
+    // Cached bridge-tile Set (rebuilt whenever a bridge is added; passed to Player every frame).
+    this._builtBridgeTileSet = new Set();
+
     // Restore built roads from save data.
     if (savedState) {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
-      this._builtRoadTileSet = this._gameUI.getBuiltRoadTileSet();
+      this._builtRoadTileSet   = this._gameUI.getBuiltRoadTileSet();
+      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings());
+      this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
     }
 
     // Rebuild map structures whenever the player captures a new settlement.
@@ -224,6 +234,12 @@ export class Game {
     this._gameUI.onRoadBuilt = () => {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
       this._builtRoadTileSet = this._gameUI.getBuiltRoadTileSet();
+    };
+
+    // Rebuild map-building overlay and bridge tile set whenever a map building changes.
+    this._gameUI.onMapBuildingChanged = () => {
+      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings());
+      this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
     };
 
     // Advance in-game days when resting at an inn.
@@ -262,7 +278,7 @@ export class Game {
 
   _update(dt) {
     const dir = this._input.getDirection();
-    this._player.update(dt, dir.x, dir.y, this._mapData, this._builtRoadTileSet);
+    this._player.update(dt, dir.x, dir.y, this._mapData, this._builtRoadTileSet, this._builtBridgeTileSet);
 
     this._camera.follow(this._player.x, this._player.y);
     this._camera.update(dt);
@@ -388,19 +404,21 @@ export class Game {
 
       // Show / hide the map-build button (forest → lumber camp, mountain → mine, water → bridge).
       // Only show when the player is NOT inside a settlement tile.
-      // Note: bridges target an adjacent water tile because the player cannot stand on water.
-      const MAP_BUILDABLE_TERRAINS = new Set([TERRAIN.FOREST, TERRAIN.MOUNTAIN]);
+      // Lumber camps can be built while standing on the forest tile (FOREST is walkable).
+      // Mines and bridges target an adjacent impassable tile (the player cannot stand on
+      // MOUNTAIN or WATER, so we scan orthogonal neighbours instead).
       let nearbyBuildTile = null;
       if (!hit) {
-        if (MAP_BUILDABLE_TERRAINS.has(t)) {
-          nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: t };
+        if (t === TERRAIN.FOREST) {
+          nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: TERRAIN.FOREST };
         } else {
-          // Check orthogonally adjacent tiles for water so the player can build a bridge
-          // while standing on the bank next to a river or lake.
+          // Check orthogonally adjacent tiles for mountain (mine) or water (bridge).
+          // Mountain is checked first so mines are preferred over bridges if both adjoin.
           const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
           for (const [dx, dy] of ADJACENT_OFFSETS) {
-            if (this._mapData.getTerrain(tileX + dx, tileY + dy) === TERRAIN.WATER) {
-              nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: TERRAIN.WATER };
+            const adjT = this._mapData.getTerrain(tileX + dx, tileY + dy);
+            if (adjT === TERRAIN.MOUNTAIN || adjT === TERRAIN.WATER) {
+              nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
               break;
             }
           }

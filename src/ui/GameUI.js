@@ -669,12 +669,22 @@ export class GameUI {
     /** Currently detected buildable terrain tile under the player (or null). */
     this._nearbyBuildableTile = null;
 
+    /** Currently detected map building on the tile under the player (or null). */
+    this._nearbyMapBuilding = null;
+
     /**
      * Callback invoked when a bridge is built or removed.
      * The game uses this to re-evaluate road pathfinding previews.
      * @type {(() => void)|null}
      */
     this.onBridgeBuilt = null;
+
+    /**
+     * Callback invoked whenever any map building is added (lumber camp, mine, bridge).
+     * The game uses this to rebuild the MapBuildingRenderer and bridge tile set.
+     * @type {(() => void)|null}
+     */
+    this.onMapBuildingChanged = null;
 
     if (savedState) {
       this.loadState(savedState);
@@ -930,6 +940,12 @@ export class GameUI {
       if (!this._nearbyBuildableTile) return;
       const { tx, ty, terrainType } = this._nearbyBuildableTile;
       this._openMapBuildPanel(tx, ty, terrainType);
+    });
+
+    // Map building info button (shown when an existing building is nearby)
+    document.getElementById('map-bldg-info-btn')?.addEventListener('click', () => {
+      if (!this._nearbyMapBuilding) return;
+      this._openMapBuildingInfo(this._nearbyMapBuilding);
     });
 
     // Close map-build overlay via backdrop or close button
@@ -5970,6 +5986,15 @@ export class GameUI {
   }
 
   /**
+   * Return a shallow copy of all player-placed map buildings.
+   * Used by `MapBuildingRenderer` to rebuild its graphics.
+   * @returns {{ id: number, type: string, tx: number, ty: number, phaseTick: number }[]}
+   */
+  getMapBuildings() {
+    return this._mapBuildings.map(b => ({ ...b }));
+  }
+
+  /**
    * Show or hide the map-build HUD button based on the terrain tile the player
    * is currently standing on.  Call with (null, null, null) to hide.
    *
@@ -5978,8 +6003,9 @@ export class GameUI {
    * @param {number|null} terrainType  TERRAIN enum value
    */
   setNearbyBuildableTerrain(tx, ty, terrainType) {
-    const btn  = document.getElementById('map-build-btn');
-    const wrap = document.getElementById('facility-action-wrap');
+    const btn     = document.getElementById('map-build-btn');
+    const infoBtn = document.getElementById('map-bldg-info-btn');
+    const wrap    = document.getElementById('facility-action-wrap');
     if (!btn) return;
 
     const MAP_BUILD_LABELS = {
@@ -5989,6 +6015,11 @@ export class GameUI {
     };
 
     const label = terrainType != null ? MAP_BUILD_LABELS[terrainType] : null;
+
+    // Hide info button by default; will be shown when existing building detected.
+    this._nearbyMapBuilding = null;
+    if (infoBtn) infoBtn.classList.remove('visible');
+
     if (!label || tx == null) {
       this._nearbyBuildableTile = null;
       btn.classList.remove('visible');
@@ -5997,12 +6028,14 @@ export class GameUI {
       return;
     }
 
-    // Don't show if a building already exists on this tile
-    const exists = this._mapBuildings.some(b => b.tx === tx && b.ty === ty);
-    if (exists) {
+    // If a building already exists on this tile, show an info button instead.
+    const existing = this._mapBuildings.find(b => b.tx === tx && b.ty === ty);
+    if (existing) {
       this._nearbyBuildableTile = null;
+      this._nearbyMapBuilding   = existing;
       btn.classList.remove('visible');
-      if (wrap) wrap.classList.toggle('visible', this._nearbySettlement !== null);
+      if (infoBtn) infoBtn.classList.add('visible');
+      if (wrap) wrap.classList.add('visible');
       return;
     }
 
@@ -6087,6 +6120,7 @@ export class GameUI {
         this._mapBuildings.push({ id, type: info.type, tx, ty, phaseTick: 0 });
         this._addInboxMessage(info.icon, `已在地圖 (${tx}, ${ty}) 建造${info.name}！`);
         if (info.type === 'bridge' && this.onBridgeBuilt) this.onBridgeBuilt();
+        if (this.onMapBuildingChanged) this.onMapBuildingChanged();
         overlay.classList.remove('visible');
         // Pass null coordinates to properly hide the button (tile is now occupied)
         this.setNearbyBuildableTerrain(null, null, null);
@@ -6102,10 +6136,96 @@ export class GameUI {
   }
 
   /**
-   * Tick map building workers: spawn new workers from active buildings and
-   * advance existing workers one tile toward their destination city.
-   * Called from `onPhaseChanged` during working phases (白天/黃昏).
+   * Open the map-build overlay in "info" mode for an existing map building.
+   * Displays the building type, location, estimated income, nearest target city,
+   * and current worker status.
+   * @param {{ id: number, type: 'lumberCamp'|'mine'|'bridge', tx: number, ty: number }} bldg
    */
+  _openMapBuildingInfo(bldg) {
+    const overlay = document.getElementById('map-build-overlay');
+    if (!overlay) return;
+
+    const BLDG_META = {
+      lumberCamp: { icon: '🪵', name: '伐木場', goldPerWorker: MAP_BLDG_LUMBER_GOLD },
+      mine:       { icon: '⛏️', name: '採礦場', goldPerWorker: MAP_BLDG_MINE_GOLD  },
+      bridge:     { icon: '🌉', name: '橋樑',   goldPerWorker: 0                    },
+    };
+    const meta = BLDG_META[bldg.type] ?? { icon: '🏗️', name: bldg.type, goldPerWorker: 0 };
+
+    // Estimated daily income: one delivery per MAP_BLDG_SPAWN_INTERVAL phases,
+    // 2 working phases (白天 + 黃昏) per day.
+    const deliveriesPerDay = 2 / MAP_BLDG_SPAWN_INTERVAL;
+    const estimatedDaily   = Math.round(meta.goldPerWorker * deliveriesPerDay);
+
+    // Nearest target city name
+    let nearestCityName = '—';
+    if (this.nationSystem && bldg.type !== 'bridge') {
+      let bestKey  = null;
+      let bestDist = Infinity;
+      const checkList = (arr, prefix) => {
+        arr.forEach((s, i) => {
+          if (s.controllingNationId !== PLAYER_NATION_ID) return;
+          const center = this._getSettlementCenter(s);
+          const dist   = Math.abs(center.tx - bldg.tx) + Math.abs(center.ty - bldg.ty);
+          if (dist <= MAP_BLDG_WORKER_REACH && dist < bestDist) {
+            bestDist = dist;
+            bestKey  = `${prefix}:${i}`;
+          }
+        });
+      };
+      checkList(this.nationSystem.castleSettlements, 'castle');
+      checkList(this.nationSystem.villageSettlements, 'village');
+      if (bestKey) {
+        const s = this._getSettlementByKey(bestKey);
+        if (s) nearestCityName = s.name;
+      }
+    }
+
+    // Worker status
+    const activeWorkers = this._mapBuildingWorkers.filter(w => w.buildingId === bldg.id);
+    let workerStatusHTML = '<span style="color:#9e9e9e">無工人在途</span>';
+    if (activeWorkers.length > 0) {
+      const parts = activeWorkers.map(w => {
+        let phaseLabel;
+        if (w.phase === 'return') {
+          phaseLabel = '返回中 🔙';
+        } else if (w.phase === 'outbound') {
+          phaseLabel = '外出送貨中 🚶';
+        } else {
+          phaseLabel = '待命中';
+        }
+        return `<span>${phaseLabel}</span>`;
+      });
+      workerStatusHTML = parts.join('　');
+    }
+
+    document.getElementById('map-build-title').textContent = `${meta.icon} ${meta.name} 資訊`;
+    document.getElementById('map-build-body').innerHTML = `
+      <div class="mb-desc">地塊位置：(${bldg.tx}, ${bldg.ty})</div>
+      ${meta.goldPerWorker > 0 ? `
+        <div class="mb-income">每次送達：🪙${meta.goldPerWorker}</div>
+        <div class="mb-income">預估日收入：🪙${estimatedDaily}（每日 ${deliveriesPerDay} 次）</div>
+        <div class="mb-income">最近目標城市：${nearestCityName}</div>
+        <div class="mb-income">工人狀態：${workerStatusHTML}</div>
+      ` : `
+        <div class="mb-desc">橋樑建成後，玩家可直接步行穿越此水域格。</div>
+      `}
+      <div class="mb-actions">
+        <button class="mb-cancel-btn" id="btn-map-bldg-info-close">關閉</button>
+      </div>
+    `;
+
+    overlay.classList.add('visible');
+
+    const closeBtn = document.getElementById('btn-map-bldg-info-close');
+    if (closeBtn) {
+      const newClose = closeBtn.cloneNode(true);
+      closeBtn.replaceWith(newClose);
+      newClose.addEventListener('click', () => {
+        overlay.classList.remove('visible');
+      });
+    }
+  }
   _tickMapBuildingWorkers() {
     // ── Advance spawn tick and spawn workers ──────────────────────────────────
     for (const bldg of this._mapBuildings) {
@@ -6118,29 +6238,51 @@ export class GameUI {
     }
 
     // ── Move workers one step toward their target ────────────────────────────
-    const arrived = [];
+    const outboundArrived = [];
+    const returnArrived   = [];
+
     for (const w of this._mapBuildingWorkers) {
-      const targetSett = this._getSettlementByKey(w.targetKey);
-      if (!targetSett) { arrived.push(w); continue; }
+      if (w.phase === 'return') {
+        // Heading back to the building tile.
+        const dx = w.homeTx - w.tx;
+        const dy = w.homeTy - w.ty;
+        if (dx === 0 && dy === 0) {
+          returnArrived.push(w);
+        } else if (Math.abs(dx) >= Math.abs(dy)) {
+          w.tx += Math.sign(dx);
+        } else {
+          w.ty += Math.sign(dy);
+        }
+      } else if (w.phase === 'outbound') {
+        // Outbound: heading to target city.
+        const targetSett = this._getSettlementByKey(w.targetKey);
+        if (!targetSett) { outboundArrived.push(w); continue; }
 
-      const center = this._getSettlementCenter(targetSett);
-      const dx = center.tx - w.tx;
-      const dy = center.ty - w.ty;
+        const center = this._getSettlementCenter(targetSett);
+        const dx = center.tx - w.tx;
+        const dy = center.ty - w.ty;
 
-      if (dx === 0 && dy === 0) {
-        arrived.push(w);
-      } else if (Math.abs(dx) >= Math.abs(dy)) {
-        w.tx += Math.sign(dx);
+        if (dx === 0 && dy === 0) {
+          outboundArrived.push(w);
+        } else if (Math.abs(dx) >= Math.abs(dy)) {
+          w.tx += Math.sign(dx);
+        } else {
+          w.ty += Math.sign(dy);
+        }
       } else {
-        w.ty += Math.sign(dy);
+        // Unknown phase – treat as arrived so the worker is cleaned up.
+        outboundArrived.push(w);
       }
     }
 
-    // ── Deliver gold for arrived workers ─────────────────────────────────────
-    for (const w of arrived) {
-      const idx = this._mapBuildingWorkers.indexOf(w);
-      if (idx >= 0) this._mapBuildingWorkers.splice(idx, 1);
-      if (!w.targetKey) continue;
+    // ── Deliver gold for outbound-arrived workers; start return trip ─────────
+    for (const w of outboundArrived) {
+      if (!w.targetKey) {
+        // No valid city – remove without delivery.
+        const idx = this._mapBuildingWorkers.indexOf(w);
+        if (idx >= 0) this._mapBuildingWorkers.splice(idx, 1);
+        continue;
+      }
 
       const cur = this._regionalTreasury.get(w.targetKey) ?? 0;
       this._regionalTreasury.set(w.targetKey, cur + w.gold);
@@ -6148,8 +6290,23 @@ export class GameUI {
       const sett = this._getSettlementByKey(w.targetKey);
       const bldgLabel = w.type === 'lumberCamp' ? '伐木場' : '採礦場';
       if (sett) {
-        this._addInboxMessage('💰', `${bldgLabel}工人抵達 ${sett.name}，帶來 🪙${w.gold}，已存入城市金庫。`);
+        this._addInboxMessage('💰', `${bldgLabel}工人抵達 ${sett.name}，帶來 🪙${w.gold}，已存入城市金庫，正返回工地。`);
       }
+
+      // Switch to return phase – walk back from the city centre toward home.
+      const settObj   = this._getSettlementByKey(w.targetKey);
+      const center    = settObj ? this._getSettlementCenter(settObj) : null;
+      if (center) {
+        w.tx = center.tx;
+        w.ty = center.ty;
+      }
+      w.phase = 'return';
+    }
+
+    // ── Remove workers that completed their return trip ───────────────────────
+    for (const w of returnArrived) {
+      const idx = this._mapBuildingWorkers.indexOf(w);
+      if (idx >= 0) this._mapBuildingWorkers.splice(idx, 1);
     }
   }
 
@@ -6188,8 +6345,11 @@ export class GameUI {
       type:       bldg.type,
       tx:         bldg.tx,
       ty:         bldg.ty,
+      homeTx:     bldg.tx,
+      homeTy:     bldg.ty,
       targetKey:  bestKey,
       gold,
+      phase:      'outbound',
     });
   }
 
@@ -8227,9 +8387,15 @@ export class GameUI {
       );
     }
     if (Array.isArray(state.mapBuildingWorkers)) {
-      this._mapBuildingWorkers = state.mapBuildingWorkers.filter(
-        w => w && typeof w.type === 'string' && typeof w.tx === 'number' && typeof w.ty === 'number',
-      );
+      this._mapBuildingWorkers = state.mapBuildingWorkers
+        .filter(w => w && typeof w.type === 'string' && typeof w.tx === 'number' && typeof w.ty === 'number')
+        .map(w => ({
+          ...w,
+          // Provide defaults for new fields added in the round-trip update.
+          phase:  w.phase  ?? 'outbound',
+          homeTx: w.homeTx ?? w.tx,
+          homeTy: w.homeTy ?? w.ty,
+        }));
     }
     if (typeof state.mapBuildingIdSeq === 'number') {
       this._mapBuildingIdSeq = state.mapBuildingIdSeq;

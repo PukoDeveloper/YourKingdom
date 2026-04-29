@@ -1,15 +1,13 @@
 import { Container, Graphics } from 'pixi.js';
 import { TILE_SIZE } from './constants.js';
-
-// Road surface colours
-const ROAD_SURFACE_COLOR = 0xC49A6C; // warm sandy brown
-const ROAD_BORDER_COLOR  = 0x8D6E63; // dark earthy brown
-const ROAD_WIDTH         = 10;       // surface width in world pixels
-const ROAD_BORDER_EXTRA  = 4;        // extra pixels on each side for the border
-const ROAD_ALPHA         = 0.88;
+import { drawRoadTile } from './TileDrawer.js';
 
 /**
- * Renders built roads as dirt paths on the world map.
+ * Renders built roads as per-tile dirt paths on the world map.
+ *
+ * Each tile in a road path is drawn individually using `drawRoadTile`, with
+ * directional arm flags set according to which neighbouring tiles are also
+ * part of any built road.  This gives seamlessly connected road visuals.
  *
  * Roads are drawn above the terrain layer but below structures and units.
  * Call `rebuild(tilePaths)` whenever the set of built roads changes.
@@ -48,48 +46,30 @@ export class RoadRenderer {
 
     if (!tilePaths || tilePaths.length === 0) return;
 
+    // Collect every unique road tile across all paths.
+    const tileSet = new Set();
+    for (const path of tilePaths) {
+      for (const { tx, ty } of path) {
+        tileSet.add(`${tx},${ty}`);
+      }
+    }
+
     const g = new Graphics();
 
-    // Draw border first (underneath surface) so it peeks out on both sides.
-    for (const tiles of tilePaths) {
-      this._drawSegments(g, tiles, ROAD_BORDER_COLOR, ROAD_WIDTH + ROAD_BORDER_EXTRA, 0.70);
-    }
-    // Draw surface on top.
-    for (const tiles of tilePaths) {
-      this._drawSegments(g, tiles, ROAD_SURFACE_COLOR, ROAD_WIDTH, ROAD_ALPHA);
+    for (const key of tileSet) {
+      const commaIdx = key.indexOf(',');
+      const tx = parseInt(key.slice(0, commaIdx), 10);
+      const ty = parseInt(key.slice(commaIdx + 1), 10);
+      drawRoadTile(g, tx * TILE_SIZE, ty * TILE_SIZE, {
+        n: tileSet.has(`${tx},${ty - 1}`),
+        s: tileSet.has(`${tx},${ty + 1}`),
+        e: tileSet.has(`${tx + 1},${ty}`),
+        w: tileSet.has(`${tx - 1},${ty}`),
+      });
     }
 
     this._graphics = g;
     this.container.addChild(g);
   }
-
-  // ---------------------------------------------------------------------------
-  // Private helpers
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Draw line segments connecting consecutive tile centres for one road path.
-   *
-   * @param {Graphics} g
-   * @param {{ tx: number, ty: number }[]} tiles
-   * @param {number} color    Fill colour (numeric)
-   * @param {number} width    Line width in world pixels
-   * @param {number} alpha    Opacity 0–1
-   */
-  _drawSegments(g, tiles, color, width, alpha) {
-    if (!tiles || tiles.length < 2) return;
-
-    for (let i = 0; i < tiles.length - 1; i++) {
-      const a = tiles[i];
-      const b = tiles[i + 1];
-      const ax = (a.tx + 0.5) * TILE_SIZE;
-      const ay = (a.ty + 0.5) * TILE_SIZE;
-      const bx = (b.tx + 0.5) * TILE_SIZE;
-      const by = (b.ty + 0.5) * TILE_SIZE;
-
-      g.moveTo(ax, ay)
-        .lineTo(bx, by)
-        .stroke({ color, width, alpha, cap: 'round', join: 'round' });
-    }
-  }
 }
+
