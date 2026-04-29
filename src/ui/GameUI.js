@@ -128,6 +128,17 @@ const CONSTR_ROAD_DEMO_HOURS_PER_TILE = 0.5;
  */
 const CONSTR_PHASE_HOURS = { '白天': 10, '黃昏': 2 };
 
+/** Base plunder gold for a castle (added to economy level × PLUNDER_ECONOMY_CASTLE). */
+const PLUNDER_BASE_CASTLE   = 80;
+/** Gold multiplier per economy level when plundering a castle. */
+const PLUNDER_ECONOMY_CASTLE = 25;
+/** Base plunder gold for a village (added to economy level × PLUNDER_ECONOMY_VILLAGE). */
+const PLUNDER_BASE_VILLAGE   = 30;
+/** Gold multiplier per economy level when plundering a village. */
+const PLUNDER_ECONOMY_VILLAGE = 15;
+/** Resource quantity awarded per resource type when plundering. */
+const PLUNDER_RESOURCE_QTY   = 8;
+
 /**
  * Buildable building catalogue (types that can be constructed by the player).
  * Excludes government buildings (palace / chief_house).
@@ -4552,6 +4563,7 @@ export class GameUI {
       finished:         false,
       result:           null,
       diplomacyApplied: false,
+      plundered:        false,
     };
 
     const overlay = document.getElementById('battle-scene-overlay');
@@ -4619,6 +4631,7 @@ export class GameUI {
       const r = resultMeta[result] ?? resultMeta.retreat;
       const alreadyCaptured  = result === 'victory' && this.isPlayerSettlement(settlement);
       const alreadyLiberated = result === 'victory' && settlement.controllingNationId === NEUTRAL_NATION_ID;
+      const alreadyPlundered = result === 'victory' && state.plundered;
 
       let victoryActions = '';
       if (result === 'victory') {
@@ -4626,6 +4639,8 @@ export class GameUI {
           victoryActions = `<div class="btl-captured-badge">🏴 已佔領</div>`;
         } else if (alreadyLiberated) {
           victoryActions = `<div class="btl-liberated-badge">🏳 已解放</div>`;
+        } else if (alreadyPlundered) {
+          victoryActions = `<div class="btl-captured-badge">💰 已掠奪</div>`;
         } else {
           victoryActions = `
             <button id="btn-battle-capture"  class="btn-battle-capture">🏴 佔領</button>
@@ -4639,7 +4654,7 @@ export class GameUI {
         ${victoryActions}
         <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
 
-      if (result === 'victory' && !alreadyCaptured && !alreadyLiberated) {
+      if (result === 'victory' && !alreadyCaptured && !alreadyLiberated && !alreadyPlundered) {
         actionsEl.querySelector('#btn-battle-capture').addEventListener('click', () => {
           this._captureSettlement(settlement);
           this._renderBattleScene(); // re-render to flip buttons → badge
@@ -5007,6 +5022,9 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _plunderSettlement(settlement) {
+    // Mark the current battle as plundered so the UI shows the badge on re-render.
+    if (this._battleState) this._battleState.plundered = true;
+
     const iconMap = {
       '木材': '🪵', '農產': '🌾', '礦石': '⛏️', '絲綢': '🧵',
       '煤炭': '🪨', '草藥': '🌿', '魚獲': '🐟', '皮毛': '🦊',
@@ -5015,14 +5033,14 @@ export class GameUI {
 
     // Award plunder gold (slightly more than capture since you're explicitly looting).
     const goldReward = settlement.type === 'castle'
-      ? 80 + settlement.economyLevel * 25
-      : 30 + settlement.economyLevel * 15;
+      ? PLUNDER_BASE_CASTLE   + settlement.economyLevel * PLUNDER_ECONOMY_CASTLE
+      : PLUNDER_BASE_VILLAGE  + settlement.economyLevel * PLUNDER_ECONOMY_VILLAGE;
     this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: goldReward });
 
     // Award resources (more than capture since this is pure plunder).
     settlement.resources.forEach(res => {
       this.inventory.addItem({
-        name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: 8,
+        name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: PLUNDER_RESOURCE_QTY,
       });
     });
 

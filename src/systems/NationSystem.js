@@ -344,14 +344,23 @@ export class NationSystem {
    */
   getControllingNation(settlement) {
     if (settlement.controllingNationId === PLAYER_NATION_ID) return null; // player-owned
-    if (settlement.controllingNationId === NEUTRAL_NATION_ID ||
-        settlement.controllingNationId >= this.nations.length) {
+    if (settlement.controllingNationId === NEUTRAL_NATION_ID) {
       return {
         id:      NEUTRAL_NATION_ID,
         name:    '中立',
         color:   '#FFFFFF',
         emblem:  '🏳',
         flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' },
+      };
+    }
+    if (settlement.controllingNationId >= this.nations.length || settlement.controllingNationId < 0) {
+      // Fallback for unexpected / uninitialised IDs
+      return {
+        id:      -1,
+        name:    '未知',
+        color:   '#9E9E9E',
+        emblem:  '❓',
+        flagApp: { bgColor: '#9E9E9E', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '❓', symbolShape: 'circle' },
       };
     }
     return this.nations[settlement.controllingNationId];
