@@ -222,6 +222,13 @@ export class GameUI {
     /** Currently active minimap layer: 'terrain' | 'territory' */
     this._minimapLayer = 'terrain';
 
+    /** Minimap zoom multiplier (1 = 100%, range 1–4). */
+    this._minimapZoom = 1;
+
+    /** Minimap canvas pan offset in logical canvas pixels. */
+    this._minimapPanX = 0;
+    this._minimapPanY = 0;
+
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
 
@@ -523,6 +530,11 @@ export class GameUI {
       <div id="ui-minimap-box">
         <div id="ui-minimap-header">
           <span id="ui-minimap-title">🗺️ 王國地圖</span>
+          <div id="ui-minimap-zoom">
+            <button class="mm-zoom-btn" id="mm-zoom-out" title="縮小">−</button>
+            <span id="mm-zoom-label">100%</span>
+            <button class="mm-zoom-btn" id="mm-zoom-in"  title="放大">＋</button>
+          </div>
           <button id="ui-minimap-close">✕</button>
         </div>
         <div id="ui-minimap-tabs">
@@ -627,6 +639,45 @@ export class GameUI {
       this._minimapLayer = btn.dataset.layer;
       this._redrawMinimap();
     });
+
+    // Minimap zoom buttons
+    document.getElementById('mm-zoom-in').addEventListener('click',  () => this._minimapZoomBy(+1));
+    document.getElementById('mm-zoom-out').addEventListener('click', () => this._minimapZoomBy(-1));
+
+    // Minimap canvas drag-to-pan (pointer events — works for both mouse and touch)
+    const wrap = document.getElementById('ui-minimap-canvas-wrap');
+    let _panActive = false;
+    let _panLastX  = 0;
+    let _panLastY  = 0;
+
+    wrap.addEventListener('pointerdown', (e) => {
+      if (this._minimapZoom <= 1) return; // no pan needed at 1× zoom
+      _panActive = true;
+      _panLastX  = e.clientX;
+      _panLastY  = e.clientY;
+      wrap.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    wrap.addEventListener('pointermove', (e) => {
+      if (!_panActive) return;
+      const dx = e.clientX - _panLastX;
+      const dy = e.clientY - _panLastY;
+      _panLastX = e.clientX;
+      _panLastY = e.clientY;
+      this._minimapPanBy(dx, dy);
+      e.preventDefault();
+    });
+
+    const _endPan = () => { _panActive = false; };
+    wrap.addEventListener('pointerup',     _endPan);
+    wrap.addEventListener('pointercancel', _endPan);
+
+    // Mouse-wheel zoom on the canvas wrap
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this._minimapZoomBy(e.deltaY < 0 ? +1 : -1);
+    }, { passive: false });
   }
 
   // -------------------------------------------------------------------------
@@ -914,13 +965,30 @@ export class GameUI {
 
     const SCALE = 2; // pixels per tile
     const canvas = document.getElementById('ui-minimap-canvas');
-    const maxBoxWidth = Math.min(window.innerWidth * 0.88, 396) - 24; // 12px padding each side
-    const displayScale = Math.min(1, maxBoxWidth / (MAP_WIDTH * SCALE));
+    const wrap   = document.getElementById('ui-minimap-canvas-wrap');
 
+    // Canvas bitmap size (fixed; CSS transform handles display zoom)
     canvas.width  = MAP_WIDTH  * SCALE;
     canvas.height = MAP_HEIGHT * SCALE;
-    canvas.style.width  = `${Math.round(MAP_WIDTH  * SCALE * displayScale)}px`;
-    canvas.style.height = `${Math.round(MAP_HEIGHT * SCALE * displayScale)}px`;
+
+    // Natural display size at zoom=1 – fit inside the box
+    const maxBoxWidth = Math.min(window.innerWidth * 0.88, 396) - 24;
+    const displayScale = Math.min(1, maxBoxWidth / (MAP_WIDTH * SCALE));
+    const naturalW = Math.round(MAP_WIDTH  * SCALE * displayScale);
+    const naturalH = Math.round(MAP_HEIGHT * SCALE * displayScale);
+
+    canvas.style.width  = `${naturalW}px`;
+    canvas.style.height = `${naturalH}px`;
+    // Store natural size so zoom/pan calculations are consistent
+    canvas._naturalW = naturalW;
+    canvas._naturalH = naturalH;
+    wrap.style.height = `${naturalH + 24}px`; // match canvas + padding
+
+    // Reset zoom / pan on every open
+    this._minimapZoom = 1;
+    this._minimapPanX = 0;
+    this._minimapPanY = 0;
+    this._applyMinimapTransform();
 
     // Sync tab button UI to current layer state
     document.querySelectorAll('.mm-tab-btn').forEach(b => {
@@ -1084,6 +1152,66 @@ export class GameUI {
     ctx.arc(px, py, r, 0, Math.PI * 2);
     ctx.fillStyle = '#FFD700';
     ctx.fill();
+  }
+
+  /**
+   * Apply the current zoom/pan state to the minimap canvas via CSS transform.
+   * Also updates the zoom percentage label.
+   */
+  _applyMinimapTransform() {
+    const canvas = document.getElementById('ui-minimap-canvas');
+    const wrap   = document.getElementById('ui-minimap-canvas-wrap');
+    if (!canvas) return;
+
+    const z  = this._minimapZoom;
+    const px = this._minimapPanX;
+    const py = this._minimapPanY;
+
+    // Clamp pan so canvas never scrolls fully out of view
+    const nw = canvas._naturalW ?? canvas.clientWidth;
+    const nh = canvas._naturalH ?? canvas.clientHeight;
+    const maxPanX = ((z - 1) * nw) / 2;
+    const maxPanY = ((z - 1) * nh) / 2;
+    this._minimapPanX = Math.max(-maxPanX, Math.min(maxPanX, this._minimapPanX));
+    this._minimapPanY = Math.max(-maxPanY, Math.min(maxPanY, this._minimapPanY));
+
+    canvas.style.transform       = `scale(${z}) translate(${this._minimapPanX / z}px, ${this._minimapPanY / z}px)`;
+    canvas.style.transformOrigin = 'center center';
+
+    // Centre the canvas in the wrap at all times (wrap uses flexbox center)
+    const zoomLabel = document.getElementById('mm-zoom-label');
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(z * 100)}%`;
+
+    // Disable drag cursor when not zoomed in
+    if (wrap) wrap.style.cursor = z > 1 ? 'grab' : 'default';
+  }
+
+  /**
+   * Change zoom level by `steps` (positive = zoom in, negative = zoom out).
+   * Zoom steps: 1× → 1.5× → 2× → 3× → 4×
+   */
+  _minimapZoomBy(steps) {
+    const LEVELS = [1, 1.5, 2, 3, 4];
+    const current = this._minimapZoom;
+    let idx = LEVELS.findIndex(l => Math.abs(l - current) < 0.01);
+    if (idx === -1) idx = 0;
+    idx = Math.max(0, Math.min(LEVELS.length - 1, idx + steps));
+    this._minimapZoom = LEVELS[idx];
+    // When zooming out to 1× reset pan
+    if (this._minimapZoom === 1) {
+      this._minimapPanX = 0;
+      this._minimapPanY = 0;
+    }
+    this._applyMinimapTransform();
+  }
+
+  /**
+   * Pan the minimap by `dx`/`dy` CSS pixels.
+   */
+  _minimapPanBy(dx, dy) {
+    this._minimapPanX += dx;
+    this._minimapPanY += dy;
+    this._applyMinimapTransform();
   }
 
   _closeMinimap() {
