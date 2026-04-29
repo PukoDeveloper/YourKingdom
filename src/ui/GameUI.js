@@ -7,6 +7,7 @@ import {
   PERSONALITY_ARROGANT, PERSONALITY_WARLIKE, PERSONALITY_GENTLE,
   PERSONALITY_CUNNING,  PERSONALITY_CAUTIOUS, ALL_PERSONALITIES,
   GARRISON_TAX_PENALTY_PER_UNIT,
+  TRADE_ROUTE_DAILY_INCOME,
 } from '../systems/DiplomacySystem.js';
 import {
   renderFlagHTML,
@@ -7582,6 +7583,225 @@ export class GameUI {
     this._renderInbox();
   }
 
+  // -------------------------------------------------------------------------
+  // NPC proactive diplomacy toward player
+  // -------------------------------------------------------------------------
+
+  /**
+   * Called when an NPC trade-route request missive arrives at a player settlement.
+   * Adds an inbox entry with Accept / Decline buttons.
+   * @param {{ senderNationId: number }} missive
+   */
+  onNpcTradeRequest(missive) {
+    const { senderNationId } = missive;
+    const nation = this.nationSystem?.nations[senderNationId];
+    const nationName = nation?.name ?? '未知國家';
+    const day  = this.diplomacySystem?._currentDay ?? 0;
+    const time = this._dayNightCycle?.getTimeString() ?? '';
+
+    this._inbox.unshift({
+      icon:             '🛤',
+      text:             `${nationName} 的使者抵達，希望與你建立貿易路線。`,
+      day, time,
+      read:             false,
+      isTradeRequest:   true,
+      responded:        false,
+      senderNationId,
+    });
+    if (this._inbox.length > GameUI._MAX_INBOX) this._inbox.length = GameUI._MAX_INBOX;
+    this._inboxUnread = this._inbox.filter(m => !m.read).length;
+    this._updateInboxBadge();
+    this._toast(`🛤 ${nationName} 派使者前來商討貿易路線！`);
+    if (this._activePanel === 'inbox') this._renderInbox();
+  }
+
+  /**
+   * Player responds to an NPC trade-route request.
+   * @param {number} inboxIdx
+   * @param {boolean} accept
+   */
+  _respondToTradeRequest(inboxIdx, accept) {
+    const entry = this._inbox[inboxIdx];
+    if (!entry || !entry.isTradeRequest || entry.responded) return;
+    entry.responded = true;
+    entry.read = true;
+
+    const nation = this.nationSystem?.nations[entry.senderNationId];
+    const nationName = nation?.name ?? '對方';
+
+    if (accept) {
+      if (!this.diplomacySystem || !this.nationSystem) {
+        this._addInboxMessage('❌', '系統尚未就緒，無法建立貿易路線。');
+        this._renderInbox();
+        return;
+      }
+      // Find a player-controlled destination settlement for the caravan to visit.
+      const playerSettlements = [];
+      this.nationSystem.castleSettlements.forEach(s => {
+        if (s.controllingNationId === _PLAYER_NATION_ID_UI) playerSettlements.push(s);
+      });
+      this.nationSystem.villageSettlements.forEach(s => {
+        if (s.controllingNationId === _PLAYER_NATION_ID_UI) playerSettlements.push(s);
+      });
+
+      if (playerSettlements.length === 0) {
+        this._addInboxMessage('❌', `${nationName} 同意建立貿易路線，但你尚未佔領任何城市，無法接待商隊。`);
+        this._renderInbox();
+        return;
+      }
+
+      // Establish the route; use a standard daily income.
+      this.diplomacySystem.openTradeRoute(entry.senderNationId, _PLAYER_NATION_ID_UI, TRADE_ROUTE_DAILY_INCOME);
+      this.diplomacySystem.modifyPlayerRelation(entry.senderNationId, 5);
+      this._addInboxMessage('🛤', `與 ${nationName} 建立了貿易路線！每日 +${TRADE_ROUTE_DAILY_INCOME} 🪙，關係 +5。`);
+      if (this._activePanel === 'nations') this._renderDiplomacy();
+    } else {
+      if (this.diplomacySystem) {
+        const delta = -(3 + Math.floor(Math.random() * 4));
+        this.diplomacySystem.modifyPlayerRelation(entry.senderNationId, delta);
+      }
+      this._addInboxMessage('❌', `拒絕了 ${nationName} 的貿易路線請求，關係略微惡化。`);
+    }
+    this._renderInbox();
+  }
+
+  /**
+   * Called when an NPC NAP proposal missive arrives at a player settlement.
+   * @param {{ senderNationId: number }} missive
+   */
+  onNpcNapProposal(missive) {
+    const { senderNationId } = missive;
+    const nation = this.nationSystem?.nations[senderNationId];
+    const nationName = nation?.name ?? '未知國家';
+    const day  = this.diplomacySystem?._currentDay ?? 0;
+    const time = this._dayNightCycle?.getTimeString() ?? '';
+
+    this._inbox.unshift({
+      icon:            '☮',
+      text:            `${nationName} 提議與你簽署互不侵犯條約（NAP），雙方承諾不主動宣戰。`,
+      day, time,
+      read:            false,
+      isNapProposal:   true,
+      responded:       false,
+      senderNationId,
+    });
+    if (this._inbox.length > GameUI._MAX_INBOX) this._inbox.length = GameUI._MAX_INBOX;
+    this._inboxUnread = this._inbox.filter(m => !m.read).length;
+    this._updateInboxBadge();
+    this._toast(`☮ ${nationName} 提議簽署互不侵犯條約！`);
+    if (this._activePanel === 'inbox') this._renderInbox();
+  }
+
+  /**
+   * Player responds to an NPC NAP proposal.
+   * @param {number} inboxIdx
+   * @param {boolean} accept
+   */
+  _respondToNapProposal(inboxIdx, accept) {
+    const entry = this._inbox[inboxIdx];
+    if (!entry || !entry.isNapProposal || entry.responded) return;
+    entry.responded = true;
+    entry.read = true;
+
+    const nation = this.nationSystem?.nations[entry.senderNationId];
+    const nationName = nation?.name ?? '對方';
+
+    if (accept) {
+      if (this.diplomacySystem) {
+        // signNonAggressionPact already applies +10 relation.
+        this.diplomacySystem.signNonAggressionPact(entry.senderNationId, _PLAYER_NATION_ID_UI);
+      }
+      this._addInboxMessage('☮', `你接受了 ${nationName} 的互不侵犯條約！雙方關係改善 +10。`);
+      if (this._activePanel === 'nations') this._renderDiplomacy();
+    } else {
+      if (this.diplomacySystem) {
+        const delta = -(5 + Math.floor(Math.random() * 6));
+        this.diplomacySystem.modifyPlayerRelation(entry.senderNationId, delta);
+      }
+      this._addInboxMessage('❌', `拒絕了 ${nationName} 的互不侵犯條約，對方感到失望，關係惡化。`);
+    }
+    this._renderInbox();
+  }
+
+  /**
+   * Called when an NPC MPP proposal missive arrives at a player settlement.
+   * @param {{ senderNationId: number }} missive
+   */
+  onNpcMppProposal(missive) {
+    const { senderNationId } = missive;
+    const nation = this.nationSystem?.nations[senderNationId];
+    const nationName = nation?.name ?? '未知國家';
+    const day  = this.diplomacySystem?._currentDay ?? 0;
+    const time = this._dayNightCycle?.getTimeString() ?? '';
+
+    this._inbox.unshift({
+      icon:            '🛡',
+      text:            `${nationName} 提議與你締結互保條約（MPP），任一方遭受攻擊時雙方共同作戰。`,
+      day, time,
+      read:            false,
+      isMppProposal:   true,
+      responded:       false,
+      senderNationId,
+    });
+    if (this._inbox.length > GameUI._MAX_INBOX) this._inbox.length = GameUI._MAX_INBOX;
+    this._inboxUnread = this._inbox.filter(m => !m.read).length;
+    this._updateInboxBadge();
+    this._toast(`🛡 ${nationName} 提議締結互保條約！`);
+    if (this._activePanel === 'inbox') this._renderInbox();
+  }
+
+  /**
+   * Player responds to an NPC MPP proposal.
+   * @param {number} inboxIdx
+   * @param {boolean} accept
+   */
+  _respondToMppProposal(inboxIdx, accept) {
+    const entry = this._inbox[inboxIdx];
+    if (!entry || !entry.isMppProposal || entry.responded) return;
+    entry.responded = true;
+    entry.read = true;
+
+    const nation = this.nationSystem?.nations[entry.senderNationId];
+    const nationName = nation?.name ?? '對方';
+
+    if (accept) {
+      if (this.diplomacySystem) {
+        // signMutualProtectionPact already applies +20 relation.
+        this.diplomacySystem.signMutualProtectionPact(entry.senderNationId, _PLAYER_NATION_ID_UI);
+      }
+      this._addInboxMessage('🛡', `你接受了 ${nationName} 的互保條約！雙方關係改善 +20。`);
+      if (this._activePanel === 'nations') this._renderDiplomacy();
+    } else {
+      if (this.diplomacySystem) {
+        const delta = -(8 + Math.floor(Math.random() * 8));
+        this.diplomacySystem.modifyPlayerRelation(entry.senderNationId, delta);
+      }
+      this._addInboxMessage('❌', `拒絕了 ${nationName} 的互保條約，對方感到失望，關係惡化。`);
+    }
+    this._renderInbox();
+  }
+
+  /**
+   * Called when an NPC goodwill gift messenger arrives.
+   * Gold is automatically credited; no player decision needed.
+   * @param {{ senderNationId: number }} missive
+   * @param {number} gold   Amount of gold received.
+   * @param {number} relDelta  Relation improvement already applied by DiplomacySystem.
+   */
+  onNpcGiftDelivered(missive, gold, relDelta) {
+    const { senderNationId } = missive;
+    const nation = this.nationSystem?.nations[senderNationId];
+    const nationName = nation?.name ?? '未知國家';
+
+    // Credit the player's treasury.
+    if (gold > 0) this._addGold(gold);
+    this._refreshGoldDisplay();
+
+    this._addInboxMessage('🎁', `${nationName} 贈送了 🪙${gold} 作為友誼禮物！關係改善 +${relDelta}。`);
+    this._toast(`🎁 ${nationName} 送來禮物 🪙${gold}！`);
+    if (this._activePanel === 'inbox') this._renderInbox();
+  }
+
   /**
    * Generate enemy force stats from a settlement.
    * @param {import('../systems/NationSystem.js').Settlement} settlement
@@ -8634,9 +8854,10 @@ export class GameUI {
     const content = document.getElementById('ui-panel-content');
     if (!content) return;
 
-    // Mark all visible messages as read (but not un-responded peace offers).
+    // Mark all visible messages as read (but not un-responded interactive proposals).
     this._inbox.forEach(m => {
-      if (!m.isPeaceOffer || m.responded) m.read = true;
+      const interactive = (m.isPeaceOffer || m.isTradeRequest || m.isNapProposal || m.isMppProposal);
+      if (!interactive || m.responded) m.read = true;
     });
     this._inboxUnread = this._inbox.filter(m => !m.read).length;
     this._updateInboxBadge();
@@ -8647,17 +8868,25 @@ export class GameUI {
     }
 
     const rows = this._inbox.map((m, i) => {
-      const actionBtns = (m.isPeaceOffer && !m.responded)
-        ? `<div class="inbox-peace-actions">
-             <button class="btn-buy inbox-accept-btn" data-idx="${i}">✅ 同意</button>
-             <button class="inbox-ignore-btn" data-idx="${i}">❌ 無視</button>
-           </div>`
+      // Build action buttons for any interactive proposal that hasn't been answered.
+      let actionBtns = '';
+      if (!m.responded) {
+        if (m.isPeaceOffer || m.isTradeRequest || m.isNapProposal || m.isMppProposal) {
+          const acceptLabel = m.isTradeRequest ? '✅ 接受' : m.isNapProposal ? '✅ 簽署' : m.isMppProposal ? '✅ 締結' : '✅ 同意';
+          actionBtns = `<div class="inbox-peace-actions">
+            <button class="btn-buy inbox-accept-btn" data-idx="${i}">${acceptLabel}</button>
+            <button class="inbox-ignore-btn" data-idx="${i}">❌ 拒絕</button>
+          </div>`;
+        }
+      }
+
+      const isInteractive = m.isPeaceOffer || m.isTradeRequest || m.isNapProposal || m.isMppProposal;
+      const respondedLabel = (isInteractive && m.responded)
+        ? `<span class="inbox-responded-label">${m._accepted === true ? '（已接受）' : m._acceptedPeace === true ? '（已同意）' : m._accepted === false || m._acceptedPeace === false ? '（已拒絕）' : ''}</span>`
         : '';
-      const respondedLabel = (m.isPeaceOffer && m.responded)
-        ? `<span class="inbox-responded-label">${m._acceptedPeace === true ? '（已同意）' : '（已無視）'}</span>`
-        : '';
+
       return `
-        <div class="inbox-row${m.read && (!m.isPeaceOffer || m.responded) ? '' : ' inbox-unread'}" data-idx="${i}">
+        <div class="inbox-row${m.read && (!isInteractive || m.responded) ? '' : ' inbox-unread'}" data-idx="${i}">
           <span class="inbox-icon">${m.icon}</span>
           <div class="inbox-body">
             <div class="inbox-text">${m.text}${respondedLabel}</div>
@@ -8681,19 +8910,31 @@ export class GameUI {
       this._renderInbox();
     });
 
-    // Bind peace offer buttons
+    // Bind accept / reject buttons for all proposal types.
     content.querySelectorAll('.inbox-accept-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = Number(btn.dataset.idx);
-        this._inbox[idx]._acceptedPeace = true;
-        this._respondToPeaceOffer(idx, true);
+        const m = this._inbox[idx];
+        if (!m) return;
+        m._accepted = true;
+        m._acceptedPeace = true;
+        if (m.isPeaceOffer)    this._respondToPeaceOffer(idx, true);
+        else if (m.isTradeRequest)  this._respondToTradeRequest(idx, true);
+        else if (m.isNapProposal)   this._respondToNapProposal(idx, true);
+        else if (m.isMppProposal)   this._respondToMppProposal(idx, true);
       });
     });
     content.querySelectorAll('.inbox-ignore-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = Number(btn.dataset.idx);
-        this._inbox[idx]._acceptedPeace = false;
-        this._respondToPeaceOffer(idx, false);
+        const m = this._inbox[idx];
+        if (!m) return;
+        m._accepted = false;
+        m._acceptedPeace = false;
+        if (m.isPeaceOffer)    this._respondToPeaceOffer(idx, false);
+        else if (m.isTradeRequest)  this._respondToTradeRequest(idx, false);
+        else if (m.isNapProposal)   this._respondToNapProposal(idx, false);
+        else if (m.isMppProposal)   this._respondToMppProposal(idx, false);
       });
     });
   }

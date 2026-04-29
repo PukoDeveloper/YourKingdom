@@ -381,6 +381,15 @@ export class Game {
           const nation = this._nationSystem.nations[result.missive.receiverNationId];
           this._gameUI.addSystemMessage('⚔', `已向 ${nation?.name ?? '對方'} 正式宣戰！`);
           this._gameUI.refreshNationsPanel();
+        } else if (result.type === 'npc_trade_request') {
+          this._gameUI.onNpcTradeRequest(result.missive);
+        } else if (result.type === 'npc_nap_proposal') {
+          this._gameUI.onNpcNapProposal(result.missive);
+        } else if (result.type === 'npc_mpp_proposal') {
+          this._gameUI.onNpcMppProposal(result.missive);
+        } else if (result.type === 'npc_gift_delivered') {
+          this._gameUI.onNpcGiftDelivered(result.missive, result.gold, result.relDelta);
+          this._gameUI.refreshNationsPanel();
         }
       });
       // Sync messenger tokens with updated positions.
