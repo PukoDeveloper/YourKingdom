@@ -963,8 +963,12 @@ export class GameUI {
    * plus a small nation name label.
    */
   _drawMinimapTerritoryOverlay(ctx, scale) {
+    if (!this.nationSystem) return;
     const { castleSettlements, villageSettlements, nations } = this.nationSystem;
     const pk = this.getPlayerNation();
+
+    /** Font size (px) for the territory nation-name labels. */
+    const TERRITORY_LABEL_FONT_SIZE = 7;
 
     // Collect all settlements with their controlling color
     const allSettlements = [
@@ -1011,7 +1015,7 @@ export class GameUI {
       if (label) {
         const lx = cx;
         const ly = cy + size * scale + scale * 3;
-        ctx.font = 'bold 7px sans-serif';
+        ctx.font = `bold ${TERRITORY_LABEL_FONT_SIZE}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         // Outline for readability
@@ -1030,7 +1034,9 @@ export class GameUI {
    */
   _drawMinimapSettlements(ctx, scale) {
     if (!this._mapData) return;
-    const iconSize = Math.max(7, scale * 4); // font size in canvas pixels
+    /** Multiplier applied to `scale` to derive the icon font size in canvas pixels. */
+    const ICON_SCALE_MULTIPLIER = 4;
+    const iconSize = Math.max(7, scale * ICON_SCALE_MULTIPLIER); // font size in canvas pixels
     ctx.font = `${iconSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
