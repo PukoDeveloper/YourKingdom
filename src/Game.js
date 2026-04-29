@@ -93,7 +93,9 @@ export class Game {
     this._setLoadingStatus('建造城池與村落...');
     // getPlayerNation is evaluated lazily so _gameUI exists by the time it is called.
     const getPlayerNation = () => this._gameUI?.getPlayerNation() ?? { color: '#e2c97e', flagApp: null };
-    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getPlayerNation);
+    // getBuiltPorts is evaluated lazily so _gameUI exists by the time it is called.
+    const getBuiltPorts = () => this._gameUI?.getBuiltPortTiles() ?? [];
+    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getPlayerNation, getBuiltPorts);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
     await this._yieldFrame();
@@ -173,6 +175,7 @@ export class Game {
       this._player,
       this._diplomacySystem,
       this._dayNight,
+      this._mapData,
     );
 
     // Rebuild structures now that GameUI is ready (restores player flags from save).
@@ -185,6 +188,9 @@ export class Game {
 
     // Rebuild map structures whenever the player changes their kingdom flag or name.
     this._gameUI.onPlayerKingdomChanged = () => this._structureRenderer.rebuild();
+
+    // Rebuild map structures whenever the player builds a new port.
+    this._gameUI.onPortBuilt = () => this._structureRenderer.rebuild();
 
     // Advance in-game days when resting at an inn.
     this._gameUI.onAdvanceDays = (n) => {
@@ -331,6 +337,14 @@ export class Game {
         hit ? hit.settlement : null,
         isPort ? 'port' : null,
       );
+
+      // Grant sea access when the player stands on a player-built port tile.
+      const playerTile = { tx: Math.floor(this._player.x / TILE_SIZE), ty: Math.floor(this._player.y / TILE_SIZE) };
+      const builtPorts = this._gameUI.getBuiltPortTiles();
+      const onBuiltPort = builtPorts.some(p => p.tx === playerTile.tx && p.ty === playerTile.ty);
+      if (onBuiltPort && !this._player.atSea) {
+        this._player.canEmbark = true;
+      }
     }
 
     // HUD: time & weather
