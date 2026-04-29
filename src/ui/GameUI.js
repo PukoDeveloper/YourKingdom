@@ -1070,6 +1070,17 @@ export class GameUI {
     guideBack.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._renderGuide(-1); } });
     document.getElementById('ui-guide-prev').addEventListener('click', () => this._renderGuide(this._guidePageIndex - 1));
     document.getElementById('ui-guide-next').addEventListener('click', () => this._renderGuide(this._guidePageIndex + 1));
+    // Chapter card clicks delegated on the persistent body element
+    const guideBody = document.getElementById('ui-guide-body');
+    guideBody.addEventListener('click', (e) => {
+      const card = e.target.closest('.guide-chapter-card');
+      if (card) this._renderGuide(Number(card.dataset.chapter));
+    });
+    guideBody.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const card = e.target.closest('.guide-chapter-card');
+      if (card) { e.preventDefault(); this._renderGuide(Number(card.dataset.chapter)); }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1776,9 +1787,11 @@ export class GameUI {
    */
   _renderGuide(pageIndex) {
     const chapters = GameUI._GUIDE_CHAPTERS;
-    this._guidePageIndex = pageIndex;
+    // Clamp to valid range: -1 (nav) or 0..N-1 (chapter)
+    const clamped = Math.max(-1, Math.min(chapters.length - 1, pageIndex));
+    this._guidePageIndex = clamped;
 
-    const isNav = pageIndex < 0;
+    const isNav = clamped < 0;
     const backEl   = document.getElementById('ui-guide-back');
     const titleEl  = document.getElementById('ui-guide-title');
     const bodyEl   = document.getElementById('ui-guide-body');
@@ -1804,20 +1817,15 @@ export class GameUI {
         </div>
       `;
 
-      bodyEl.querySelectorAll('.guide-chapter-card').forEach(card => {
-        const open = () => this._renderGuide(Number(card.dataset.chapter));
-        card.addEventListener('click', open);
-        card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
-      });
     } else {
-      const ch = chapters[pageIndex];
+      const ch = chapters[clamped];
       backEl.style.display = '';
       titleEl.textContent = `${ch.icon} ${ch.name}`;
       footerEl.classList.add('visible');
 
-      prevBtn.disabled = pageIndex === 0;
-      nextBtn.disabled = pageIndex === chapters.length - 1;
-      pageLabel.textContent = `${pageIndex + 1} / ${chapters.length}`;
+      prevBtn.disabled = clamped === 0;
+      nextBtn.disabled = clamped === chapters.length - 1;
+      pageLabel.textContent = `${clamped + 1} / ${chapters.length}`;
 
       bodyEl.innerHTML = ch.content;
     }
