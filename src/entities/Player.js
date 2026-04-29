@@ -30,7 +30,7 @@ export class Player {
     this.name = appearanceIndices?.playerName || DEFAULT_PLAYER_NAME;
 
     /** Last non-zero movement direction for idle facing. */
-    this._facingAngle = -Math.PI / 2; // facing north by default
+    this._facingAngle = 0; // facing north by default (rotation=0 → sprite indicator points up)
 
     /** Current appearance (modular parts). */
     this.appearance = appearanceIndices

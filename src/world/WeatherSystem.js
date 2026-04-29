@@ -82,6 +82,9 @@ export class WeatherSystem {
 
   /** @param {number} dt  Delta time in seconds. */
   update(dt) {
+    const prevState       = this._state;
+    const prevFlashActive = this._flashDuration > 0;
+
     // Weather state transitions
     this._timer -= dt;
     if (this._timer <= 0) {
@@ -119,7 +122,16 @@ export class WeatherSystem {
       }
     }
 
-    this._redraw();
+    // Only redraw when something has visually changed:
+    //   - Weather state changed (need to update overlay or clear it)
+    //   - Rain/storm is active (drops moved this frame)
+    //   - Lightning flash started, is ongoing, or just ended
+    const isRaining   = this._state === WEATHER.RAIN || this._state === WEATHER.STORM;
+    const flashActive = this._flashDuration > 0;
+    const stateChanged = this._state !== prevState;
+    if (isRaining || stateChanged || flashActive || prevFlashActive) {
+      this._redraw();
+    }
   }
 
   // ---------------------------------------------------------------------------
