@@ -91,6 +91,9 @@ const _GOV_GREETING = {
   chief_house: '哎呀，稀客稀客！快請進，我讓內人沏茶。近來村裡一切都好，有勞掛念。',
 };
 
+/** Player nation ID constant (mirrors NationSystem value). */
+const _PLAYER_NATION_ID_UI = -1;
+
 /**
  * GameUI – manages the Backpack and Team DOM panels.
  *
@@ -109,8 +112,9 @@ export class GameUI {
    * @param {() => void} [onReset] Called when the player confirms a game reset.
    * @param {import('../entities/Player.js').Player|null} [player]  Live Player instance.
    * @param {import('../systems/DiplomacySystem.js').DiplomacySystem|null} [diplomacySystem]
+   * @param {import('../world/DayNightCycle.js').DayNightCycle|null} [dayNightCycle]
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
@@ -119,6 +123,9 @@ export class GameUI {
 
     /** @type {import('../systems/DiplomacySystem.js').DiplomacySystem|null} */
     this.diplomacySystem = diplomacySystem;
+
+    /** @type {import('../world/DayNightCycle.js').DayNightCycle|null} */
+    this._dayNightCycle = dayNightCycle;
 
     /** @type {import('../entities/Player.js').Player|null} */
     this.player = player;
@@ -1151,19 +1158,20 @@ export class GameUI {
 
       const val     = this.diplomacySystem.getPlayerRelation(id);
       const level   = this.diplomacySystem.getRelationLevel(val);
-      const alreadyCondemned = this.diplomacySystem.hasCondemnedToday(id);
+      const atWar   = this.diplomacySystem.isAtWar(_PLAYER_NATION_ID_UI, id);
 
       const flagH = nation.flagApp
         ? renderFlagHTML(nation.flagApp, 32)
         : `<span>${nation.emblem}</span>`;
 
       const relVal = val > 0 ? `+${val}` : `${val}`;
+      const warBadge = atWar ? `<span class="dipl-war-badge">⚔ 戰爭中</span>` : '';
       const headerHTML = `
         <div class="dn-header">
           <span class="dn-flag">${flagH}</span>
           <div class="dn-title-col">
             <div class="dn-name">
-              ${nation.name}
+              ${nation.name} ${warBadge}
             </div>
             <div class="dn-ruler-line">
               ${castle ? `${castle.ruler.name}（${castle.ruler.role}） ${_personalityLabel(castle.ruler.traits)}` : ''}
@@ -1173,14 +1181,12 @@ export class GameUI {
             <div class="dn-level" style="color:${level.color}">${level.icon} ${level.label}</div>
             <div class="dn-val" style="color:${level.color}">${relVal}</div>
           </div>
-          <button class="dipl-condemn-btn${alreadyCondemned ? ' used' : ''}" data-nation-id="${id}"
-                   ${alreadyCondemned ? 'disabled title="今日已譴責"' : ''}>
-              ${alreadyCondemned ? '✓ 已譴責' : '📢 譴責'}
-            </button>
+          <button class="dipl-relations-btn" data-nation-id="${id}" title="查看與各國關係">🔍 關係網</button>
         </div>
         <div class="dn-bar-wrap">
           <div class="dn-bar" style="width:${(val + 100) / 2}%;background:${level.color}"></div>
-        </div>`;
+        </div>
+        <div class="dn-relations-panel" id="dn-relp-${id}" style="display:none"></div>`;
 
       // Castle row: show if still controlled by this nation, or mark as captured
       let castleRowHTML = '';
@@ -1253,18 +1259,20 @@ export class GameUI {
       ${playerSectionHTML}
       <div class="dipl-nation-list">${nationCardsHTML}</div>`;
 
-    // Condemn buttons
-    el.querySelectorAll('.dipl-condemn-btn:not([disabled])').forEach(btn => {
+    // "查看關係網" buttons – toggle inline inter-nation relations panel
+    el.querySelectorAll('.dipl-relations-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const nationId = Number(btn.dataset.nationId);
-        const result = this.diplomacySystem.condemn(nationId);
-        if (result.success) {
-          const nation = this.nationSystem.nations[nationId];
-          this._addInboxMessage('📢', `你公開譴責了 ${nation.name}，關係惡化 ${result.delta}。`);
-          this._renderDiplomacy();
-        } else {
-          this._toast('今日已對此國發出譴責，明日再試。');
+        const panel = document.getElementById(`dn-relp-${nationId}`);
+        if (!panel) return;
+        if (panel.style.display !== 'none') {
+          panel.style.display = 'none';
+          btn.classList.remove('active');
+          return;
         }
+        btn.classList.add('active');
+        this._renderNationRelationsPanel(nationId, panel);
+        panel.style.display = '';
       });
     });
 
@@ -1283,6 +1291,55 @@ export class GameUI {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Inter-nation relations panel (collapsible inside each nation card)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Populate the inline relations panel for a given nation card.
+   * Shows that nation's relation with every other non-extinct NPC nation
+   * and with the player.
+   * @param {number} nationId
+   * @param {HTMLElement} panel
+   */
+  _renderNationRelationsPanel(nationId, panel) {
+    if (!this.diplomacySystem || !this.nationSystem) { panel.textContent = '無資料'; return; }
+
+    const { nations } = this.nationSystem;
+    const rows = [];
+
+    // Relation to player
+    const playerRel   = this.diplomacySystem.getPlayerRelation(nationId);
+    const playerLevel = this.diplomacySystem.getRelationLevel(playerRel);
+    const playerRelStr = playerRel > 0 ? `+${playerRel}` : `${playerRel}`;
+    const pk = this.getPlayerNation();
+    rows.push(`
+      <div class="dn-relrow">
+        <span class="dn-relrow-name">${pk.name} <span class="sc-player-badge">我方</span></span>
+        <span class="dn-relrow-val" style="color:${playerLevel.color}">${playerLevel.icon} ${playerRelStr}</span>
+      </div>`);
+
+    // Relations with all other NPC nations
+    nations.forEach((other, oid) => {
+      if (!other || oid === nationId) return;
+      if (this.nationSystem.isNationExtinct(oid)) return;
+      const rel   = this.diplomacySystem.getRelation(nationId, oid);
+      const level = this.diplomacySystem.getRelationLevel(rel);
+      const relStr = rel > 0 ? `+${rel}` : `${rel}`;
+      const atWar = this.diplomacySystem.isAtWar(nationId, oid);
+      const warTag = atWar ? ' <span class="dipl-war-badge" style="font-size:9px;padding:0 3px">⚔</span>' : '';
+      rows.push(`
+        <div class="dn-relrow">
+          <span class="dn-relrow-name">${other.name}${warTag}</span>
+          <span class="dn-relrow-val" style="color:${level.color}">${level.icon} ${relStr}</span>
+        </div>`);
+    });
+
+    panel.innerHTML = `
+      <div class="dn-relp-title">與各國關係</div>
+      <div class="dn-relp-list">${rows.join('')}</div>`;
   }
 
   // -------------------------------------------------------------------------
@@ -2640,6 +2697,7 @@ export class GameUI {
         <div class="gov-stat"><span class="gov-stat-label">資源</span><span class="gov-stat-val">${(settlement.resources ?? []).join('、') || '無'}</span></div>
       </div>
       ${taxHTML}
+      ${isOwnedByPlayer ? `<button class="btn-buy gov-letter-btn" id="btn-send-letter">📨 派送信件</button>` : ''}
       <div class="gov-ruler-speech">
         <em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em>
       </div>
@@ -2656,12 +2714,503 @@ export class GameUI {
         // Re-render to reflect updated satisfaction
         this._renderGovBuilding(building, settlement);
       });
+      document.getElementById('btn-send-letter')?.addEventListener('click', () => {
+        this._renderSendLetter(settlement);
+      });
     }
   }
 
   // -------------------------------------------------------------------------
-  // Battle preview
+  // Send Letter / Peace Treaty UI (player-owned government building)
   // -------------------------------------------------------------------------
+
+  /**
+   * Show the letter type selector.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderSendLetter(settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">📨 派送信件</div>
+      <div class="letter-intro">選擇要派送的信件類型</div>
+      <div class="letter-type-list">
+        <div class="letter-type-card" id="letter-type-peace" role="button" tabindex="0">
+          <span class="ltc-icon">🕊</span>
+          <div class="ltc-info">
+            <div class="ltc-name">和平條約</div>
+            <div class="ltc-desc">向指定國家提出和談，設定雙方履行的條款</div>
+          </div>
+          <span class="ltc-arrow">›</span>
+        </div>
+        <div class="letter-type-card" id="letter-type-condemn" role="button" tabindex="0">
+          <span class="ltc-icon">📢</span>
+          <div class="ltc-info">
+            <div class="ltc-name">譴責信</div>
+            <div class="ltc-desc">派使者公開譴責指定國家，惡化雙方關係</div>
+          </div>
+          <span class="ltc-arrow">›</span>
+        </div>
+        <div class="letter-type-card" id="letter-type-gift" role="button" tabindex="0">
+          <span class="ltc-icon">🎁</span>
+          <div class="ltc-info">
+            <div class="ltc-name">送禮</div>
+            <div class="ltc-desc">贈送金幣給指定國家，改善外交關係</div>
+          </div>
+          <span class="ltc-arrow">›</span>
+        </div>
+        <div class="letter-type-card" id="letter-type-war" role="button" tabindex="0">
+          <span class="ltc-icon">⚔</span>
+          <div class="ltc-info">
+            <div class="ltc-name">正式宣戰</div>
+            <div class="ltc-desc">正式向指定國家宣戰，可附上宣戰理由</div>
+          </div>
+          <span class="ltc-arrow">›</span>
+        </div>
+      </div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    const bind = (id, fn) => {
+      const el = document.getElementById(id);
+      el?.addEventListener('click', fn);
+      el?.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); } });
+    };
+    bind('letter-type-peace',   () => this._renderPeaceTreatyComposer(settlement));
+    bind('letter-type-condemn', () => this._renderCondemnComposer(settlement));
+    bind('letter-type-gift',    () => this._renderGiftComposer(settlement));
+    bind('letter-type-war',     () => this._renderWarDeclarationComposer(settlement));
+  }
+
+  /**
+   * Render the peace treaty composer form.
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement
+   */
+  _renderPeaceTreatyComposer(fromSettlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nations = this.nationSystem.nations;
+    // Build list of nations (exclude extinct and player).
+    const activeNations = nations.filter(n => n && !this.nationSystem.isNationExtinct(n.id));
+
+    const nationOptions = activeNations.map(n =>
+      `<option value="${n.id}">${n.name}</option>`
+    ).join('');
+
+    if (!nationOptions) {
+      content.innerHTML = `
+        ${this._facilityBackHTML(fromSettlement)}
+        <div class="fac-title">🕊 和平條約</div>
+        <div class="ui-empty">目前沒有可和談的國家</div>`;
+      this._attachFacilityBack(fromSettlement);
+      return;
+    }
+
+    // Compute list of player settlements captured from each nation.
+    const playerGold = this._getGold();
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="treaty-back">← 返回</button>
+      <div class="fac-title">🕊 和平條約</div>
+      <div class="treaty-form">
+
+        <div class="treaty-row">
+          <label class="treaty-label">目標國家</label>
+          <select id="treaty-nation-select" class="treaty-select">${nationOptions}</select>
+        </div>
+
+        <div class="treaty-section-title">── 我方條款 ──</div>
+        <div class="treaty-row">
+          <label class="treaty-label">我方賠償金額 🪙</label>
+          <input id="treaty-gold-from-player" type="number" min="0" max="${playerGold}" value="0" class="treaty-input" />
+        </div>
+        <div class="treaty-row treaty-check-row">
+          <label class="treaty-label">承認戰敗</label>
+          <input id="treaty-player-defeat" type="checkbox" class="treaty-checkbox" />
+        </div>
+        <div class="treaty-row">
+          <label class="treaty-label">歸還佔領地區（可多選）</label>
+          <div id="treaty-cede-player-list" class="treaty-territory-list">
+            <div class="treaty-territory-empty">—</div>
+          </div>
+        </div>
+
+        <div class="treaty-section-title">── 要求對方 ──</div>
+        <div class="treaty-row">
+          <label class="treaty-label">要求賠償金額 🪙</label>
+          <input id="treaty-gold-from-npc" type="number" min="0" value="0" class="treaty-input" />
+        </div>
+        <div class="treaty-row treaty-check-row">
+          <label class="treaty-label">要求承認戰敗</label>
+          <input id="treaty-npc-defeat" type="checkbox" class="treaty-checkbox" />
+        </div>
+
+        <div class="treaty-note">信使將步行至對方最近的城市，抵達後對方才會評估條約。</div>
+        <button class="btn-buy treaty-send-btn" id="treaty-send-btn">📨 派出信使</button>
+      </div>
+    `;
+
+    document.getElementById('treaty-back')?.addEventListener('click', () => {
+      this._renderSendLetter(fromSettlement);
+    });
+
+    const updateCedeList = () => {
+      const targetId = Number(document.getElementById('treaty-nation-select')?.value ?? -1);
+      const listEl = document.getElementById('treaty-cede-player-list');
+      if (!listEl) return;
+
+      // Find player-owned settlements that originally belong to the selected nation.
+      const cands = [];
+      if (this.nationSystem) {
+        this.nationSystem.castleSettlements.forEach((s, idx) => {
+          if (s.nationId === targetId && s.controllingNationId === _PLAYER_NATION_ID_UI) {
+            cands.push({ key: `castle:${idx}`, label: `🏰 ${s.name}` });
+          }
+        });
+        this.nationSystem.villageSettlements.forEach((s, idx) => {
+          if (s.nationId === targetId && s.controllingNationId === _PLAYER_NATION_ID_UI) {
+            cands.push({ key: `village:${idx}`, label: `🏘 ${s.name}` });
+          }
+        });
+      }
+
+      if (cands.length === 0) {
+        listEl.innerHTML = '<div class="treaty-territory-empty">（無可歸還地區）</div>';
+      } else {
+        listEl.innerHTML = cands.map(c =>
+          `<label class="treaty-territory-item">
+            <input type="checkbox" class="treaty-cede-chk" data-key="${c.key}" />
+            ${c.label}
+          </label>`
+        ).join('');
+      }
+    };
+
+    document.getElementById('treaty-nation-select')?.addEventListener('change', updateCedeList);
+    updateCedeList();
+
+    document.getElementById('treaty-send-btn')?.addEventListener('click', () => {
+      const targetId = Number(document.getElementById('treaty-nation-select')?.value ?? -1);
+      if (targetId < 0) { this._toast('請選擇目標國家'); return; }
+
+      const goldFromPlayer = Math.max(0, Number(document.getElementById('treaty-gold-from-player')?.value ?? 0));
+      const goldFromNpc    = Math.max(0, Number(document.getElementById('treaty-gold-from-npc')?.value    ?? 0));
+      const playerDefeat   = document.getElementById('treaty-player-defeat')?.checked ?? false;
+      const npcDefeat      = document.getElementById('treaty-npc-defeat')?.checked    ?? false;
+
+      if (goldFromPlayer > playerGold) {
+        this._toast('💸 金幣不足，無法完成約定的賠償！'); return;
+      }
+
+      const cededBySender = [];
+      document.querySelectorAll('.treaty-cede-chk:checked').forEach(chk => {
+        cededBySender.push(chk.dataset.key);
+      });
+
+      const terms = {
+        goldFromSender:          goldFromPlayer,
+        goldFromNpc:             goldFromNpc,
+        playerAcknowledgesDefeat: playerDefeat,
+        npcAcknowledgesDefeat:   npcDefeat,
+        cededBySender,
+        cededByReceiver: [],
+      };
+
+      const ok = this.diplomacySystem.sendPeaceTreaty({
+        senderNationId:   _PLAYER_NATION_ID_UI,
+        receiverNationId: targetId,
+        fromSettlement:   fromSettlement,
+        terms,
+      });
+
+      if (ok) {
+        const nation = this.nationSystem.nations[targetId];
+        this._addInboxMessage('🕊', `已派出和談信使前往 ${nation?.name ?? '對方'}，請等候回音。`);
+        // Return to the Send Letter screen.
+        this._renderSendLetter(fromSettlement);
+      } else {
+        this._toast('⚠ 無法派出信使（找不到目標位置）');
+      }
+    });
+  }
+
+  /**
+   * Render the condemnation letter composer.
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement
+   */
+  _renderCondemnComposer(fromSettlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const activeNations = this.nationSystem.nations.filter(n => n && !this.nationSystem.isNationExtinct(n.id));
+    const nationOptions = activeNations.map(n => `<option value="${n.id}">${n.name}</option>`).join('');
+
+    if (!nationOptions) {
+      content.innerHTML = `${this._facilityBackHTML(fromSettlement)}<div class="fac-title">📢 譴責信</div><div class="ui-empty">目前沒有可譴責的國家</div>`;
+      this._attachFacilityBack(fromSettlement);
+      return;
+    }
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="condemn-back">← 返回</button>
+      <div class="fac-title">📢 譴責信</div>
+      <div class="treaty-form">
+        <div class="treaty-row">
+          <label class="treaty-label">目標國家</label>
+          <select id="condemn-nation-select" class="treaty-select">${nationOptions}</select>
+        </div>
+        <div class="treaty-note">信使將步行至對方城市，信件送達後雙方關係將惡化，對方盟友也可能受到影響。</div>
+        <button class="btn-buy treaty-send-btn" id="condemn-send-btn">📢 派出信使</button>
+      </div>
+    `;
+
+    document.getElementById('condemn-back')?.addEventListener('click', () => this._renderSendLetter(fromSettlement));
+    document.getElementById('condemn-send-btn')?.addEventListener('click', () => {
+      const targetId = Number(document.getElementById('condemn-nation-select')?.value ?? -1);
+      if (targetId < 0) { this._toast('請選擇目標國家'); return; }
+
+      const ok = this.diplomacySystem.sendCondemnationLetter({ receiverNationId: targetId, fromSettlement });
+      if (ok) {
+        const nation = this.nationSystem.nations[targetId];
+        this._addInboxMessage('📢', `已派出信使前往 ${nation?.name ?? '對方'}送達譴責信。`);
+        this._renderSendLetter(fromSettlement);
+      } else {
+        this._toast('⚠ 無法派出信使（找不到目標位置）');
+      }
+    });
+  }
+
+  /**
+   * Render the gift letter composer.
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement
+   */
+  _renderGiftComposer(fromSettlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const activeNations = this.nationSystem.nations.filter(n => n && !this.nationSystem.isNationExtinct(n.id));
+    const nationOptions = activeNations.map(n => `<option value="${n.id}">${n.name}</option>`).join('');
+    const playerGold    = this._getGold();
+
+    if (!nationOptions) {
+      content.innerHTML = `${this._facilityBackHTML(fromSettlement)}<div class="fac-title">🎁 送禮</div><div class="ui-empty">目前沒有可送禮的國家</div>`;
+      this._attachFacilityBack(fromSettlement);
+      return;
+    }
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="gift-back">← 返回</button>
+      <div class="fac-title">🎁 送禮</div>
+      <div class="treaty-form">
+        <div class="treaty-row">
+          <label class="treaty-label">目標國家</label>
+          <select id="gift-nation-select" class="treaty-select">${nationOptions}</select>
+        </div>
+        <div class="treaty-row">
+          <label class="treaty-label">贈送金幣數量 🪙</label>
+          <input id="gift-gold-input" type="number" min="1" max="${playerGold}" value="50" class="treaty-input" />
+        </div>
+        <div class="treaty-note">信使送達後，對方將收到禮物，雙方關係依贈送金額改善（每 20 🪙 約 +1 關係）。目前持有：🪙${playerGold}</div>
+        <button class="btn-buy treaty-send-btn" id="gift-send-btn">🎁 派出信使</button>
+      </div>
+    `;
+
+    document.getElementById('gift-back')?.addEventListener('click', () => this._renderSendLetter(fromSettlement));
+    document.getElementById('gift-send-btn')?.addEventListener('click', () => {
+      const targetId  = Number(document.getElementById('gift-nation-select')?.value ?? -1);
+      const goldInput = Math.max(1, Number(document.getElementById('gift-gold-input')?.value ?? 0));
+      if (targetId < 0) { this._toast('請選擇目標國家'); return; }
+      if (goldInput > this._getGold()) { this._toast('💸 持有金幣不足！'); return; }
+
+      // Deduct gold immediately when the messenger departs.
+      this._spendGold(goldInput);
+      this._refreshGoldDisplay();
+
+      const ok = this.diplomacySystem.sendGiftLetter({ receiverNationId: targetId, fromSettlement, goldAmount: goldInput });
+      if (ok) {
+        const nation = this.nationSystem.nations[targetId];
+        this._addInboxMessage('🎁', `已派出信使攜帶 🪙${goldInput} 前往 ${nation?.name ?? '對方'}。`);
+        this._renderSendLetter(fromSettlement);
+      } else {
+        // Refund if we couldn't send
+        this._addGold(goldInput);
+        this._refreshGoldDisplay();
+        this._toast('⚠ 無法派出信使（找不到目標位置）');
+      }
+    });
+  }
+
+  /**
+   * Render the formal war declaration composer.
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement
+   */
+  _renderWarDeclarationComposer(fromSettlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const activeNations = this.nationSystem.nations.filter(n => n && !this.nationSystem.isNationExtinct(n.id));
+    const nationOptions = activeNations.map(n => `<option value="${n.id}">${n.name}</option>`).join('');
+
+    if (!nationOptions) {
+      content.innerHTML = `${this._facilityBackHTML(fromSettlement)}<div class="fac-title">⚔ 正式宣戰</div><div class="ui-empty">目前沒有可宣戰的國家</div>`;
+      this._attachFacilityBack(fromSettlement);
+      return;
+    }
+
+    const reasonOptions = [
+      { value: '',        label: '（無正當理由）' },
+      { value: '保護同盟', label: '保護同盟' },
+      { value: '奪回失土', label: '奪回失土' },
+      { value: '資源糾紛', label: '資源糾紛' },
+      { value: '擴張領土', label: '擴張領土' },
+      { value: '復仇雪恥', label: '復仇雪恥' },
+    ].map(r => `<option value="${r.value}">${r.label}</option>`).join('');
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="war-decl-back">← 返回</button>
+      <div class="fac-title">⚔ 正式宣戰</div>
+      <div class="treaty-form">
+        <div class="treaty-row">
+          <label class="treaty-label">宣戰對象</label>
+          <select id="war-decl-nation-select" class="treaty-select">${nationOptions}</select>
+        </div>
+        <div class="treaty-row">
+          <label class="treaty-label">宣戰理由</label>
+          <select id="war-decl-reason-select" class="treaty-select">${reasonOptions}</select>
+        </div>
+        <div class="treaty-note war-decl-note">信使送達後，正式宣戰生效。<br>有正當理由時，對第三方國家的關係影響較小；無理由則被視為侵略，各國關係將顯著惡化。</div>
+        <button class="btn-buy treaty-send-btn war-send-btn" id="war-decl-send-btn">⚔ 派出宣戰使者</button>
+      </div>
+    `;
+
+    document.getElementById('war-decl-back')?.addEventListener('click', () => this._renderSendLetter(fromSettlement));
+    document.getElementById('war-decl-send-btn')?.addEventListener('click', () => {
+      const targetId = Number(document.getElementById('war-decl-nation-select')?.value ?? -1);
+      const reason   = document.getElementById('war-decl-reason-select')?.value ?? '';
+      if (targetId < 0) { this._toast('請選擇宣戰對象'); return; }
+
+      const ok = this.diplomacySystem.sendWarDeclaration({ receiverNationId: targetId, fromSettlement, reason });
+      if (ok) {
+        const nation = this.nationSystem.nations[targetId];
+        const reasonStr = reason ? `（理由：${reason}）` : '（無理由）';
+        this._addInboxMessage('⚔', `已派出宣戰使者前往 ${nation?.name ?? '對方'}${reasonStr}，等待送達。`);
+        this._renderSendLetter(fromSettlement);
+      } else {
+        this._toast('⚠ 無法派出使者（找不到目標位置）');
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Peace offer callbacks (called from Game.js via updateMissives results)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Called when an NPC peace missive arrives at a player settlement.
+   * Adds a special inbox entry with Accept / Ignore buttons.
+   * @param {{ senderNationId: number, terms: object }} missive
+   */
+  onPeaceOfferReceived(missive) {
+    const { senderNationId, terms } = missive;
+    const nation = this.nationSystem?.nations[senderNationId];
+    const nationName = nation?.name ?? '未知國家';
+
+    const goldOffer = terms.goldFromNpc ?? 0;
+    let termsList = [];
+    if (goldOffer > 0) termsList.push(`賠償 🪙${goldOffer}`);
+    if (terms.npcAcknowledgesDefeat) termsList.push('承認戰敗');
+    if (!termsList.length) termsList.push('停止敵對行動');
+    const termsStr = termsList.join('、');
+
+    const day = this.diplomacySystem?._currentDay ?? 0;
+    const time = this._dayNightCycle?.getTimeString() ?? '';
+
+    this._inbox.unshift({
+      icon:           '🕊',
+      text:           `${nationName} 提出和平條約：${termsStr}`,
+      day,
+      time,
+      read:           false,
+      isPeaceOffer:   true,
+      responded:      false,
+      senderNationId,
+      terms,
+    });
+    if (this._inbox.length > GameUI._MAX_INBOX) {
+      this._inbox.length = GameUI._MAX_INBOX;
+    }
+    this._inboxUnread = this._inbox.filter(m => !m.read).length;
+    this._updateInboxBadge();
+    this._toast(`🕊 ${nationName} 派出使者提出和平條約！`);
+    if (this._activePanel === 'inbox') this._renderInbox();
+  }
+
+  /**
+   * Called when an NPC responds to a player-sent peace treaty.
+   * @param {{ senderNationId: number, receiverNationId: number, terms: object }} missive
+   * @param {boolean} accepted
+   */
+  onPeaceTreatyResponse(missive, accepted) {
+    const { receiverNationId, terms } = missive;
+    const nation = this.nationSystem?.nations[receiverNationId];
+    const nationName = nation?.name ?? '對方';
+
+    if (accepted) {
+      const { playerGoldGain, structureRebuildNeeded } =
+        this.diplomacySystem.applyPeaceTreaty(_PLAYER_NATION_ID_UI, receiverNationId, terms);
+
+      if (playerGoldGain > 0) this._addGold(playerGoldGain);
+      else if (playerGoldGain < 0) this._spendGold(-playerGoldGain);
+
+      // Sync settlement ownership flags for any ceded territories.
+      if (structureRebuildNeeded) {
+        this._syncSettlementOwnership();
+      }
+
+      this._refreshGoldDisplay();
+      this._addInboxMessage('✅', `${nationName} 接受了和平條約，雙方停戰！`);
+      if (this._activePanel === 'nations') this._renderDiplomacy();
+    } else {
+      this._addInboxMessage('❌', `${nationName} 拒絕了和平條約。`);
+    }
+  }
+
+  /**
+   * Player accepts or ignores an NPC peace offer from the inbox.
+   * @param {number} inboxIdx  Index into `_inbox`.
+   * @param {boolean} accept
+   */
+  _respondToPeaceOffer(inboxIdx, accept) {
+    const entry = this._inbox[inboxIdx];
+    if (!entry || !entry.isPeaceOffer || entry.responded) return;
+    entry.responded = true;
+    entry.read = true;
+
+    if (accept) {
+      const { playerGoldGain, structureRebuildNeeded } =
+        this.diplomacySystem.applyPeaceTreaty(entry.senderNationId, _PLAYER_NATION_ID_UI, entry.terms);
+
+      if (playerGoldGain > 0) this._addGold(playerGoldGain);
+      else if (playerGoldGain < 0) this._spendGold(-playerGoldGain);
+
+      if (structureRebuildNeeded) {
+        this._syncSettlementOwnership();
+        if (typeof this.onCaptureSettlement === 'function') this.onCaptureSettlement();
+      }
+
+      this._refreshGoldDisplay();
+      const nation = this.nationSystem?.nations[entry.senderNationId];
+      this._addInboxMessage('✅', `你接受了 ${nation?.name ?? '對方'} 的和平條約，雙方停戰！`);
+      if (this._activePanel === 'nations') this._renderDiplomacy();
+    } else {
+      this._addInboxMessage('📨', `你無視了和平條約請求。`);
+    }
+    this._renderInbox();
+  }
 
   /**
    * Generate enemy force stats from a settlement.
@@ -3323,8 +3872,9 @@ export class GameUI {
    * @param {string} text  Message body.
    */
   _addInboxMessage(icon, text) {
-    const day = this.diplomacySystem?._currentDay ?? 0;
-    this._inbox.unshift({ icon, text, day, read: false });
+    const day  = this.diplomacySystem?._currentDay ?? 0;
+    const time = this._dayNightCycle?.getTimeString() ?? '';
+    this._inbox.unshift({ icon, text, day, time, read: false });
     if (this._inbox.length > GameUI._MAX_INBOX) {
       this._inbox.length = GameUI._MAX_INBOX;
     }
@@ -3355,9 +3905,11 @@ export class GameUI {
     const content = document.getElementById('ui-panel-content');
     if (!content) return;
 
-    // Mark all visible messages as read.
-    this._inbox.forEach(m => { m.read = true; });
-    this._inboxUnread = 0;
+    // Mark all visible messages as read (but not un-responded peace offers).
+    this._inbox.forEach(m => {
+      if (!m.isPeaceOffer || m.responded) m.read = true;
+    });
+    this._inboxUnread = this._inbox.filter(m => !m.read).length;
     this._updateInboxBadge();
 
     if (this._inbox.length === 0) {
@@ -3365,14 +3917,26 @@ export class GameUI {
       return;
     }
 
-    const rows = this._inbox.map((m, i) => `
-      <div class="inbox-row${m.read ? '' : ' inbox-unread'}" data-idx="${i}">
-        <span class="inbox-icon">${m.icon}</span>
-        <div class="inbox-body">
-          <div class="inbox-text">${m.text}</div>
-          <div class="inbox-day">第 ${m.day} 天</div>
-        </div>
-      </div>`).join('');
+    const rows = this._inbox.map((m, i) => {
+      const actionBtns = (m.isPeaceOffer && !m.responded)
+        ? `<div class="inbox-peace-actions">
+             <button class="btn-buy inbox-accept-btn" data-idx="${i}">✅ 同意</button>
+             <button class="inbox-ignore-btn" data-idx="${i}">❌ 無視</button>
+           </div>`
+        : '';
+      const respondedLabel = (m.isPeaceOffer && m.responded)
+        ? `<span class="inbox-responded-label">${m._acceptedPeace === true ? '（已同意）' : '（已無視）'}</span>`
+        : '';
+      return `
+        <div class="inbox-row${m.read && (!m.isPeaceOffer || m.responded) ? '' : ' inbox-unread'}" data-idx="${i}">
+          <span class="inbox-icon">${m.icon}</span>
+          <div class="inbox-body">
+            <div class="inbox-text">${m.text}${respondedLabel}</div>
+            <div class="inbox-day">第 ${m.day} 天${m.time ? ' ' + m.time : ''}</div>
+            ${actionBtns}
+          </div>
+        </div>`;
+    }).join('');
 
     content.innerHTML = `
       <div class="inbox-toolbar">
@@ -3386,6 +3950,22 @@ export class GameUI {
       this._inboxUnread = 0;
       this._updateInboxBadge();
       this._renderInbox();
+    });
+
+    // Bind peace offer buttons
+    content.querySelectorAll('.inbox-accept-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.idx);
+        this._inbox[idx]._acceptedPeace = true;
+        this._respondToPeaceOffer(idx, true);
+      });
+    });
+    content.querySelectorAll('.inbox-ignore-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.idx);
+        this._inbox[idx]._acceptedPeace = false;
+        this._respondToPeaceOffer(idx, false);
+      });
     });
   }
 }

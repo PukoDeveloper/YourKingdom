@@ -172,6 +172,7 @@ export class Game {
       () => this._resetGame(),
       this._player,
       this._diplomacySystem,
+      this._dayNight,
     );
 
     // Rebuild structures now that GameUI is ready (restores player flags from save).
@@ -269,6 +270,34 @@ export class Game {
         this._diplomacySystem.getPendingMarches(),
         this._mapData,
       );
+    }
+
+    // Peace missives: advance messengers and surface arrivals to GameUI.
+    if (this._diplomacySystem) {
+      const missiveResults = this._diplomacySystem.updateMissives(dt);
+      missiveResults.forEach(result => {
+        if (result.type === 'player_offer') {
+          this._gameUI.onPeaceOfferReceived(result.missive);
+        } else if (result.type === 'npc_response') {
+          this._gameUI.onPeaceTreatyResponse(result.missive, result.accepted);
+          if (result.accepted) {
+            this._structureRenderer.rebuild();
+            this._gameUI.refreshNationsPanel();
+          }
+        } else if (result.type === 'player_condemn_delivered') {
+          const nation = this._nationSystem.nations[result.missive.receiverNationId];
+          this._gameUI.addSystemMessage('📢', `你的譴責信已送達 ${nation?.name ?? '對方'}，關係惡化 ${result.delta}。`);
+          this._gameUI.refreshNationsPanel();
+        } else if (result.type === 'player_gift_delivered') {
+          const nation = this._nationSystem.nations[result.missive.receiverNationId];
+          this._gameUI.addSystemMessage('🎁', `禮物已送達 ${nation?.name ?? '對方'}，關係改善 +${result.delta}。`);
+          this._gameUI.refreshNationsPanel();
+        } else if (result.type === 'player_war_declared') {
+          const nation = this._nationSystem.nations[result.missive.receiverNationId];
+          this._gameUI.addSystemMessage('⚔', `已向 ${nation?.name ?? '對方'} 正式宣戰！`);
+          this._gameUI.refreshNationsPanel();
+        }
+      });
     }
 
     // HUD: terrain name (+ nation when inside a settlement)
