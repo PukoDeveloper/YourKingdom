@@ -28,6 +28,19 @@ export class Player {
       ? charAppearanceFromIndices(appearanceIndices)
       : generateCharAppearance(0, 42); // default hero look
 
+    /**
+     * True when the player is allowed to step onto WATER tiles.
+     * Set to true by Game.js when the player stands on a built port tile.
+     * Cleared automatically when the player leaves water back onto land.
+     */
+    this.canEmbark = false;
+
+    /**
+     * True while the player is physically on a WATER tile.
+     * Used to detect the land-landing transition that clears `canEmbark`.
+     */
+    this.atSea = false;
+
     this.container = this._buildSprite();
   }
 
@@ -101,6 +114,16 @@ export class Player {
       this._facingAngle = Math.atan2(ny, nx) + Math.PI / 2;
     }
 
+    // Track sea state: detect landing (water → land) and clear embark permission.
+    if (mapData) {
+      const onWater = mapData.getTerrainAtWorld(this.x, this.y) === TERRAIN.WATER;
+      if (this.atSea && !onWater) {
+        // Just stepped onto land after being at sea – revoke sea access.
+        this.canEmbark = false;
+      }
+      this.atSea = onWater;
+    }
+
     // Clamp to map bounds
     const margin = RADIUS + 2;
     this.x = Math.max(margin, Math.min(MAP_WIDTH  * TILE_SIZE - margin, this.x));
@@ -134,12 +157,15 @@ export class Player {
   /**
    * Returns true if the player's body (centre + cardinal-edge probe points)
    * would overlap a WATER tile at the given world position.
+   * Returns false when the player has sea access (canEmbark or already atSea).
    *
    * @param {MapData} mapData
    * @param {number}  worldX
    * @param {number}  worldY
    */
   _touchesWater(mapData, worldX, worldY) {
+    // Allow water movement when the player is already at sea or has embark access.
+    if (this.atSea || this.canEmbark) return false;
     const isWater = (wx, wy) => mapData.getTerrainAtWorld(wx, wy) === TERRAIN.WATER;
     return (
       isWater(worldX,          worldY         ) ||

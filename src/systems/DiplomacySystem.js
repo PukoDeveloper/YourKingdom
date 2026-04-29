@@ -1619,6 +1619,15 @@ export class DiplomacySystem {
   }
 
   /**
+   * Return the live array of missives currently in transit.
+   * Each entry has at minimum: { id, type, senderNationId, receiverNationId, worldX, worldY }
+   * @returns {ReadonlyArray<object>}
+   */
+  getPendingMissives() {
+    return this._pendingMissives;
+  }
+
+  /**
    * Advance all pending peace missives along their paths.
    * Call this every game-loop frame from Game.js.
    *

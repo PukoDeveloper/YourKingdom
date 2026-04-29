@@ -2924,6 +2924,178 @@
         letter-spacing: 0.04em;
       }
       .gov-letter-btn:hover { filter: brightness(1.12); }
+      .gov-construction-btn {
+        display: block;
+        width: 100%;
+        margin: 8px 0 0;
+        padding: 9px 0;
+        font-size: 14px;
+        border-radius: 8px;
+        background: linear-gradient(135deg,#2e7d32,#388e3c);
+        color: #fff;
+        border: none;
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        letter-spacing: 0.04em;
+      }
+      .gov-construction-btn:hover { filter: brightness(1.12); }
+
+      /* ── Construction panel ─────────────────────────────────────── */
+      .constr-tabs {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+      .constr-tab-btn {
+        flex: 1;
+        padding: 7px 0;
+        border: 1px solid rgba(255,255,255,0.15);
+        border-radius: 8px;
+        background: rgba(255,255,255,0.05);
+        color: rgba(255,255,255,0.55);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+      .constr-tab-btn.active {
+        background: rgba(46,125,50,0.35);
+        border-color: rgba(102,187,106,0.5);
+        color: #a5d6a7;
+        font-weight: 700;
+      }
+      .constr-tab-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: #eee; }
+      .constr-section-title {
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        letter-spacing: 1px;
+        margin: 10px 0 6px;
+        text-transform: uppercase;
+      }
+      .constr-built-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      .constr-built-tag {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 6px;
+        color: rgba(255,255,255,0.65);
+        font-size: 12px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        padding: 3px 8px;
+      }
+      .constr-empty-note {
+        color: rgba(255,255,255,0.3);
+        font-size: 12px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        padding: 6px 0;
+      }
+      .constr-queue {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        margin-bottom: 4px;
+      }
+      .constr-queue-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255,193,7,0.08);
+        border: 1px solid rgba(255,193,7,0.2);
+        border-radius: 8px;
+        padding: 7px 10px;
+      }
+      .cqr-icon { font-size: 18px; }
+      .cqr-name { flex: 1; color: #fff; font-size: 13px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+      .cqr-timer { color: #ffa726; font-size: 12px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+      .constr-option-list { display: flex; flex-direction: column; gap: 7px; }
+      .constr-option-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+      .coc-icon { font-size: 22px; flex-shrink: 0; }
+      .coc-info { flex: 1; min-width: 0; }
+      .coc-name { color: #e3f2fd; font-size: 13px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; font-weight: 600; }
+      .coc-desc { color: rgba(255,255,255,0.45); font-size: 11px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; margin-top: 2px; }
+      .coc-build-btn {
+        padding: 5px 12px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      /* Road tab */
+      .constr-road-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+      .constr-road-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      .crr-icon { font-size: 18px; }
+      .crr-name { flex: 1; color: #eee; font-size: 13px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+      .crr-status { font-size: 11px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #ffa726; }
+      .crr-status.built { color: #66bb6a; }
+      .crr-demo-btn { padding: 4px 10px; font-size: 11px; }
+      .constr-road-form {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .constr-road-label {
+        color: rgba(255,255,255,0.5);
+        font-size: 12px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .constr-road-select {
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 6px;
+        color: #eee;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        padding: 6px 8px;
+        width: 100%;
+      }
+      .constr-road-info {
+        color: rgba(255,255,255,0.5);
+        font-size: 12px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .constr-road-build-btn { width: 100%; }
+
+      /* Port tab */
+      .constr-port-status {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+        padding: 14px;
+        margin-top: 6px;
+      }
+      .constr-port-status.built { border-color: rgba(38,198,218,0.4); background: rgba(0,96,100,0.15); }
+      .cps-icon { font-size: 32px; flex-shrink: 0; }
+      .cps-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+      .cps-title { color: #e3f2fd; font-size: 14px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; font-weight: 700; }
+      .cps-desc { color: rgba(255,255,255,0.5); font-size: 12px; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; line-height: 1.5; }
+      .constr-port-build-btn { width: 100%; }
       /* Send letter screen */
       .letter-intro {
         color: rgba(255,255,255,0.55);

@@ -25,10 +25,13 @@ import {
 } from '../systems/AppearanceSystem.js';
 import {
   BuildingSystem,
+  Building,
   BLDG_PALACE, BLDG_CHIEF_HOUSE,
   BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_TAVERN, BLDG_INN,
+  BUILDING_META,
   CATALOG_GENERAL, CATALOG_BLACKSMITH, CATALOG_MAGE, CATALOG_TAVERN_FOOD,
 } from '../systems/BuildingSystem.js';
+import { TERRAIN, TILE_SIZE } from '../world/constants.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
 const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形'];
@@ -94,6 +97,49 @@ const _GOV_GREETING = {
 /** Player nation ID constant (mirrors NationSystem value). */
 const _PLAYER_NATION_ID_UI = -1;
 
+// ---------------------------------------------------------------------------
+// Construction system constants
+// ---------------------------------------------------------------------------
+
+/** Maximum total buildings per settlement type (including the government building). */
+const CONSTR_MAX_BUILDINGS = { castle: 6, village: 4 };
+
+/** Days required to construct a new building. */
+const CONSTR_BUILDING_DAYS = 10;
+
+/** Port construction gold cost. */
+const CONSTR_PORT_COST = 200;
+
+/** Gold cost per tile to build a road. */
+const CONSTR_ROAD_COST_PER_TILE = 20;
+
+/** In-game hours to build one road tile (work hours only). */
+const CONSTR_ROAD_HOURS_PER_TILE = 3;
+
+/** In-game hours to demolish one road tile (work hours only). */
+const CONSTR_ROAD_DEMO_HOURS_PER_TILE = 0.5;
+
+/**
+ * Work-hours advanced per phase transition.
+ * Road crews only work during 白天 and 黃昏.
+ */
+const CONSTR_PHASE_HOURS = { '白天': 10, '黃昏': 2 };
+
+/**
+ * Buildable building catalogue (types that can be constructed by the player).
+ * Excludes government buildings (palace / chief_house).
+ */
+const _BUILDABLE_TYPES = [BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_TAVERN, BLDG_INN];
+
+/** Gold cost to construct each building type. */
+const _BUILDING_COSTS = {
+  [BLDG_GENERAL]:    100,
+  [BLDG_BLACKSMITH]: 120,
+  [BLDG_MAGE]:       120,
+  [BLDG_TAVERN]:      80,
+  [BLDG_INN]:         80,
+};
+
 /**
  * GameUI – manages the Backpack and Team DOM panels.
  *
@@ -113,8 +159,9 @@ export class GameUI {
    * @param {import('../entities/Player.js').Player|null} [player]  Live Player instance.
    * @param {import('../systems/DiplomacySystem.js').DiplomacySystem|null} [diplomacySystem]
    * @param {import('../world/DayNightCycle.js').DayNightCycle|null} [dayNightCycle]
+   * @param {import('../world/MapData.js').MapData|null} [mapData]  Live MapData used for coastal checks.
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null, mapData = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
@@ -129,6 +176,9 @@ export class GameUI {
 
     /** @type {import('../entities/Player.js').Player|null} */
     this.player = player;
+
+    /** @type {import('../world/MapData.js').MapData|null} */
+    this._mapData = mapData;
 
     /** @type {'backpack'|'team'|'nations'|'settings'|null} */
     this._activePanel  = null;
@@ -146,6 +196,9 @@ export class GameUI {
 
     /** Active appearance panel tab: 'character' | 'kingdom' */
     this._appearanceTab = 'character';
+
+    /** Active construction sub-tab: '建築' | '道路' | '港口' */
+    this._constructionTab = '建築';
 
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
@@ -243,6 +296,27 @@ export class GameUI {
      * @type {(() => void)|null}
      */
     this.onPlayerKingdomChanged = null;
+
+    /**
+     * Callback invoked when the player builds a port.
+     * The game uses this to rebuild map structures so the port marker is drawn.
+     * @type {(() => void)|null}
+     */
+    this.onPortBuilt = null;
+
+    /**
+     * Per-settlement construction state.
+     * Key: settlement key (e.g. "castle:0").
+     * Value: {
+     *   buildingQueue: [{ type: string, name: string, icon: string, daysLeft: number }],
+     *   roads:         Map<roadKey, { targetKey, targetName, tilesTotal, hoursLeft, isDemo }>,
+     *   builtRoads:    Set<roadKey>,
+     *   hasPort:       boolean,
+     *   portTile:      { tx: number, ty: number }|null
+     * }
+     * @type {Map<string, object>}
+     */
+    this._constructionState = new Map();
 
     if (savedState) {
       this.loadState(savedState);
@@ -1661,6 +1735,30 @@ export class GameUI {
       }
     }
 
+    // Tick building construction queues for every settlement.
+    for (const [key, state] of this._constructionState) {
+      if (state.buildingQueue.length === 0) continue;
+      const toComplete = [];
+      for (const item of state.buildingQueue) {
+        item.daysLeft -= 1;
+        if (item.daysLeft <= 0) toComplete.push(item);
+      }
+      for (const item of toComplete) {
+        // Remove from queue
+        state.buildingQueue.splice(state.buildingQueue.indexOf(item), 1);
+        // Add to the actual settlement
+        const settlement = this._getSettlementByKey(key);
+        if (settlement) {
+          const meta = BUILDING_META[item.type];
+          if (meta) {
+            settlement.buildings = settlement.buildings ?? [];
+            settlement.buildings.push(new Building(item.type, meta.priceMult ?? 1));
+          }
+          this._addInboxMessage('🏗️', `${settlement.name} 的 ${item.icon} ${item.name} 建造完成！`);
+        }
+      }
+    }
+
     if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
       this._renderTeamInfo();
     }
@@ -1687,6 +1785,48 @@ export class GameUI {
           : m.message.replace(/^[⚔📋🍺] /, '');
         this._addInboxMessage(icon, text);
       });
+    }
+
+    // Advance road construction only during working phases (白天 / 黃昏).
+    const workHours = CONSTR_PHASE_HOURS[phase] ?? 0;
+    if (workHours > 0) {
+      // Collect all unique road keys that are in-progress to avoid double-advancing
+      // (roads are mirrored on both endpoints).
+      const advanced = new Set();
+      for (const [, state] of this._constructionState) {
+        for (const [rk, road] of [...state.roads]) {
+          if (advanced.has(rk)) continue;
+          advanced.add(rk);
+          road.hoursLeft = Math.max(0, road.hoursLeft - workHours);
+          const [fromKey, toKey] = rk.split('↔');
+          const fromState = this._constructionState.get(fromKey);
+          const toState   = this._constructionState.get(toKey);
+          if (road.hoursLeft <= 0) {
+            // Road construction / demolition complete.
+            const isDemo = road.isDemo;
+
+            if (!isDemo) {
+              // Mark as built on both endpoints
+              if (fromState) { fromState.roads.delete(rk); fromState.builtRoads.add(rk); }
+              if (toState)   { toState.roads.delete(rk);   toState.builtRoads.add(rk); }
+              const fromSett = this._getSettlementByKey(fromKey);
+              const toSett   = this._getSettlementByKey(toKey);
+              this._addInboxMessage('🛤️', `道路 ${fromSett?.name ?? fromKey} ↔ ${toSett?.name ?? toKey} 已建造完成！`);
+            } else {
+              // Demolition complete – just remove
+              if (fromState) fromState.roads.delete(rk);
+              if (toState)   toState.roads.delete(rk);
+              const fromSett = this._getSettlementByKey(fromKey);
+              const toSett   = this._getSettlementByKey(toKey);
+              this._addInboxMessage('🪚', `道路 ${fromSett?.name ?? fromKey} ↔ ${toSett?.name ?? toKey} 已拆除完成。`);
+            }
+          } else {
+            // Mirror updated hoursLeft to both endpoint road entries
+            if (fromState?.roads.has(rk)) fromState.roads.get(rk).hoursLeft = road.hoursLeft;
+            if (toState?.roads.has(rk))   toState.roads.get(rk).hoursLeft   = road.hoursLeft;
+          }
+        }
+      }
     }
   }
 
@@ -2697,7 +2837,10 @@ export class GameUI {
         <div class="gov-stat"><span class="gov-stat-label">資源</span><span class="gov-stat-val">${(settlement.resources ?? []).join('、') || '無'}</span></div>
       </div>
       ${taxHTML}
-      ${isOwnedByPlayer ? `<button class="btn-buy gov-letter-btn" id="btn-send-letter">📨 派送信件</button>` : ''}
+      ${isOwnedByPlayer ? `
+        <button class="btn-buy gov-letter-btn" id="btn-send-letter">📨 派送信件</button>
+        <button class="btn-buy gov-construction-btn" id="btn-open-construction">🏗️ 建設選項</button>
+      ` : ''}
       <div class="gov-ruler-speech">
         <em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em>
       </div>
@@ -2717,7 +2860,597 @@ export class GameUI {
       document.getElementById('btn-send-letter')?.addEventListener('click', () => {
         this._renderSendLetter(settlement);
       });
+      document.getElementById('btn-open-construction')?.addEventListener('click', () => {
+        this._renderConstructionPanel(building, settlement);
+      });
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Construction system – helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Return (or create) the construction state object for a settlement.
+   * @param {string} key  Settlement key, e.g. "castle:0"
+   * @returns {{ buildingQueue: object[], roads: Map<string,object>, builtRoads: Set<string>, hasPort: boolean, portTile: {tx:number,ty:number}|null }}
+   */
+  _getConstructionState(key) {
+    if (!this._constructionState.has(key)) {
+      this._constructionState.set(key, {
+        buildingQueue: [],
+        roads:         new Map(),
+        builtRoads:    new Set(),
+        hasPort:       false,
+        portTile:      null,
+      });
+    }
+    return this._constructionState.get(key);
+  }
+
+  /**
+   * Check whether a settlement is on the coast (has a SAND tile adjacent to WATER
+   * within a short radius of its footprint).
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {{ coastal: boolean, tile: { tx: number, ty: number }|null }}
+   */
+  _isCoastalSettlement(settlement) {
+    if (!this._mapData || !this.nationSystem) return { coastal: false, tile: null };
+    const isCastle = settlement.type === 'castle';
+    const arr    = isCastle ? this.nationSystem.castleSettlements : this.nationSystem.villageSettlements;
+    const mapArr = isCastle ? this._mapData.castles             : this._mapData.villages;
+    const idx    = arr.indexOf(settlement);
+    if (idx < 0) return { coastal: false, tile: null };
+    const { x: sx, y: sy } = mapArr[idx];
+    const size = isCastle ? 4 : 2;
+    // Number of tiles to scan beyond the settlement footprint in each direction.
+    const COASTAL_SCAN_BORDER = 2;
+
+    // Scan a 2-tile border around the settlement for SAND tiles adjacent to WATER.
+    for (let dy = -COASTAL_SCAN_BORDER; dy <= size + COASTAL_SCAN_BORDER - 1; dy++) {
+      for (let dx = -COASTAL_SCAN_BORDER; dx <= size + COASTAL_SCAN_BORDER - 1; dx++) {
+        const tx = sx + dx;
+        const ty = sy + dy;
+        if (this._mapData.getTerrain(tx, ty) === TERRAIN.SAND) {
+          for (const [ndx, ndy] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+            if (this._mapData.getTerrain(tx + ndx, ty + ndy) === TERRAIN.WATER) {
+              return { coastal: true, tile: { tx: tx + ndx, ty: ty + ndy } };
+            }
+          }
+        }
+      }
+    }
+    return { coastal: false, tile: null };
+  }
+
+  /**
+   * Return the tile-centre position of a settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {{ tx: number, ty: number }}
+   */
+  _getSettlementCenter(settlement) {
+    if (!this.nationSystem) return { tx: 0, ty: 0 };
+    const isCastle = settlement.type === 'castle';
+    const arr    = isCastle ? this.nationSystem.castleSettlements : this.nationSystem.villageSettlements;
+    const mapArr = isCastle ? (this._mapData?.castles ?? [])      : (this._mapData?.villages ?? []);
+    const idx    = arr.indexOf(settlement);
+    if (idx < 0) return { tx: 0, ty: 0 };
+    const { x, y } = mapArr[idx];
+    const half = isCastle ? 2 : 1;
+    return { tx: x + half, ty: y + half };
+  }
+
+  /**
+   * Calculate the road tile distance between two settlements (Manhattan tiles).
+   * @param {import('../systems/NationSystem.js').Settlement} from
+   * @param {import('../systems/NationSystem.js').Settlement} to
+   * @returns {number}
+   */
+  _getRoadTiles(from, to) {
+    const a = this._getSettlementCenter(from);
+    const b = this._getSettlementCenter(to);
+    return Math.abs(a.tx - b.tx) + Math.abs(a.ty - b.ty);
+  }
+
+  /**
+   * Return an array of all player-built port sea-tile positions.
+   * Used by Game.js and StructureRenderer to draw port markers.
+   * @returns {{ tx: number, ty: number }[]}
+   */
+  getBuiltPortTiles() {
+    const result = [];
+    for (const state of this._constructionState.values()) {
+      if (state.hasPort && state.portTile) {
+        result.push(state.portTile);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Return worker objects for all in-progress construction tasks so that
+   * `WorkerRenderer` can draw moving tokens on the world map.
+   *
+   * Each worker object:
+   * ```
+   * {
+   *   id:    string,   // unique identifier (stable within a session)
+   *   type:  'road' | 'demolish' | 'building',
+   *   worldX: number,  // current world-pixel X
+   *   worldY: number,  // current world-pixel Y
+   * }
+   * ```
+   *
+   * Road workers walk from the FROM settlement toward the TO settlement,
+   * reaching the target when hoursLeft reaches zero.
+   * Building workers stay at the settlement centre.
+   *
+   * @returns {Array<{ id: string, type: string, worldX: number, worldY: number }>}
+   */
+  getConstructionWorkers() {
+    const workers  = [];
+    const processed = new Set();
+
+    for (const [key, state] of this._constructionState) {
+      // ── Building workers ────────────────────────────────────────────────────
+      const settlement = this._getSettlementByKey(key);
+      if (settlement && state.buildingQueue.length > 0) {
+        const center = this._getSettlementCenter(settlement);
+        state.buildingQueue.forEach((item, i) => {
+          workers.push({
+            id:     `building:${key}:${i}`,
+            type:   'building',
+            worldX: (center.tx + 0.5) * TILE_SIZE,
+            worldY: (center.ty + 0.5) * TILE_SIZE,
+          });
+        });
+      }
+
+      // ── Road workers ────────────────────────────────────────────────────────
+      for (const [rk, road] of state.roads) {
+        if (processed.has(rk)) continue;   // mirror entry – skip
+        processed.add(rk);
+
+        const [fromKey, toKey] = rk.split('↔');
+        const fromSett = this._getSettlementByKey(fromKey);
+        const toSett   = this._getSettlementByKey(toKey);
+        if (!fromSett || !toSett) continue;
+
+        const fromCenter = this._getSettlementCenter(fromSett);
+        const toCenter   = this._getSettlementCenter(toSett);
+
+        const hoursPerTile = road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE;
+        const totalHours   = road.tilesTotal * hoursPerTile;
+        const progress     = totalHours > 0
+          ? Math.max(0, Math.min(1, 1 - road.hoursLeft / totalHours))
+          : 0;
+
+        const fromX = (fromCenter.tx + 0.5) * TILE_SIZE;
+        const fromY = (fromCenter.ty + 0.5) * TILE_SIZE;
+        const toX   = (toCenter.tx + 0.5) * TILE_SIZE;
+        const toY   = (toCenter.ty + 0.5) * TILE_SIZE;
+
+        workers.push({
+          id:     `road:${rk}`,
+          type:   road.isDemo ? 'demolish' : 'road',
+          worldX: fromX + (toX - fromX) * progress,
+          worldY: fromY + (toY - fromY) * progress,
+        });
+      }
+    }
+
+    return workers;
+  }
+
+  /**
+   * Canonical road key for a pair of settlement keys (always smaller key first).
+   * @param {string} keyA
+   * @param {string} keyB
+   * @returns {string}
+   */
+  _roadKey(keyA, keyB) {
+    return keyA < keyB ? `${keyA}↔${keyB}` : `${keyB}↔${keyA}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // Construction system – main panel renderer
+  // -------------------------------------------------------------------------
+
+  /**
+   * Render the main construction panel with three tabs (建築 / 道路 / 港口).
+   * @param {import('../systems/BuildingSystem.js').Building} building  Government building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderConstructionPanel(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const { coastal } = this._isCoastalSettlement(settlement);
+    const tabs = ['建築', '道路', ...(coastal ? ['港口'] : [])];
+    if (!this._constructionTab || !tabs.includes(this._constructionTab)) {
+      this._constructionTab = '建築';
+    }
+
+    const tabsHTML = tabs.map(t => `
+      <button class="constr-tab-btn${this._constructionTab === t ? ' active' : ''}" data-ctab="${t}">${t}</button>
+    `).join('');
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">🏗️ 建設選項</div>
+      ${this._goldBarHTML()}
+      <div class="constr-tabs">${tabsHTML}</div>
+      <div id="constr-tab-content"></div>
+    `;
+
+    // Back to the government building (not the facilities list)
+    document.getElementById('btn-fac-back')?.addEventListener('click', () => {
+      this._constructionTab = '建築';
+      this._renderGovBuilding(building, settlement);
+    });
+
+    content.querySelectorAll('.constr-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._constructionTab = btn.dataset.ctab;
+        this._renderConstructionPanel(building, settlement);
+      });
+    });
+
+    if (this._constructionTab === '建築') {
+      this._renderBuildingConstructionTab(building, settlement);
+    } else if (this._constructionTab === '道路') {
+      this._renderRoadConstructionTab(building, settlement);
+    } else if (this._constructionTab === '港口') {
+      this._renderPortConstructionTab(building, settlement);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Construction – building tab
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/BuildingSystem.js').Building} govBuilding
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderBuildingConstructionTab(govBuilding, settlement) {
+    const panel = document.getElementById('constr-tab-content');
+    if (!panel) return;
+
+    const key     = this._settlementKey(settlement);
+    const state   = this._getConstructionState(key);
+    const maxSlots = CONSTR_MAX_BUILDINGS[settlement.type] ?? 4;
+    const usedSlots = (settlement.buildings?.length ?? 0) + state.buildingQueue.length;
+    const freeSlots = maxSlots - usedSlots;
+
+    // Already-built buildings
+    const builtNames = (settlement.buildings ?? []).map(b => b.name);
+
+    // In-progress buildings
+    const queueHTML = state.buildingQueue.length > 0
+      ? state.buildingQueue.map((q, i) => `
+          <div class="constr-queue-row">
+            <span class="cqr-icon">${q.icon}</span>
+            <span class="cqr-name">${q.name}</span>
+            <span class="cqr-timer">⏳ 剩 ${q.daysLeft} 天</span>
+          </div>`).join('')
+      : '<div class="constr-empty-note">（無建造中的建築）</div>';
+
+    // Buildable types (not already built, not in queue)
+    const inQueueTypes  = new Set(state.buildingQueue.map(q => q.type));
+    const builtTypes    = new Set((settlement.buildings ?? []).map(b => b.type));
+    const availableHTML = freeSlots <= 0
+      ? '<div class="constr-empty-note">建築位置已滿</div>'
+      : _BUILDABLE_TYPES
+          .filter(t => !builtTypes.has(t) && !inQueueTypes.has(t))
+          .map(t => {
+            const meta = BUILDING_META[t];
+            if (!meta) return '';
+            const cost = _BUILDING_COSTS[t] ?? 100;
+            return `
+              <div class="constr-option-card" data-btype="${t}" role="button" tabindex="0">
+                <span class="coc-icon">${meta.icon}</span>
+                <div class="coc-info">
+                  <div class="coc-name">${meta.name}</div>
+                  <div class="coc-desc">建造需 ${CONSTR_BUILDING_DAYS} 天 · 🪙${cost}</div>
+                </div>
+                <button class="btn-buy coc-build-btn" data-btype="${t}" data-cost="${cost}">建造</button>
+              </div>`;
+          }).join('') || '<div class="constr-empty-note">所有建築類型已建造</div>';
+
+    panel.innerHTML = `
+      <div class="constr-section-title">建築位置：${usedSlots} / ${maxSlots}</div>
+      <div class="constr-built-list">
+        ${builtNames.map(n => `<span class="constr-built-tag">✅ ${n}</span>`).join('')}
+      </div>
+      <div class="constr-section-title">建造中</div>
+      <div class="constr-queue">${queueHTML}</div>
+      ${freeSlots > 0 ? '<div class="constr-section-title">可新增建築</div>' : ''}
+      <div class="constr-option-list">${availableHTML}</div>
+    `;
+
+    panel.querySelectorAll('.coc-build-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const btype = btn.dataset.btype;
+        const cost  = Number(btn.dataset.cost);
+        const meta  = BUILDING_META[btype];
+        if (!meta) return;
+
+        if (this._getGold() < cost) { this._toast('💸 金幣不足！'); return; }
+        if (freeSlots <= 0)         { this._toast('建築位置已滿！'); return; }
+
+        this._spendGold(cost);
+        state.buildingQueue.push({ type: btype, name: meta.name, icon: meta.icon, daysLeft: CONSTR_BUILDING_DAYS });
+        this._addInboxMessage('🏗️', `開始建造 ${meta.name}（${settlement.name}），預計 ${CONSTR_BUILDING_DAYS} 天後完工。`);
+        this._renderConstructionPanel(govBuilding, settlement);
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Construction – road tab
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/BuildingSystem.js').Building} govBuilding
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderRoadConstructionTab(govBuilding, settlement) {
+    const panel = document.getElementById('constr-tab-content');
+    if (!panel) return;
+
+    const key   = this._settlementKey(settlement);
+    const state = this._getConstructionState(key);
+
+    // Collect all other player-owned settlements as connection targets.
+    const targets = [];
+    if (this.nationSystem) {
+      this.nationSystem.castleSettlements.forEach((s, i) => {
+        const tkey = `castle:${i}`;
+        if (tkey !== key && s.controllingNationId === PLAYER_NATION_ID) {
+          targets.push({ settlement: s, key: tkey, label: `🏰 ${s.name}` });
+        }
+      });
+      this.nationSystem.villageSettlements.forEach((s, i) => {
+        const tkey = `village:${i}`;
+        if (tkey !== key && s.controllingNationId === PLAYER_NATION_ID) {
+          targets.push({ settlement: s, key: tkey, label: `🏘️ ${s.name}` });
+        }
+      });
+    }
+
+    // Existing roads: built + in-progress
+    const roadsHTML = (() => {
+      const rows = [];
+      // Built roads
+      for (const rk of state.builtRoads) {
+        const parts  = rk.split('↔');
+        const other  = parts.find(p => p !== key) ?? '';
+        const oSett  = this._getSettlementByKey(other);
+        const name   = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : other;
+        rows.push(`
+          <div class="constr-road-row">
+            <span class="crr-icon">🛤️</span>
+            <span class="crr-name">${name}</span>
+            <span class="crr-status built">已完成</span>
+            <button class="btn-buy crr-demo-btn" data-rkey="${rk}">🪚 拆除</button>
+          </div>`);
+      }
+      // Roads in progress
+      for (const [rk, road] of state.roads) {
+        const other      = rk.split('↔').find(p => p !== key) ?? '';
+        const oSett      = this._getSettlementByKey(other);
+        const name       = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : road.targetName;
+        const hoursPerTile = road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE;
+        const totalHours = road.tilesTotal * hoursPerTile;
+        const pct        = Math.round((1 - road.hoursLeft / totalHours) * 100);
+        const label      = road.isDemo ? `🪚 拆除中 ${pct}%` : `🚧 施工中 ${pct}%`;
+        rows.push(`
+          <div class="constr-road-row">
+            <span class="crr-icon">${road.isDemo ? '🪚' : '🚧'}</span>
+            <span class="crr-name">${name}</span>
+            <span class="crr-status">${label}</span>
+          </div>`);
+      }
+      return rows.length ? rows.join('') : '<div class="constr-empty-note">（尚無道路）</div>';
+    })();
+
+    // Build new road options
+    const newRoadHTML = targets.length === 0
+      ? '<div class="constr-empty-note">無可連接的己方地區</div>'
+      : `<div class="constr-road-form">
+          <label class="constr-road-label">目標地區</label>
+          <select id="constr-road-target" class="constr-road-select">
+            ${targets.map(t => `<option value="${t.key}" data-tiles="${this._getRoadTiles(settlement, t.settlement)}">${t.label}</option>`).join('')}
+          </select>
+          <div id="constr-road-info" class="constr-road-info"></div>
+          <button class="btn-buy constr-road-build-btn" id="btn-build-road">🚧 開始建造</button>
+        </div>`;
+
+    panel.innerHTML = `
+      <div class="constr-section-title">現有道路</div>
+      <div class="constr-road-list">${roadsHTML}</div>
+      <div class="constr-section-title">新建道路</div>
+      ${newRoadHTML}
+    `;
+
+    // Update road info on target change
+    const updateRoadInfo = () => {
+      const sel = document.getElementById('constr-road-target');
+      if (!sel) return;
+      const opt   = sel.options[sel.selectedIndex];
+      const tiles = Number(opt?.dataset?.tiles ?? 0);
+      const hours = tiles * CONSTR_ROAD_HOURS_PER_TILE;
+      const cost  = tiles * CONSTR_ROAD_COST_PER_TILE;
+      const infoEl = document.getElementById('constr-road-info');
+      if (infoEl) {
+        const rk = this._roadKey(key, sel.value);
+        const alreadyBuilt = state.builtRoads.has(rk);
+        const inProgress   = state.roads.has(rk);
+        if (alreadyBuilt) {
+          infoEl.innerHTML = '<span style="color:#66bb6a">✅ 此路段已完成</span>';
+        } else if (inProgress) {
+          infoEl.innerHTML = '<span style="color:#ffa726">⚠️ 此路段正在施工</span>';
+        } else {
+          infoEl.innerHTML = `路程約 ${tiles} 格 · 預計 ${hours} 工時 · 費用 🪙${cost}`;
+        }
+      }
+    };
+
+    document.getElementById('constr-road-target')?.addEventListener('change', updateRoadInfo);
+    updateRoadInfo();
+
+    document.getElementById('btn-build-road')?.addEventListener('click', () => {
+      const sel = document.getElementById('constr-road-target');
+      if (!sel) return;
+      const targetKey  = sel.value;
+      const opt        = sel.options[sel.selectedIndex];
+      const tiles      = Number(opt?.dataset?.tiles ?? 0);
+      const cost       = tiles * CONSTR_ROAD_COST_PER_TILE;
+      const rk         = this._roadKey(key, targetKey);
+
+      if (state.builtRoads.has(rk)) { this._toast('✅ 此路段已建完！'); return; }
+      if (state.roads.has(rk))      { this._toast('⚠️ 此路段已在施工中！'); return; }
+      if (tiles < 1)                 { this._toast('目標太近，無需建造道路。'); return; }
+      if (this._getGold() < cost)   { this._toast('💸 金幣不足！'); return; }
+
+      this._spendGold(cost);
+
+      // Find target name for display
+      const targetSett = this._getSettlementByKey(targetKey);
+      const targetName = targetSett ? targetSett.name : targetKey;
+
+      // Add road to this settlement's queue
+      state.roads.set(rk, {
+        targetKey,
+        targetName,
+        tilesTotal:  tiles,
+        hoursLeft:   tiles * CONSTR_ROAD_HOURS_PER_TILE,
+        isDemo:      false,
+      });
+
+      // Mirror the in-progress road state to the target settlement so the
+      // target side also shows the road when the player visits there.
+      const targetState = this._getConstructionState(targetKey);
+      targetState.roads.set(rk, {
+        targetKey: key,
+        targetName: settlement.name,
+        tilesTotal:  tiles,
+        hoursLeft:   tiles * CONSTR_ROAD_HOURS_PER_TILE,
+        isDemo:      false,
+      });
+
+      this._addInboxMessage('🚧', `開始修建 ${settlement.name} → ${targetName} 的道路（${tiles} 格，需 ${tiles * CONSTR_ROAD_HOURS_PER_TILE} 工時）。`);
+      this._renderConstructionPanel(govBuilding, settlement);
+    });
+
+    // Demolish road
+    panel.querySelectorAll('.crr-demo-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const rk = btn.dataset.rkey;
+        if (!state.builtRoads.has(rk)) return;
+        state.builtRoads.delete(rk);
+
+        // Determine tiles (use both settlement keys to find target)
+        const other      = rk.split('↔').find(p => p !== key) ?? '';
+        const otherSett  = this._getSettlementByKey(other);
+        const tiles      = otherSett ? this._getRoadTiles(settlement, otherSett) : 1;
+
+        // Also remove from target side built roads
+        const targetState = this._getConstructionState(other);
+        targetState.builtRoads.delete(rk);
+
+        // Queue demolition
+        state.roads.set(rk, {
+          targetKey:   other,
+          targetName:  otherSett?.name ?? other,
+          tilesTotal:  tiles,
+          hoursLeft:   tiles * CONSTR_ROAD_DEMO_HOURS_PER_TILE,
+          isDemo:      true,
+        });
+        targetState.roads.set(rk, {
+          targetKey:   key,
+          targetName:  settlement.name,
+          tilesTotal:  tiles,
+          hoursLeft:   tiles * CONSTR_ROAD_DEMO_HOURS_PER_TILE,
+          isDemo:      true,
+        });
+
+        this._addInboxMessage('🪚', `開始拆除 ${settlement.name} 的道路。`);
+        this._renderConstructionPanel(govBuilding, settlement);
+      });
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Construction – port tab
+  // -------------------------------------------------------------------------
+
+  /**
+   * @param {import('../systems/BuildingSystem.js').Building} govBuilding
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderPortConstructionTab(govBuilding, settlement) {
+    const panel = document.getElementById('constr-tab-content');
+    if (!panel) return;
+
+    const key   = this._settlementKey(settlement);
+    const state = this._getConstructionState(key);
+    const { coastal, tile: portTile } = this._isCoastalSettlement(settlement);
+
+    if (!coastal) {
+      panel.innerHTML = '<div class="constr-empty-note">此地非濱海地區，無法建造港口。</div>';
+      return;
+    }
+
+    if (state.hasPort) {
+      panel.innerHTML = `
+        <div class="constr-port-status built">
+          <span class="cps-icon">⚓</span>
+          <div class="cps-info">
+            <div class="cps-title">港口已建造</div>
+            <div class="cps-desc">玩家可在此出海，返回陸地後需回到此港口方可再次入海。</div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    panel.innerHTML = `
+      <div class="constr-port-status pending">
+        <span class="cps-icon">🚢</span>
+        <div class="cps-info">
+          <div class="cps-title">可建造港口</div>
+          <div class="cps-desc">在濱海地塊自動建造港口，建成後玩家可從此出海。</div>
+          ${this._goldBarHTML()}
+          <button class="btn-buy constr-port-build-btn" id="btn-build-port">⚓ 建造港口（🪙${CONSTR_PORT_COST}）</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-build-port')?.addEventListener('click', () => {
+      if (this._getGold() < CONSTR_PORT_COST) { this._toast('💸 金幣不足！'); return; }
+      this._spendGold(CONSTR_PORT_COST);
+      state.hasPort   = true;
+      state.portTile  = portTile;
+      this._addInboxMessage('⚓', `${settlement.name} 港口建造完成！玩家可在此出海。`);
+      if (typeof this.onPortBuilt === 'function') this.onPortBuilt();
+      this._renderConstructionPanel(govBuilding, settlement);
+    });
+  }
+
+  /**
+   * Return the Settlement object for a given settlement key.
+   * @param {string} key  e.g. "castle:0" or "village:3"
+   * @returns {import('../systems/NationSystem.js').Settlement|null}
+   */
+  _getSettlementByKey(key) {
+    if (!this.nationSystem || !key) return null;
+    const [type, idxStr] = key.split(':');
+    const idx = Number(idxStr);
+    if (type === 'castle') return this.nationSystem.castleSettlements[idx] ?? null;
+    if (type === 'village') return this.nationSystem.villageSettlements[idx] ?? null;
+    return null;
   }
 
   // -------------------------------------------------------------------------
@@ -3649,8 +4382,21 @@ export class GameUI {
     this._battleState = null;
   }
 
-  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[], tavernState: object, satisfactionMap: object, inbox: object[] }} serialisable snapshot */
+  /** @returns {{ inventory: object, army: object, playerKingdom: object, capturedSettlements: string[], tavernState: object, satisfactionMap: object, inbox: object[], constructionState: object[] }} serialisable snapshot */
   getState() {
+    // Serialise constructionState: convert inner Maps/Sets to arrays.
+    const constructionState = [];
+    for (const [key, state] of this._constructionState) {
+      constructionState.push({
+        key,
+        buildingQueue: state.buildingQueue,
+        roads: [...state.roads.entries()].map(([rk, r]) => ({ roadKey: rk, ...r })),
+        builtRoads: [...state.builtRoads],
+        hasPort: state.hasPort,
+        portTile: state.portTile,
+      });
+    }
+
     return {
       inventory:            this.inventory.getState(),
       army:                 this.army.getState(),
@@ -3659,12 +4405,13 @@ export class GameUI {
       tavernState:          Object.fromEntries(this._tavernState),
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
+      constructionState,
     };
   }
 
   /**
    * Restore inventory and army from a saved snapshot (skips demo seed).
-   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[], tavernState?: object, satisfactionMap?: object, inbox?: object[] }} state
+   * @param {{ inventory?: object, army?: object, playerKingdom?: object, capturedSettlements?: string[], tavernState?: object, satisfactionMap?: object, inbox?: object[], constructionState?: object[] }} state
    */
   loadState(state) {
     if (!state) return;
@@ -3689,6 +4436,23 @@ export class GameUI {
     if (Array.isArray(state.inbox)) {
       this._inbox = state.inbox.slice(0, GameUI._MAX_INBOX);
       this._inboxUnread = this._inbox.filter(m => !m.read).length;
+    }
+    if (Array.isArray(state.constructionState)) {
+      this._constructionState = new Map();
+      for (const entry of state.constructionState) {
+        const roads = new Map();
+        for (const r of (entry.roads ?? [])) {
+          const { roadKey, ...rest } = r;
+          roads.set(roadKey, rest);
+        }
+        this._constructionState.set(entry.key, {
+          buildingQueue: entry.buildingQueue ?? [],
+          roads,
+          builtRoads:    new Set(entry.builtRoads ?? []),
+          hasPort:       entry.hasPort ?? false,
+          portTile:      entry.portTile ?? null,
+        });
+      }
     }
   }
 
