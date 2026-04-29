@@ -388,9 +388,26 @@ export class Game {
 
       // Show / hide the map-build button (forest → lumber camp, mountain → mine, water → bridge).
       // Only show when the player is NOT inside a settlement tile.
-      const MAP_BUILDABLE_TERRAINS = new Set([TERRAIN.FOREST, TERRAIN.MOUNTAIN, TERRAIN.WATER]);
+      // Note: bridges target an adjacent water tile because the player cannot stand on water.
+      const MAP_BUILDABLE_TERRAINS = new Set([TERRAIN.FOREST, TERRAIN.MOUNTAIN]);
       if (!hit && MAP_BUILDABLE_TERRAINS.has(t)) {
         this._gameUI.setNearbyBuildableTerrain(tileX, tileY, t);
+      } else if (!hit) {
+        // Check orthogonally adjacent tiles for water so the player can build a bridge
+        // while standing on the bank next to a river or lake.
+        const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+        let bridgeTile = null;
+        for (const [dx, dy] of ADJACENT_OFFSETS) {
+          if (this._mapData.getTerrain(tileX + dx, tileY + dy) === TERRAIN.WATER) {
+            bridgeTile = { tx: tileX + dx, ty: tileY + dy };
+            break;
+          }
+        }
+        if (bridgeTile) {
+          this._gameUI.setNearbyBuildableTerrain(bridgeTile.tx, bridgeTile.ty, TERRAIN.WATER);
+        } else {
+          this._gameUI.setNearbyBuildableTerrain(null, null, null);
+        }
       } else {
         this._gameUI.setNearbyBuildableTerrain(null, null, null);
       }
