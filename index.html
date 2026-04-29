@@ -609,6 +609,33 @@
         border: 1px solid rgba(255,255,255,0.1);
         image-rendering: pixelated;
       }
+      /* Minimap layer tabs */
+      #ui-minimap-tabs {
+        display: flex;
+        gap: 8px;
+        padding: 8px 14px 0;
+      }
+      .mm-tab-btn {
+        flex: 1;
+        padding: 6px 4px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(226,201,126,0.22);
+        border-radius: 8px;
+        color: rgba(255,255,255,0.5);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        touch-action: manipulation;
+        letter-spacing: 1px;
+      }
+      .mm-tab-btn.active {
+        background: rgba(226,201,126,0.18);
+        border-color: #e2c97e;
+        color: #e2c97e;
+      }
+      .mm-tab-btn:hover:not(.active) { background: rgba(255,255,255,0.1); color: #eee; }
       #ui-minimap-legend {
         display: flex;
         flex-wrap: wrap;
@@ -622,6 +649,9 @@
         gap: 5px;
         font-size: 11px;
         color: rgba(255,255,255,0.55);
+      }
+      .mm-legend-item.mm-legend-icon {
+        font-size: 12px;
       }
       .mm-legend-swatch {
         width: 12px;

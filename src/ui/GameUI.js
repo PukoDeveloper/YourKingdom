@@ -214,6 +214,9 @@ export class GameUI {
     /** Active construction sub-tab: '建築' | '道路' | '港口' */
     this._constructionTab = '建築';
 
+    /** Currently active minimap layer: 'terrain' | 'territory' */
+    this._minimapLayer = 'terrain';
+
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
 
@@ -517,6 +520,10 @@ export class GameUI {
           <span id="ui-minimap-title">🗺️ 王國地圖</span>
           <button id="ui-minimap-close">✕</button>
         </div>
+        <div id="ui-minimap-tabs">
+          <button class="mm-tab-btn active" data-layer="terrain">地形</button>
+          <button class="mm-tab-btn" data-layer="territory">領土</button>
+        </div>
         <div id="ui-minimap-canvas-wrap">
           <canvas id="ui-minimap-canvas"></canvas>
         </div>
@@ -527,10 +534,10 @@ export class GameUI {
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#2E7D32"></span>森林</div>
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8D9A5A"></span>丘陵</div>
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#546E7A"></span>山地</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8D8D8D"></span>城堡</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#C8A96E"></span>村落</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8B6914"></span>港口</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#FFD700"></span>玩家位置</div>
+          <div class="mm-legend-item mm-legend-icon">🏰 城堡</div>
+          <div class="mm-legend-item mm-legend-icon">🏘️ 村落</div>
+          <div class="mm-legend-item mm-legend-icon">⚓ 港口</div>
+          <div class="mm-legend-item mm-legend-icon">🌟 玩家位置</div>
         </div>
       </div>
     `;
@@ -605,6 +612,16 @@ export class GameUI {
       if (e.target.id === 'ui-minimap-overlay') this._closeMinimap();
     });
     document.getElementById('ui-minimap-close').addEventListener('click', () => this._closeMinimap());
+
+    // Minimap layer tabs
+    document.getElementById('ui-minimap-tabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.mm-tab-btn');
+      if (!btn) return;
+      document.querySelectorAll('.mm-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      this._minimapLayer = btn.dataset.layer;
+      this._redrawMinimap();
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -900,10 +917,27 @@ export class GameUI {
     canvas.style.width  = `${Math.round(MAP_WIDTH  * SCALE * displayScale)}px`;
     canvas.style.height = `${Math.round(MAP_HEIGHT * SCALE * displayScale)}px`;
 
-    const ctx  = canvas.getContext('2d');
+    // Sync tab button UI to current layer state
+    document.querySelectorAll('.mm-tab-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.layer === this._minimapLayer);
+    });
+
+    this._redrawMinimap();
+    document.getElementById('ui-minimap-overlay').classList.add('visible');
+  }
+
+  /**
+   * (Re)draw the minimap canvas for the currently active layer.
+   * Called when layer changes or when the minimap is opened.
+   */
+  _redrawMinimap() {
+    if (!this._mapData) return;
+    const SCALE = 2;
+    const canvas = document.getElementById('ui-minimap-canvas');
+    const ctx = canvas.getContext('2d');
     const COLORS = GameUI._MINIMAP_COLORS;
 
-    // Draw terrain tiles
+    // --- Base terrain layer ---
     for (let ty = 0; ty < MAP_HEIGHT; ty++) {
       for (let tx = 0; tx < MAP_WIDTH; tx++) {
         const terrain = this._mapData.tiles[ty * MAP_WIDTH + tx];
@@ -912,10 +946,114 @@ export class GameUI {
       }
     }
 
-    // Draw player position marker
-    this._drawMinimapPlayer(ctx, SCALE);
+    // --- Territory overlay layer ---
+    if (this._minimapLayer === 'territory' && this.nationSystem) {
+      this._drawMinimapTerritoryOverlay(ctx, SCALE);
+    }
 
-    document.getElementById('ui-minimap-overlay').classList.add('visible');
+    // --- Settlement icons ---
+    this._drawMinimapSettlements(ctx, SCALE);
+
+    // --- Player marker ---
+    this._drawMinimapPlayer(ctx, SCALE);
+  }
+
+  /**
+   * Draw semi-transparent colored blobs for each nation's controlled territory,
+   * plus a small nation name label.
+   */
+  _drawMinimapTerritoryOverlay(ctx, scale) {
+    const { castleSettlements, villageSettlements, nations } = this.nationSystem;
+    const pk = this.getPlayerNation();
+
+    // Collect all settlements with their controlling color
+    const allSettlements = [
+      ...castleSettlements.map((s, i) => ({ s, tilePos: this._mapData.castles[i], size: 4 })),
+      ...villageSettlements.map((s, i) => ({ s, tilePos: this._mapData.villages[i], size: 2 })),
+    ];
+
+    for (const { s, tilePos, size } of allSettlements) {
+      if (!tilePos) continue;
+      let color;
+      if (s.controllingNationId === PLAYER_NATION_ID) {
+        color = pk.color;
+      } else if (s.controllingNationId === NEUTRAL_NATION_ID) {
+        color = '#FFFFFF';
+      } else {
+        const nation = nations[s.controllingNationId];
+        color = nation ? nation.color : '#9E9E9E';
+      }
+
+      // Draw a blurred/soft color blob covering the settlement footprint + a halo
+      const radius = (size * scale) + scale * 3;
+      const cx = (tilePos.x + size / 2) * scale;
+      const cy = (tilePos.y + size / 2) * scale;
+
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      grad.addColorStop(0, color + 'AA');
+      grad.addColorStop(0.5, color + '55');
+      grad.addColorStop(1, color + '00');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Small label for the controlling nation
+      let label;
+      if (s.controllingNationId === PLAYER_NATION_ID) {
+        label = pk.name;
+      } else if (s.controllingNationId === NEUTRAL_NATION_ID) {
+        label = '中立';
+      } else {
+        const nation = nations[s.controllingNationId];
+        label = nation ? nation.name : '';
+      }
+      if (label) {
+        const lx = cx;
+        const ly = cy + size * scale + scale * 3;
+        ctx.font = 'bold 7px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        // Outline for readability
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.lineWidth = 2.5;
+        ctx.strokeText(label, lx, ly);
+        ctx.fillStyle = color;
+        ctx.fillText(label, lx, ly);
+      }
+    }
+  }
+
+  /**
+   * Draw emoji-style icons for castles, villages, and ports on the minimap.
+   * Uses a small font to stamp recognisable glyphs at each structure centre.
+   */
+  _drawMinimapSettlements(ctx, scale) {
+    if (!this._mapData) return;
+    const iconSize = Math.max(7, scale * 4); // font size in canvas pixels
+    ctx.font = `${iconSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const drawIcon = (tileX, tileY, structSize, emoji) => {
+      const cx = (tileX + structSize / 2) * scale;
+      const cy = (tileY + structSize / 2) * scale;
+      // Dark shadow for contrast on any background
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillText(emoji, cx + 0.5, cy + 0.5);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(emoji, cx, cy);
+    };
+
+    for (const { x, y } of this._mapData.castles) {
+      drawIcon(x, y, 4, '🏰');
+    }
+    for (const { x, y } of this._mapData.villages) {
+      drawIcon(x, y, 2, '🏘️');
+    }
+    for (const { x, y } of this._mapData.ports) {
+      drawIcon(x, y, 1, '⚓');
+    }
   }
 
   _drawMinimapPlayer(ctx, scale) {
