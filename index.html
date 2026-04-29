@@ -2073,6 +2073,46 @@
         background: rgba(183,28,28,0.45);
         border-color: #ef9a9a;
       }
+      .settings-dev-section {
+        margin-top: 12px;
+        border-top: 1px solid rgba(226,201,126,0.12);
+        padding-top: 12px;
+      }
+      .settings-dev-header {
+        color: rgba(226,201,126,0.7);
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+      }
+      .dev-gold-btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .dev-gold-btn {
+        padding: 6px 12px;
+        background: rgba(46,125,50,0.25);
+        border: 1px solid rgba(76,175,80,0.45);
+        border-radius: 7px;
+        color: #a5d6a7;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        touch-action: manipulation;
+        transition: background 0.15s;
+      }
+      .dev-gold-btn:hover { background: rgba(46,125,50,0.45); }
+      .dev-gold-btn-sub {
+        background: rgba(183,28,28,0.2);
+        border-color: rgba(229,57,53,0.4);
+        color: #ef9a9a;
+      }
+      .dev-gold-btn-sub:hover { background: rgba(183,28,28,0.38); }
       /* =====================================================================
          Settlement card – flag badge (replaces emoji emblem)
          ===================================================================== */
@@ -2219,6 +2259,9 @@
         font-size: 14px;
         outline: none;
         transition: border-color 0.15s;
+        touch-action: manipulation;
+        user-select: text;
+        -webkit-user-select: text;
       }
       .kp-name-input:focus {
         border-color: #e2c97e;

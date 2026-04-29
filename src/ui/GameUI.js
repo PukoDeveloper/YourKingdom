@@ -1419,6 +1419,25 @@ export class GameUI {
           <button id="btn-reset-game" class="btn-danger">重置</button>
         </div>
       </div>
+
+      <div class="settings-section settings-dev-section">
+        <div class="settings-dev-header">🛠 開發者工具</div>
+        <div class="settings-row">
+          <div class="settings-row-label">
+            <span class="settings-row-icon">🪙</span>
+            <div>
+              <div class="settings-row-title">金幣操作</div>
+              <div class="settings-row-desc">目前持有：<span id="dev-gold-display">${this._getGold()}</span> 金幣</div>
+            </div>
+          </div>
+          <div class="dev-gold-btns">
+            <button id="dev-btn-add100"   class="dev-gold-btn">+100</button>
+            <button id="dev-btn-add1000"  class="dev-gold-btn">+1000</button>
+            <button id="dev-btn-sub100"   class="dev-gold-btn dev-gold-btn-sub">−100</button>
+            <button id="dev-btn-sub1000"  class="dev-gold-btn dev-gold-btn-sub">−1000</button>
+          </div>
+        </div>
+      </div>
     `;
 
     document.getElementById('btn-reset-game').addEventListener('click', () => {
@@ -1427,6 +1446,28 @@ export class GameUI {
           this.onReset();
         }
       }
+    });
+
+    const _refreshDevGold = () => {
+      const el = document.getElementById('dev-gold-display');
+      if (el) el.textContent = this._getGold();
+    };
+
+    document.getElementById('dev-btn-add100').addEventListener('click', () => {
+      this._addGold(100);
+      _refreshDevGold();
+    });
+    document.getElementById('dev-btn-add1000').addEventListener('click', () => {
+      this._addGold(1000);
+      _refreshDevGold();
+    });
+    document.getElementById('dev-btn-sub100').addEventListener('click', () => {
+      this._spendGold(100);
+      _refreshDevGold();
+    });
+    document.getElementById('dev-btn-sub1000').addEventListener('click', () => {
+      this._spendGold(1000);
+      _refreshDevGold();
     });
   }
 
@@ -1495,7 +1536,8 @@ export class GameUI {
       <div class="ap-section">
         <div class="ap-section-title">角色名稱</div>
         <input type="text" id="ap-name-input" class="kp-name-input"
-               value="${_escapeAttr(playerName)}" maxlength="16" placeholder="輸入角色名稱…">
+               value="${_escapeAttr(playerName)}" maxlength="16" placeholder="輸入角色名稱…"
+               inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       </div>
       <div class="ap-section">
         <div class="ap-section-title">體型</div>
@@ -1642,7 +1684,8 @@ export class GameUI {
       <div class="ap-section">
         <div class="ap-section-title">國名</div>
         <input type="text" id="kp-name-input" class="kp-name-input"
-               value="${k.name}" maxlength="20" placeholder="輸入國名…">
+               value="${k.name}" maxlength="20" placeholder="輸入國名…"
+               inputmode="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       </div>
 
       <div class="ap-section">
