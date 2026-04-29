@@ -18,9 +18,14 @@ import {
   CHAR_HEADGEAR_LABELS,
   CHAR_ARMOR_COLORS_CSS,
   CHAR_MARK_COLORS_CSS,
+  CHAR_BODY_SHAPES,
+  CHAR_BODY_SHAPE_LABELS,
+  CHAR_FACE_ACCESSORIES,
+  CHAR_FACE_ACCESSORY_LABELS,
   FLAG_BG_COLORS,
   FLAG_STRIPE_COLORS,
   FLAG_STRIPE_STYLES,
+  FLAG_SYMBOL_LABELS,
   FLAG_SYMBOLS,
 } from '../systems/AppearanceSystem.js';
 import {
@@ -34,7 +39,7 @@ import {
 import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
-const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形'];
+const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形', '三色橫', '三色縱', '斜十字', '邊框'];
 
 /** Kingdom type definitions. requiresSettlement = true means locked until the player controls a settlement. */
 const _KINGDOM_TYPES = [
@@ -57,7 +62,7 @@ const DEFAULT_KINGDOM = {
 };
 
 /** Default appearance indices used when no player is available. */
-const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 };
+const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0, bodyShapeIdx: 0, faceAccIdx: 0 };
 
 /** Terrain themes applied to the battle scene background. */
 const _BATTLE_THEMES = {
@@ -1152,6 +1157,8 @@ export class GameUI {
       ? this.player.appearance
       : charAppearanceFromIndices(DEFAULT_APPEARANCE_INDICES);
 
+    const playerName = this.player?.name ?? '主角';
+
     const _swatch = (colors, selectedIdx, dataAttr) =>
       colors.map((c, i) =>
         `<button class="ap-swatch${i === selectedIdx ? ' selected' : ''}" data-${dataAttr}="${i}"
@@ -1162,10 +1169,27 @@ export class GameUI {
       `<button class="ap-choice${i === app.headgearIdx ? ' selected' : ''}" data-headgear="${i}">${CHAR_HEADGEAR_LABELS[i]}</button>`
     ).join('');
 
+    const bodyShapeHTML = CHAR_BODY_SHAPES.map((s, i) =>
+      `<button class="ap-choice${i === (app.bodyShapeIdx ?? 0) ? ' selected' : ''}" data-body-shape="${i}">${CHAR_BODY_SHAPE_LABELS[i]}</button>`
+    ).join('');
+
+    const faceAccHTML = CHAR_FACE_ACCESSORIES.map((a, i) =>
+      `<button class="ap-choice${i === (app.faceAccIdx ?? 0) ? ' selected' : ''}" data-face-acc="${i}">${CHAR_FACE_ACCESSORY_LABELS[i]}</button>`
+    ).join('');
+
     content.innerHTML = `
       <div class="ap-preview-row">
         <div id="ap-preview-wrap"></div>
         <span class="ap-preview-label">玩家外觀預覽</span>
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">角色名稱</div>
+        <input type="text" id="ap-name-input" class="kp-name-input"
+               value="${playerName.replace(/"/g, '&quot;')}" maxlength="16" placeholder="輸入角色名稱…">
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">體型</div>
+        <div class="ap-choices">${bodyShapeHTML}</div>
       </div>
       <div class="ap-section">
         <div class="ap-section-title">衣甲顏色</div>
@@ -1184,6 +1208,10 @@ export class GameUI {
         </div>
       </div>
       <div class="ap-section">
+        <div class="ap-section-title">臉部飾品</div>
+        <div class="ap-choices">${faceAccHTML}</div>
+      </div>
+      <div class="ap-section">
         <div class="ap-section-title">標記顏色</div>
         <div class="ap-swatches" id="ap-mark-swatches">
           ${_swatch(CHAR_MARK_COLORS_CSS, app.markColorIdx, 'mark')}
@@ -1193,10 +1221,13 @@ export class GameUI {
 
     // Track pending changes without hitting the player object on every click
     let pending = {
+      playerName:    playerName,
       bodyColorIdx:  app.bodyColorIdx,
       headgearIdx:   app.headgearIdx,
       armorColorIdx: app.armorColorIdx,
       markColorIdx:  app.markColorIdx,
+      bodyShapeIdx:  app.bodyShapeIdx  ?? 0,
+      faceAccIdx:    app.faceAccIdx    ?? 0,
     };
 
     const _refreshPreview = () => {
@@ -1208,23 +1239,35 @@ export class GameUI {
     const _apply = () => {
       if (this.player) this.player.setAppearance(pending);
       // Sync the hero Unit in the army so the party screen reflects the new look.
-      // The hero is always in squad 0 and cannot be moved to another squad.
       if (this.army) {
         const heroUnit = this.army.squads[0]?.members.find(m => m.role === 'hero');
-        if (heroUnit) heroUnit.appearance = charAppearanceFromIndices(pending);
+        if (heroUnit) {
+          heroUnit.appearance = charAppearanceFromIndices(pending);
+          heroUnit.name = pending.playerName;
+        }
       }
     };
 
+    // Player name input
+    const nameInput = content.querySelector('#ap-name-input');
+    let _nameTimer = null;
+    nameInput.addEventListener('input', () => {
+      pending.playerName = nameInput.value.trim() || '主角';
+      clearTimeout(_nameTimer);
+      _nameTimer = setTimeout(() => _apply(), 300);
+    });
+
     /**
      * Wire up swatch/choice buttons for one appearance part.
-     * @param {string} attr      data attribute name (e.g. 'body', 'armor', 'mark')
+     * @param {string} attr      data attribute name
      * @param {string} pendingKey key to update in the `pending` object
      */
     const _wireSwatches = (attr, pendingKey) => {
+      const camel = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       const btns = content.querySelectorAll(`[data-${attr}]`);
       btns.forEach(btn => {
         btn.addEventListener('click', () => {
-          pending[pendingKey] = Number(btn.dataset[attr]);
+          pending[pendingKey] = Number(btn.dataset[camel]);
           btns.forEach(b => b.classList.remove('selected'));
           btn.classList.add('selected');
           _apply();
@@ -1233,10 +1276,12 @@ export class GameUI {
       });
     };
 
-    _wireSwatches('body',    'bodyColorIdx');
-    _wireSwatches('headgear','headgearIdx');
-    _wireSwatches('armor',   'armorColorIdx');
-    _wireSwatches('mark',    'markColorIdx');
+    _wireSwatches('body',       'bodyColorIdx');
+    _wireSwatches('headgear',   'headgearIdx');
+    _wireSwatches('armor',      'armorColorIdx');
+    _wireSwatches('mark',       'markColorIdx');
+    _wireSwatches('body-shape', 'bodyShapeIdx');
+    _wireSwatches('face-acc',   'faceAccIdx');
   }
 
   _renderAppearanceKingdom() {
@@ -1265,8 +1310,8 @@ export class GameUI {
                style="background:${c};width:28px;height:28px;border-radius:50%;cursor:pointer"></button>`
     ).join('');
 
-    const symbolHTML = FLAG_SYMBOLS.map((s, i) =>
-      `<button class="ap-choice${i === k.flagSymbolIdx ? ' selected' : ''}" data-flag-symbol="${i}">${s}</button>`
+    const symbolHTML = FLAG_SYMBOL_LABELS.map((label, i) =>
+      `<button class="ap-choice${i === k.flagSymbolIdx ? ' selected' : ''}" data-flag-symbol="${i}" title="${label}">${label}</button>`
     ).join('');
 
     const kingdomTypeHTML = _KINGDOM_TYPES.map(t => {
