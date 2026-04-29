@@ -1708,13 +1708,13 @@ export class DiplomacySystem {
         // in the "wary but not yet an enemy" band.
         if (!napDecisions.some(d => d.nationId === id)) {
           let napTargetId = -1, napBestRel = NAP_PROPOSAL_REL_MIN - 1;
-          // nations is parallel to castleSettlements; index `tid` is the nation id.
-          nations.forEach((n, tid) => {
-            if (!n || tid === id) return;
-            if (this.isAtWar(id, tid) || this.hasNonAggressionPact(id, tid)) return;
-            const rel = this.getRelation(id, tid);
+          // nations is parallel to castleSettlements; array index is the nation id.
+          nations.forEach((n, targetId) => {
+            if (!n || targetId === id) return;
+            if (this.isAtWar(id, targetId) || this.hasNonAggressionPact(id, targetId)) return;
+            const rel = this.getRelation(id, targetId);
             if (rel >= NAP_PROPOSAL_REL_MIN && rel < NAP_PROPOSAL_REL_MAX && rel > napBestRel) {
-              napBestRel = rel; napTargetId = tid;
+              napBestRel = rel; napTargetId = targetId;
             }
           });
           if (napTargetId >= 0) {
@@ -1731,13 +1731,13 @@ export class DiplomacySystem {
         // MPP proposal: target the nation with the highest friendly relation.
         if (!mppDecisions.some(d => d.nationId === id)) {
           let mppTargetId = -1, mppBestRel = MPP_PROPOSAL_REL_MIN - 1;
-          // nations is parallel to castleSettlements; index `tid` is the nation id.
-          nations.forEach((n, tid) => {
-            if (!n || tid === id) return;
-            if (this.hasMutualProtectionPact(id, tid)) return;
-            const rel = this.getRelation(id, tid);
+          // nations is parallel to castleSettlements; array index is the nation id.
+          nations.forEach((n, targetId) => {
+            if (!n || targetId === id) return;
+            if (this.hasMutualProtectionPact(id, targetId)) return;
+            const rel = this.getRelation(id, targetId);
             if (rel >= MPP_PROPOSAL_REL_MIN && rel > mppBestRel) {
-              mppBestRel = rel; mppTargetId = tid;
+              mppBestRel = rel; mppTargetId = targetId;
             }
           });
           if (mppTargetId >= 0) {

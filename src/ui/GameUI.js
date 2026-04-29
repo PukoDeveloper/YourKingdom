@@ -8872,7 +8872,13 @@ export class GameUI {
       let actionBtns = '';
       if (!m.responded) {
         if (m.isPeaceOffer || m.isTradeRequest || m.isNapProposal || m.isMppProposal) {
-          const acceptLabel = m.isTradeRequest ? '✅ 接受' : m.isNapProposal ? '✅ 簽署' : m.isMppProposal ? '✅ 締結' : '✅ 同意';
+          const ACCEPT_LABELS = {
+            isTradeRequest: '✅ 接受',
+            isNapProposal:  '✅ 簽署',
+            isMppProposal:  '✅ 締結',
+            isPeaceOffer:   '✅ 同意',
+          };
+          const acceptLabel = ACCEPT_LABELS[Object.keys(ACCEPT_LABELS).find(k => m[k])] ?? '✅ 同意';
           actionBtns = `<div class="inbox-peace-actions">
             <button class="btn-buy inbox-accept-btn" data-idx="${i}">${acceptLabel}</button>
             <button class="inbox-ignore-btn" data-idx="${i}">❌ 拒絕</button>
@@ -8881,9 +8887,10 @@ export class GameUI {
       }
 
       const isInteractive = m.isPeaceOffer || m.isTradeRequest || m.isNapProposal || m.isMppProposal;
-      const respondedLabel = (isInteractive && m.responded)
-        ? `<span class="inbox-responded-label">${m._accepted === true ? '（已接受）' : m._acceptedPeace === true ? '（已同意）' : m._accepted === false || m._acceptedPeace === false ? '（已拒絕）' : ''}</span>`
-        : '';
+      let respondedLabel = '';
+      if (isInteractive && m.responded) {
+        respondedLabel = `<span class="inbox-responded-label">${m._accepted ? '（已接受）' : '（已拒絕）'}</span>`;
+      }
 
       return `
         <div class="inbox-row${m.read && (!isInteractive || m.responded) ? '' : ' inbox-unread'}" data-idx="${i}">
@@ -8917,8 +8924,7 @@ export class GameUI {
         const m = this._inbox[idx];
         if (!m) return;
         m._accepted = true;
-        m._acceptedPeace = true;
-        if (m.isPeaceOffer)    this._respondToPeaceOffer(idx, true);
+        if (m.isPeaceOffer)         this._respondToPeaceOffer(idx, true);
         else if (m.isTradeRequest)  this._respondToTradeRequest(idx, true);
         else if (m.isNapProposal)   this._respondToNapProposal(idx, true);
         else if (m.isMppProposal)   this._respondToMppProposal(idx, true);
@@ -8930,8 +8936,7 @@ export class GameUI {
         const m = this._inbox[idx];
         if (!m) return;
         m._accepted = false;
-        m._acceptedPeace = false;
-        if (m.isPeaceOffer)    this._respondToPeaceOffer(idx, false);
+        if (m.isPeaceOffer)         this._respondToPeaceOffer(idx, false);
         else if (m.isTradeRequest)  this._respondToTradeRequest(idx, false);
         else if (m.isNapProposal)   this._respondToNapProposal(idx, false);
         else if (m.isMppProposal)   this._respondToMppProposal(idx, false);
