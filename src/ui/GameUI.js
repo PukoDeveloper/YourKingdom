@@ -3699,13 +3699,12 @@ export class GameUI {
     let taxYield = 0;
     let taxHTML  = '';
     if (isOwnedByPlayer) {
-      const effectiveRuler = this._getEffectiveRuler(settlement);
       const baseTax  = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
       // Satisfaction factor: -100 → 10 %, 0 → 100 % (capped at 100 %)
       const factor          = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
       const afterSat        = Math.round(baseTax * factor);
-      // Ruler trait bonus
-      const taxBonusMult    = 1.0 + getTaxBonus(effectiveRuler);
+      // Ruler trait bonus (一絲不苟 → +20%)
+      const taxBonusMult    = 1.0 + getTaxBonus(ruler);
       const afterRuler      = Math.round(afterSat * taxBonusMult);
       // Garrison penalty: every active soldier you maintain reduces tax income.
       const playerUnits     = this.army.getSquads()
