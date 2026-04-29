@@ -7957,7 +7957,7 @@ export class GameUI {
     document.getElementById('battle-enemy-hp-bar').style.width  = `${enemyPct}%`;
     document.getElementById('battle-player-hp-bar').style.width = `${playerPct}%`;
     document.getElementById('battle-scene-vs').textContent =
-      `敵 ${enemy.hp}/${enemy.maxHp}  ⚔  我 ${player.hp}/${player.maxHp}`;
+      `敵 ${Math.round(enemy.hp)}/${enemy.maxHp}  ⚔  我 ${Math.round(player.hp)}/${player.maxHp}`;
 
     // Enemy unit row – build DOM structure once, then only toggle btl-fallen classes
     const enemyRowEl  = document.getElementById('battle-enemy-row');
@@ -8125,7 +8125,7 @@ export class GameUI {
       const totalAliveMaxHp = aliveMembers.reduce((sum, m) => sum + m.stats.maxHp, 0);
       aliveMembers.forEach(m => {
         const share = (m.stats.maxHp / totalAliveMaxHp) * enemyDmg;
-        m.stats.hp = Math.max(0, m.stats.hp - share);
+        m.stats.hp = Math.max(0, Math.round(m.stats.hp - share));
       });
     }
     // Sync aggregate HP from individual unit totals.
