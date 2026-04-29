@@ -158,6 +158,45 @@ const PLUNDER_ECONOMY_VILLAGE = 15;
 /** Resource quantity awarded per resource type when plundering. */
 const PLUNDER_RESOURCE_QTY   = 8;
 
+/** Gold earned per economy level per active trade route (neutral settlement) per day. */
+const TRADE_INCOME_PER_ECONOMY_LEVEL = 3;
+
+/**
+ * Bonus added to the player's combined-strength score for each captured
+ * settlement, used in the "建議統治" (Suggest Rule) diplomacy check.
+ */
+const SETTLEMENT_STRENGTH_BONUS = 50;
+
+/**
+ * Economy-level multiplier for the "resistance" score of a neutral settlement
+ * in the "建議統治" success-chance calculation.
+ */
+const ECONOMY_STRENGTH_MULTIPLIER = 60;
+
+/**
+ * Population divisor for the "resistance" score of a neutral settlement
+ * in the "建議統治" success-chance calculation (population / this value).
+ */
+const POPULATION_STRENGTH_DIVISOR = 20;
+
+/** Gold cost to hold a festival in a player-owned settlement. */
+const FESTIVAL_COST = 50;
+/** Satisfaction points gained from holding a festival (+, can push sat into positive). */
+const FESTIVAL_SATISFACTION_BOOST = 20;
+/** Minimum days between festivals in the same settlement. */
+const FESTIVAL_COOLDOWN_DAYS = 7;
+/** Gold cost multiplied by the current economy level for the Invest & Develop action. */
+const INVEST_BASE_COST = 100;
+/** Days between automatic demand-resource rotations. */
+const DEMAND_ROTATION_INTERVAL = 10;
+/**
+ * All resource type names (must match NationSystem's internal RESOURCES list).
+ * Used for computing settlement demand and checking supply via trade routes.
+ */
+const RESOURCE_TYPES = ['木材', '農產', '礦石', '絲綢', '煤炭', '草藥', '魚獲', '皮毛', '食鹽', '陶器'];
+/** Minimum diplomatic relation required for foreign-settlement trade. */
+const TRADE_MIN_FOREIGN_RELATION = -20;
+
 /**
  * Buildable building catalogue (types that can be constructed by the player).
  * Excludes government buildings (palace / chief_house).
@@ -367,6 +406,24 @@ export class GameUI {
      * @type {Map<string, object>}
      */
     this._constructionState = new Map();
+
+    /**
+     * Active trade routes between settlements.
+     * Key: routeId in the format "${fromKey}→${toKey}".
+     * Value: { fromKey, fromName, toKey, toName, resources: string[], dailyGold: number }
+     * Daily gold is earned by the player when they own the fromKey settlement.
+     * Routes connect player↔player, player↔neutral, or player↔foreign settlements.
+     * Persisted in getState() / loadState().
+     * @type {Map<string, { fromKey: string, fromName: string, toKey: string, toName: string, resources: string[], dailyGold: number }>}
+     */
+    this._tradeRoutes = new Map();
+
+    /**
+     * Festival cooldowns per player settlement.
+     * Key: settlementKey.  Value: in-game day number from which the next festival is allowed.
+     * @type {Map<string, number>}
+     */
+    this._festivalCooldowns = new Map();
 
     if (savedState) {
       this.loadState(savedState);
@@ -1903,7 +1960,7 @@ export class GameUI {
     const nation    = isPlayer
       ? this.getPlayerNation()
       : isNeutral
-        ? { name: '中立', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } }
+        ? { name: '中立自治', color: '#9e9e9e', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } }
         : this.nationSystem.getNation(settlement);
     const ruler     = settlement.ruler;
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
@@ -1911,24 +1968,14 @@ export class GameUI {
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
     const flagHTML  = nation.flagApp ? renderFlagHTML(nation.flagApp, 48) : nation.emblem;
 
-    // Colour-code personality traits
-    const rulerTraitsHTML = ruler.traits.map(t => {
-      const persColor = PERSONALITY_COLORS[t];
-      const cls = t === TRAIT_RULER
-        ? 'trait-ruler'
-        : persColor ? 'trait-personality' : '';
-      const style = persColor ? ` style="color:${persColor};border-color:${persColor}88"` : '';
-      return `<span class="trait-tag ${cls}"${style}>${t}</span>`;
-    }).join('');
-
     const playerBanner = isPlayer ? `
       <div class="sd-player-banner">
         ${renderFlagHTML(nation.flagApp, 20)} ${nation.name} · 已佔領
       </div>` : '';
 
-    // Diplomacy relation info (only for NPC castle settlements)
+    // Diplomacy relation info (only for NPC castle settlements that are not neutral)
     let diplomacyHTML = '';
-    if (!isPlayer && settlement.type === 'castle' && this.diplomacySystem && this.nationSystem) {
+    if (!isPlayer && !isNeutral && settlement.type === 'castle' && this.diplomacySystem && this.nationSystem) {
       const nationId = settlement.nationId;
       const relVal   = this.diplomacySystem.getPlayerRelation(nationId);
       const relLevel = this.diplomacySystem.getRelationLevel(relVal);
@@ -1940,6 +1987,91 @@ export class GameUI {
           </span>
         </div>`;
     }
+
+    // Ruler section – hidden for neutral (liberated) settlements
+    let rulerHTML = '';
+    if (!isNeutral) {
+      const rulerTraitsHTML = ruler.traits.map(t => {
+        const persColor = PERSONALITY_COLORS[t];
+        const cls = t === TRAIT_RULER
+          ? 'trait-ruler'
+          : persColor ? 'trait-personality' : '';
+        const style = persColor ? ` style="color:${persColor};border-color:${persColor}88"` : '';
+        return `<span class="trait-tag ${cls}"${style}>${t}</span>`;
+      }).join('');
+      rulerHTML = `
+        <div class="sd-ruler-section">
+          <div class="sd-ruler-title">👑 統治者</div>
+          <div class="sd-ruler-card">
+            <div class="sd-ruler-name">${ruler.name}
+              <span class="sd-ruler-role">${ruler.role}</span>
+            </div>
+            <div class="sd-ruler-traits">${rulerTraitsHTML}</div>
+            <div class="sd-ruler-stats">
+              <div class="sd-r-stat"><span>攻擊</span><strong>${ruler.stats.attack}</strong></div>
+              <div class="sd-r-stat"><span>防禦</span><strong>${ruler.stats.defense}</strong></div>
+              <div class="sd-r-stat"><span>士氣</span><strong>${ruler.stats.morale}</strong></div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    // Neutral-settlement action buttons (建議統治 / 進行貿易)
+    let neutralActionsHTML = '';
+    if (isNeutral) {
+      const sKey = this._settlementKey(settlement);
+      // New route format: find any route that involves this settlement
+      const existingRoute = sKey
+        ? [...this._tradeRoutes.values()].find(r => r.toKey === sKey || r.fromKey === sKey)
+        : null;
+
+      // Player strength vs settlement independence – determine suggest-rule label
+      const playerStr  = this._getPlayerStrength();
+      const settlementStr = settlement.economyLevel * ECONOMY_STRENGTH_MULTIPLIER
+                          + Math.floor(settlement.population / POPULATION_STRENGTH_DIVISOR);
+      const ratio = playerStr / (playerStr + settlementStr || 1);
+      const ruleChanceLabel = ratio >= 0.7
+        ? '（勝算高）'
+        : ratio >= 0.4
+          ? '（勝算中等）'
+          : '（勝算低）';
+
+      const tradeRouteInfo = existingRoute
+        ? `<div class="sd-trade-active">🛤 貿易路線已建立 · 每日 +${existingRoute.dailyGold} 金幣（${existingRoute.fromName} → ${existingRoute.toName}）</div>`
+        : '';
+
+      const { ok: tradeOk, reason: tradeReason } = this._canEstablishTradeWith(settlement);
+
+      neutralActionsHTML = `
+        <div class="sd-neutral-section">
+          <div class="sd-neutral-title">🏳 中立自治區</div>
+          <div class="sd-neutral-note">此地無國家統治，以自治方式運作。</div>
+          ${tradeRouteInfo}
+          <div class="sd-neutral-actions">
+            <button class="btn-sd-suggest-rule" id="btn-sd-suggest-rule">
+              ⚔ 建議統治<span class="btn-sd-chance">${ruleChanceLabel}</span>
+            </button>
+            <button class="btn-sd-trade${existingRoute ? ' active' : ''}${!tradeOk && !existingRoute ? ' disabled' : ''}"
+                    id="btn-sd-trade"
+                    ${!tradeOk && !existingRoute ? 'title="' + tradeReason + '"' : ''}>
+              ${existingRoute ? '🛤 查看貿易' : '🤝 進行貿易'}
+            </button>
+          </div>
+          ${!tradeOk && !existingRoute ? `<div class="sd-neutral-reason">${tradeReason}</div>` : ''}
+        </div>`;
+    }
+
+    // Demand resource row (shown for all settlement types)
+    const sKey        = this._settlementKey(settlement);
+    const demandRes   = sKey ? this._getSettlementDemand(sKey, settlement) : null;
+    const demandMet   = sKey && isPlayer ? this._isSettlementDemandMet(sKey, settlement) : null;
+    const demandHTML  = demandRes ? `
+      <div class="sd-row sd-demand-row">
+        <span class="sd-label">需求資源</span>
+        <span class="sd-value sd-demand-val${demandMet === false ? ' unmet' : (demandMet === true ? ' met' : '')}">
+          ${demandRes}${demandMet === true ? ' ✅' : demandMet === false ? ' ⚠ 未供應' : ''}
+        </span>
+      </div>` : '';
 
     document.getElementById('ui-settlement-detail-icon').innerHTML = flagHTML;
     document.getElementById('ui-settlement-detail-name').textContent = settlement.name;
@@ -1964,28 +2096,247 @@ export class GameUI {
         <span class="sd-label">盛產資源</span>
         <span class="sd-value">${settlement.resources.join('、')}</span>
       </div>
+      ${demandHTML}
       ${diplomacyHTML}
-      <div class="sd-ruler-section">
-        <div class="sd-ruler-title">👑 統治者</div>
-        <div class="sd-ruler-card">
-          <div class="sd-ruler-name">${ruler.name}
-            <span class="sd-ruler-role">${ruler.role}</span>
-          </div>
-          <div class="sd-ruler-traits">${rulerTraitsHTML}</div>
-          <div class="sd-ruler-stats">
-            <div class="sd-r-stat"><span>攻擊</span><strong>${ruler.stats.attack}</strong></div>
-            <div class="sd-r-stat"><span>防禦</span><strong>${ruler.stats.defense}</strong></div>
-            <div class="sd-r-stat"><span>士氣</span><strong>${ruler.stats.morale}</strong></div>
-          </div>
-        </div>
-      </div>
+      ${rulerHTML}
+      ${neutralActionsHTML}
     `;
+
+    // Wire up neutral action buttons after innerHTML is set
+    if (isNeutral) {
+      const suggestBtn = document.getElementById('btn-sd-suggest-rule');
+      const tradeBtn   = document.getElementById('btn-sd-trade');
+      if (suggestBtn) {
+        suggestBtn.addEventListener('click', () => {
+          this._suggestRule(settlement);
+          this._closeSettlementDetail();
+        });
+      }
+      if (tradeBtn && !tradeBtn.classList.contains('disabled')) {
+        tradeBtn.addEventListener('click', () => {
+          this._establishTradeToNearest(settlement);
+          // Re-open to refresh trade status
+          this._closeSettlementDetail();
+          this._openSettlementDetail(settlement);
+        });
+      }
+    }
 
     document.getElementById('ui-settlement-detail-overlay').classList.add('visible');
   }
 
   _closeSettlementDetail() {
     document.getElementById('ui-settlement-detail-overlay').classList.remove('visible');
+  }
+
+  // -------------------------------------------------------------------------
+  // Neutral-settlement diplomacy helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Compute the player's combined strength score used for neutral-settlement
+   * diplomatic checks.  Formula: sum of all active units' (attack + defense)
+   * across every squad, plus a bonus of 50 per controlled settlement.
+   * @returns {number}
+   */
+  _getPlayerStrength() {
+    const squads = this.army.getSquads();
+    const combatPower = squads.reduce((total, sq) => {
+      return total + sq.members
+        .filter(m => m.active)
+        .reduce((s, m) => s + m.stats.attack + m.stats.defense, 0);
+    }, 0);
+    return combatPower + this._capturedSettlements.size * SETTLEMENT_STRENGTH_BONUS;
+  }
+
+  /**
+   * Compute the demanded resource for a settlement.
+   * The demand rotates every DEMAND_ROTATION_INTERVAL days and is always
+   * a resource the settlement does not itself produce.
+   * @param {string} key  Settlement key (e.g. "castle:0").
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {string} Resource name.
+   */
+  _getSettlementDemand(key, settlement) {
+    const currentDay = this.diplomacySystem?._currentDay ?? 0;
+    const period     = Math.floor(currentDay / DEMAND_ROTATION_INTERVAL);
+    const produces   = new Set(settlement.resources ?? []);
+    const available  = RESOURCE_TYPES.filter(r => !produces.has(r));
+    if (available.length === 0) return (settlement.resources ?? ['木材'])[0];
+    // Deterministic seeded hash so different settlements pick different resources.
+    let seed = 0;
+    for (let i = 0; i < key.length; i++) seed = ((seed * 31) + key.charCodeAt(i)) >>> 0;
+    seed = (seed + period * 1597) >>> 0;
+    return available[seed % available.length];
+  }
+
+  /**
+   * Check whether a player-owned settlement's demand resource is supplied.
+   * Returns true if the settlement produces it itself, or if any trade route
+   * delivering goods TO this settlement carries that resource.
+   * @param {string} key
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {boolean}
+   */
+  _isSettlementDemandMet(key, settlement) {
+    const demand = this._getSettlementDemand(key, settlement);
+    if ((settlement.resources ?? []).includes(demand)) return true;
+    for (const [, route] of this._tradeRoutes) {
+      if (route.toKey === key && Array.isArray(route.resources) && route.resources.includes(demand)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check whether the player can establish a trade route with a given settlement.
+   * Returns { ok: boolean, reason: string }.
+   * @param {import('../systems/NationSystem.js').Settlement} toSettlement
+   * @returns {{ ok: boolean, reason: string }}
+   */
+  _canEstablishTradeWith(toSettlement) {
+    const cid = toSettlement.controllingNationId;
+    if (cid === PLAYER_NATION_ID) return { ok: true, reason: '' };
+    if (cid === NEUTRAL_NATION_ID) {
+      const playerStr = this._getPlayerStrength();
+      const settlStr  = toSettlement.economyLevel * ECONOMY_STRENGTH_MULTIPLIER
+                      + Math.floor(toSettlement.population / POPULATION_STRENGTH_DIVISOR);
+      if (playerStr / (playerStr + settlStr || 1) >= 0.3) return { ok: true, reason: '' };
+      return { ok: false, reason: '玩家實力不足，無法說服此地區開放通商' };
+    }
+    if (this.diplomacySystem && cid >= 0) {
+      const rel = this.diplomacySystem.getPlayerRelation(cid);
+      if (rel >= TRADE_MIN_FOREIGN_RELATION) return { ok: true, reason: '' };
+      return { ok: false, reason: `關係值 ${rel} 過低（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）` };
+    }
+    return { ok: false, reason: '無法建立貿易路線' };
+  }
+
+  /**
+   * Attempt to convince a neutral settlement to accept player governance.
+   * Success probability depends on the player's combined strength vs. the
+   * settlement's resistance (population + economy).
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _suggestRule(settlement) {
+    const playerStr     = this._getPlayerStrength();
+    const settlementStr = settlement.economyLevel * ECONOMY_STRENGTH_MULTIPLIER
+                        + Math.floor(settlement.population / POPULATION_STRENGTH_DIVISOR);
+    const successChance = playerStr / (playerStr + settlementStr || 1);
+    const roll          = Math.random();
+
+    if (roll < successChance) {
+      // Success – annex the settlement peacefully
+      this._captureSettlement(settlement);
+      this._addInboxMessage('🏰', `${settlement.name} 接受了玩家的統治建議，和平納入版圖！`);
+      if (this._activePanel === 'nations') this._renderDiplomacy();
+    } else {
+      // Failure – the settlement refuses
+      const chancePercent = Math.round(successChance * 100);
+      this._addInboxMessage('❌', `${settlement.name} 拒絕了統治建議（成功率約 ${chancePercent}%），民心尚未歸附。`);
+    }
+  }
+
+  /**
+   * Establish a fixed daily trade route between a neutral settlement and
+   * the nearest player-controlled city.
+   * If no player city exists the route is stored but yields 0 gold until
+   * the player captures a settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  /**
+   * Establish a trade route between two explicit settlements.
+   * The player must own `fromSettlement`.
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement  Player-owned origin.
+   * @param {import('../systems/NationSystem.js').Settlement} toSettlement    Target settlement.
+   */
+  _establishTrade(fromSettlement, toSettlement) {
+    const fromKey = this._settlementKey(fromSettlement);
+    const toKey   = this._settlementKey(toSettlement);
+    if (!fromKey || !toKey || fromKey === toKey) return;
+
+    const routeId = `${fromKey}→${toKey}`;
+    if (this._tradeRoutes.has(routeId)) {
+      const r = this._tradeRoutes.get(routeId);
+      this._addInboxMessage('🛤', `貿易路線 ${r.fromName} → ${r.toName} 已建立中（每日 +${r.dailyGold} 金幣）。`);
+      return;
+    }
+
+    // Check conditions
+    const { ok, reason } = this._canEstablishTradeWith(toSettlement);
+    if (!ok) {
+      this._addInboxMessage('❌', `無法與 ${toSettlement.name} 建立貿易路線：${reason}`);
+      return;
+    }
+
+    const resources = [...(fromSettlement.resources ?? [])];
+    const dailyGold = Math.max(1, toSettlement.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
+    this._tradeRoutes.set(routeId, {
+      fromKey,
+      fromName:  fromSettlement.name,
+      toKey,
+      toName:    toSettlement.name,
+      resources,
+      dailyGold,
+    });
+
+    this._addInboxMessage('🤝', `與 ${toSettlement.name} 建立貿易路線！${fromSettlement.name} → ${toSettlement.name}，運送：${resources.join('、')}，每日 +${dailyGold} 金幣。`);
+  }
+
+  /**
+   * Convenience wrapper used by the neutral-settlement detail "進行貿易" button.
+   * Automatically picks the nearest player-controlled city as the origin.
+   * @param {import('../systems/NationSystem.js').Settlement} toSettlement  Neutral or foreign target.
+   */
+  _establishTradeToNearest(toSettlement) {
+    if (!this.nationSystem || !this._mapData) {
+      this._addInboxMessage('❌', '地圖資料尚未載入，無法建立貿易路線。');
+      return;
+    }
+
+    const toKey = this._settlementKey(toSettlement);
+    if (!toKey) return;
+
+    // Check if any route already ends at this settlement
+    const existing = [...this._tradeRoutes.values()].find(r => r.toKey === toKey);
+    if (existing) {
+      this._addInboxMessage('🛤', `${toSettlement.name} 的貿易路線已建立，每日 +${existing.dailyGold} 金幣（來自 ${existing.fromName}）。`);
+      return;
+    }
+
+    // Find nearest player-controlled settlement
+    let nearestSett = null;
+    let minDist     = Infinity;
+
+    const toIdx  = toSettlement.type === 'castle'
+      ? this.nationSystem.castleSettlements.indexOf(toSettlement)
+      : this.nationSystem.villageSettlements.indexOf(toSettlement);
+    const toTile = toSettlement.type === 'castle'
+      ? this._mapData.castles[toIdx]
+      : this._mapData.villages[toIdx];
+
+    if (toTile) {
+      const checkArr = (arr, mapArr, typeLabel) => {
+        arr.forEach((ps, i) => {
+          const pKey = `${typeLabel}:${i}`;
+          if (!this._capturedSettlements.has(pKey)) return;
+          const tile = mapArr[i];
+          if (!tile) return;
+          const dx = tile.x - toTile.x;
+          const dy = tile.y - toTile.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < minDist) { minDist = dist; nearestSett = ps; }
+        });
+      };
+      checkArr(this.nationSystem.castleSettlements,  this._mapData.castles,  'castle');
+      checkArr(this.nationSystem.villageSettlements, this._mapData.villages, 'village');
+    }
+
+    if (!nearestSett) {
+      this._addInboxMessage('❌', '尚未佔領任何城市，無法派出商隊。');
+      return;
+    }
+
+    this._establishTrade(nearestSett, toSettlement);
   }
 
   // -------------------------------------------------------------------------
@@ -2203,13 +2554,74 @@ export class GameUI {
       });
     }
 
+    // Demand rotation notification every DEMAND_ROTATION_INTERVAL days
+    {
+      const currentDay = this.diplomacySystem?._currentDay ?? 0;
+      if (currentDay > 0 && currentDay % DEMAND_ROTATION_INTERVAL === 0 && this._satisfactionMap.size > 0) {
+        const parts = [];
+        for (const [key] of this._satisfactionMap) {
+          const s = this._getSettlementByKey(key);
+          if (s) parts.push(`${s.name}：需要 ${this._getSettlementDemand(key, s)}`);
+        }
+        if (parts.length > 0) {
+          this._addInboxMessage('📊', `各地區需求資源已更新──${parts.join('、')}`);
+        }
+      }
+    }
+
     // Satisfaction drift: each player-owned settlement moves ±2/day toward 0.
+    // Drift is paused for settlements whose demand resource is not being supplied.
     for (const [key, sat] of this._satisfactionMap) {
+      const s = this._getSettlementByKey(key);
+      if (s && !this._isSettlementDemandMet(key, s)) continue; // demand unmet – skip
       if (sat < 0) {
         this._satisfactionMap.set(key, Math.min(0, sat + 2));
       } else if (sat > 0) {
         this._satisfactionMap.set(key, Math.max(0, sat - 2));
       }
+    }
+
+    // Trade-route income: collect gold from each active trade route.
+    if (this._tradeRoutes.size > 0) {
+      let totalTradeGold = 0;
+      const brokenRoutes = [];
+      for (const [routeId, route] of this._tradeRoutes) {
+        // Skip old-format routes (migration safety: old format used settlement key directly)
+        if (!route.fromKey || !route.toKey) {
+          brokenRoutes.push({ routeId, name: routeId });
+          continue;
+        }
+        const fromSett = this._getSettlementByKey(route.fromKey);
+        const toSett   = this._getSettlementByKey(route.toKey);
+        // Break if either settlement no longer exists
+        if (!fromSett || !toSett) {
+          brokenRoutes.push({ routeId, name: `${route.fromName ?? route.fromKey} → ${route.toName ?? route.toKey}` });
+          continue;
+        }
+        const fromIsPlayer = fromSett.controllingNationId === PLAYER_NATION_ID;
+        const toIsPlayer   = toSett.controllingNationId   === PLAYER_NATION_ID;
+        // Break if from-settlement is no longer player-owned
+        if (!fromIsPlayer) {
+          brokenRoutes.push({ routeId, name: `${route.fromName} → ${route.toName}` });
+          continue;
+        }
+        // Break if target is foreign and player is at war with them
+        if (!toIsPlayer && toSett.controllingNationId >= 0 && this.diplomacySystem) {
+          const atWar = this.diplomacySystem.isAtWar(_PLAYER_NATION_ID_UI, toSett.controllingNationId);
+          if (atWar) {
+            brokenRoutes.push({ routeId, name: `${route.fromName} → ${route.toName}` });
+            continue;
+          }
+        }
+        totalTradeGold += route.dailyGold;
+      }
+      if (totalTradeGold > 0) {
+        this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: totalTradeGold });
+      }
+      brokenRoutes.forEach(({ routeId, name }) => {
+        this._tradeRoutes.delete(routeId);
+        this._addInboxMessage('🛤', `貿易路線 ${name} 已中斷。`);
+      });
     }
 
     // Tick building construction queues for every settlement.
@@ -3290,6 +3702,22 @@ export class GameUI {
            </div>`
         : '';
 
+      // Demand resource display
+      const demandRes = this._getSettlementDemand(key, settlement);
+      const demandMet = this._isSettlementDemandMet(key, settlement);
+      const demandColor = demandMet ? '#66bb6a' : '#ef6c00';
+      const demandNote  = demandMet ? '✅ 已供應' : '⚠ 未供應 – 滿意度無法自動恢復';
+
+      // Festival cooldown check
+      const currentDay     = this.diplomacySystem?._currentDay ?? 0;
+      const cooldownExpiry = this._festivalCooldowns.get(key) ?? 0;
+      const festivalReady  = currentDay >= cooldownExpiry;
+      const daysLeft       = cooldownExpiry - currentDay;
+
+      // Invest cost
+      const investCost     = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
+      const maxEco         = (settlement.economyLevel ?? 1) >= 5;
+
       taxHTML = `
         <div class="gov-tax-section">
           <div class="gov-tax-title">📋 地區管理</div>
@@ -3302,7 +3730,29 @@ export class GameUI {
             <span class="gov-stat-label">預期稅收</span>
             <span class="gov-stat-val">🪙${taxYield}</span>
           </div>
+          <div class="gov-stat-row-small">
+            <span class="gov-stat-label">需求資源</span>
+            <span class="gov-stat-val" style="color:${demandColor}">${demandRes}（${demandNote}）</span>
+          </div>
           <button class="btn-buy gov-tax-btn" id="btn-collect-tax">🏦 徵收稅款</button>
+        </div>
+        <div class="gov-civic-section">
+          <div class="gov-civic-title">🏙 市政活動</div>
+          <button class="btn-buy gov-festival-btn${festivalReady ? '' : ' disabled'}"
+                  id="btn-festival"
+                  ${festivalReady ? '' : 'disabled title="冷卻中"'}>
+            🎉 舉辦節慶<span class="gov-civic-cost">-🪙${FESTIVAL_COST}</span>
+            ${!festivalReady ? `<span class="gov-civic-cd">（${daysLeft} 天後可用）</span>` : ''}
+          </button>
+          <button class="btn-buy gov-invest-btn${maxEco ? ' disabled' : ''}"
+                  id="btn-invest"
+                  ${maxEco ? 'disabled title="已達最高等級"' : ''}>
+            💰 投資發展<span class="gov-civic-cost">-🪙${maxEco ? '—' : investCost}</span>
+            ${maxEco ? '<span class="gov-civic-cd">（已達最高）</span>' : ''}
+          </button>
+          <button class="btn-buy gov-trade-route-btn" id="btn-manage-trade">
+            🛤 管理貿易路線
+          </button>
         </div>`;
     }
 
@@ -3335,6 +3785,8 @@ export class GameUI {
     this._attachFacilityBack(settlement);
 
     if (isOwnedByPlayer) {
+      const currentDay = this.diplomacySystem?._currentDay ?? 0;
+
       document.getElementById('btn-collect-tax')?.addEventListener('click', () => {
         const newSat = Math.max(-100, (this._satisfactionMap.get(key) ?? -50) - 10);
         this._satisfactionMap.set(key, newSat);
@@ -3343,6 +3795,36 @@ export class GameUI {
         // Re-render to reflect updated satisfaction
         this._renderGovBuilding(building, settlement);
       });
+
+      document.getElementById('btn-festival')?.addEventListener('click', () => {
+        const gold = this._getGold();
+        if (gold < FESTIVAL_COST) { this._toast('💸 金幣不足！'); return; }
+        this._spendGold(FESTIVAL_COST);
+        const prevSat = this._satisfactionMap.get(key) ?? -50;
+        const newSat  = Math.min(100, prevSat + FESTIVAL_SATISFACTION_BOOST);
+        this._satisfactionMap.set(key, newSat);
+        this._festivalCooldowns.set(key, currentDay + FESTIVAL_COOLDOWN_DAYS);
+        this._addInboxMessage('🎉', `${settlement.name} 舉辦了節慶！民心 ${prevSat >= 0 ? '+' : ''}${prevSat} → ${newSat >= 0 ? '+' : ''}${newSat}（消耗 ${FESTIVAL_COST} 🪙）`);
+        this._refreshGoldDisplay();
+        this._renderGovBuilding(building, settlement);
+      });
+
+      document.getElementById('btn-invest')?.addEventListener('click', () => {
+        const cost = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
+        const gold = this._getGold();
+        if (gold < cost) { this._toast('💸 金幣不足！'); return; }
+        if ((settlement.economyLevel ?? 1) >= 5) { this._toast('⭐ 已達最高經濟等級！'); return; }
+        this._spendGold(cost);
+        settlement.economyLevel = Math.min(5, (settlement.economyLevel ?? 1) + 1);
+        this._addInboxMessage('💰', `${settlement.name} 投資發展完成！經濟等級提升至 ${'⭐'.repeat(settlement.economyLevel)}（消耗 ${cost} 🪙）`);
+        this._refreshGoldDisplay();
+        this._renderGovBuilding(building, settlement);
+      });
+
+      document.getElementById('btn-manage-trade')?.addEventListener('click', () => {
+        this._renderTradeRoutePanel(building, settlement);
+      });
+
       document.getElementById('btn-send-letter')?.addEventListener('click', () => {
         this._renderSendLetter(settlement);
       });
@@ -3445,6 +3927,128 @@ export class GameUI {
     bindCard('diplo-nap',       () => this._renderNapProposal(building, settlement));
     bindCard('diplo-joint-war', () => this._renderJointWarProposal(building, settlement));
     bindCard('diplo-mpt',       () => this._renderMutualProtectionProposal(building, settlement));
+  }
+
+  // -------------------------------------------------------------------------
+  // Trade route management panel (player-owned government building)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Show the trade route management screen for a player-owned settlement.
+   * Lists existing routes and lets the player add new ones.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement  Player-owned.
+   */
+  _renderTradeRoutePanel(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const fromKey = this._settlementKey(settlement);
+    if (!fromKey) return;
+
+    // Routes originating from this settlement
+    const myRoutes = [...this._tradeRoutes.entries()]
+      .filter(([, r]) => r.fromKey === fromKey)
+      .map(([id, r]) => ({ id, ...r }));
+
+    const existingHTML = myRoutes.length > 0
+      ? myRoutes.map(r => `
+          <div class="tr-route-row">
+            <span class="tr-route-dest">${r.toName}</span>
+            <span class="tr-route-goods">${(r.resources ?? []).join('、') || '—'}</span>
+            <span class="tr-route-gold">+${r.dailyGold} 🪙/日</span>
+            <button class="tr-route-del" data-route-id="${r.id}" title="取消路線">✕</button>
+          </div>`).join('')
+      : '<div class="tr-empty">尚無對外貿易路線</div>';
+
+    // All other settlements as potential destinations
+    const allSettlements = [
+      ...(this.nationSystem?.castleSettlements  ?? []).map((s, i) => ({ s, k: `castle:${i}` })),
+      ...(this.nationSystem?.villageSettlements ?? []).map((s, i) => ({ s, k: `village:${i}` })),
+    ].filter(({ k }) => k !== fromKey);
+
+    // Compute distances for sorting
+    let sTile = null;
+    if (this._mapData) {
+      const sIdx = settlement.type === 'castle'
+        ? this.nationSystem.castleSettlements.indexOf(settlement)
+        : this.nationSystem.villageSettlements.indexOf(settlement);
+      sTile = settlement.type === 'castle'
+        ? this._mapData.castles[sIdx]
+        : this._mapData.villages[sIdx];
+    }
+
+    const candidates = allSettlements.map(({ s, k }) => {
+      let dist = 9999;
+      if (sTile && this._mapData) {
+        const tIdx = s.type === 'castle'
+          ? this.nationSystem.castleSettlements.indexOf(s)
+          : this.nationSystem.villageSettlements.indexOf(s);
+        const tile = s.type === 'castle' ? this._mapData.castles[tIdx] : this._mapData.villages[tIdx];
+        if (tile) { const dx = tile.x - sTile.x, dy = tile.y - sTile.y; dist = Math.round(Math.sqrt(dx*dx + dy*dy)); }
+      }
+      const alreadyConnected = this._tradeRoutes.has(`${fromKey}→${k}`);
+      const { ok, reason }   = this._canEstablishTradeWith(s);
+      // Determine label by ownership
+      let typeLabel = '', typeColor = '#9e9e9e';
+      if (s.controllingNationId === PLAYER_NATION_ID) { typeLabel = '己方'; typeColor = '#e2c97e'; }
+      else if (s.controllingNationId === NEUTRAL_NATION_ID) { typeLabel = '中立'; typeColor = '#90a4ae'; }
+      else { typeLabel = '外國'; typeColor = '#64b5f6'; }
+      return { s, k, dist, ok, reason, alreadyConnected, typeLabel, typeColor };
+    }).sort((a, b) => a.dist - b.dist);
+
+    const candidatesHTML = candidates.map(c => {
+      const gold = Math.max(1, c.s.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
+      const res  = (c.s.resources ?? []).join('、') || '—';
+      return `
+        <div class="tr-cand-row${c.ok && !c.alreadyConnected ? '' : ' tr-cand-locked'}">
+          <span class="tr-cand-type" style="color:${c.typeColor}">${c.typeLabel}</span>
+          <div class="tr-cand-info">
+            <span class="tr-cand-name">${c.s.name}</span>
+            <span class="tr-cand-detail">資源：${res}　距離：${c.dist}</span>
+            ${!c.ok && !c.alreadyConnected ? `<span class="tr-cand-reason">${c.reason}</span>` : ''}
+          </div>
+          <button class="tr-cand-btn${c.alreadyConnected ? ' connected' : ''}${c.ok && !c.alreadyConnected ? '' : ' disabled'}"
+                  data-to-key="${c.k}"
+                  ${c.ok && !c.alreadyConnected ? '' : 'disabled'}>
+            ${c.alreadyConnected ? '已連接' : `+${gold}🪙`}
+          </button>
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">🛤 貿易路線管理</div>
+      <div class="tr-section-title">現有路線</div>
+      <div class="tr-route-list">${existingHTML}</div>
+      <div class="tr-section-title">可建立路線</div>
+      <div class="tr-candidates">${candidatesHTML || '<div class="tr-empty">無可用目標</div>'}</div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    // Delete route buttons
+    content.querySelectorAll('.tr-route-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const routeId = btn.dataset.routeId;
+        const route   = this._tradeRoutes.get(routeId);
+        if (!route) return;
+        this._tradeRoutes.delete(routeId);
+        this._addInboxMessage('🛤', `已取消 ${route.fromName} → ${route.toName} 的貿易路線。`);
+        this._renderTradeRoutePanel(building, settlement);
+      });
+    });
+
+    // Add route buttons
+    content.querySelectorAll('.tr-cand-btn:not(.disabled):not(.connected)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const toKey  = btn.dataset.toKey;
+        const toSett = this._getSettlementByKey(toKey);
+        if (!toSett) return;
+        this._establishTrade(settlement, toSett);
+        this._renderTradeRoutePanel(building, settlement);
+      });
+    });
   }
 
   /**
@@ -4925,26 +5529,48 @@ export class GameUI {
     document.getElementById('battle-scene-vs').textContent =
       `敵 ${enemy.hp}/${enemy.maxHp}  ⚔  我 ${player.hp}/${player.maxHp}`;
 
-    // Enemy unit row (ruler icon + troop icons, faded when defeated)
-    const enemyAlive = Math.max(0, Math.ceil(enemy.troopCount * enemyPct / 100));
-    const enemyIcons = [
-      `<span class="btl-unit-enemy btl-leader${enemyPct === 0 ? ' btl-fallen' : ''}" title="${enemy.name} ${enemy.role}">👑</span>`,
-      ...Array.from({ length: enemy.troopCount }, (_, i) =>
-        `<span class="btl-unit-enemy${i < enemyAlive ? '' : ' btl-fallen'}">⚔</span>`
-      ),
-    ];
-    document.getElementById('battle-enemy-row').innerHTML =
-      `<div class="btl-row-label">敵軍陣列</div><div class="btl-unit-row">${enemyIcons.join('')}</div>`;
+    // Enemy unit row – build DOM structure once, then only toggle btl-fallen classes
+    const enemyRowEl  = document.getElementById('battle-enemy-row');
+    const playerRowEl = document.getElementById('battle-player-row');
 
-    // Player unit row (character avatars, faded when defeated)
-    const aliveCount   = Math.ceil(player.memberCount * playerPct / 100);
-    const memberIcons  = player.members.map((m, idx) => {
-      const alive    = idx < aliveCount;
-      const charHtml = m.appearance ? renderCharHTML(m.appearance, 28) : '👤';
-      return `<span class="btl-unit-player${alive ? '' : ' btl-fallen'}" title="${m.name}${alive ? '' : ' (陣亡)'}">${charHtml}</span>`;
+    if (!state._unitRowsRendered) {
+      const enemyIcons = [
+        `<span class="btl-unit-enemy btl-leader" data-btl-leader title="${enemy.name} ${enemy.role}">👑</span>`,
+        ...Array.from({ length: enemy.troopCount }, (_, i) =>
+          `<span class="btl-unit-enemy" data-btl-enemy-idx="${i}">⚔</span>`
+        ),
+      ];
+      enemyRowEl.innerHTML =
+        `<div class="btl-row-label">敵軍陣列</div><div class="btl-unit-row">${enemyIcons.join('')}</div>`;
+
+      const memberIcons = player.members.map((m, idx) => {
+        const charHtml = m.appearance ? renderCharHTML(m.appearance, 28) : '👤';
+        return `<span class="btl-unit-player" data-btl-player-idx="${idx}" title="${m.name}">${charHtml}</span>`;
+      });
+      playerRowEl.innerHTML =
+        `<div class="btl-unit-row">${memberIcons.join('')}</div><div class="btl-row-label">我方陣列</div>`;
+
+      state._unitRowsRendered = true;
+    }
+
+    // Update fallen state for enemy units
+    const enemyAlive = Math.max(0, Math.ceil(enemy.troopCount * enemyPct / 100));
+    const leaderEl = enemyRowEl.querySelector('[data-btl-leader]');
+    if (leaderEl) leaderEl.classList.toggle('btl-fallen', enemyPct === 0);
+    enemyRowEl.querySelectorAll('[data-btl-enemy-idx]').forEach(el => {
+      const i = parseInt(el.dataset.btlEnemyIdx, 10);
+      el.classList.toggle('btl-fallen', i >= enemyAlive);
     });
-    document.getElementById('battle-player-row').innerHTML =
-      `<div class="btl-unit-row">${memberIcons.join('')}</div><div class="btl-row-label">我方陣列</div>`;
+
+    // Update fallen state for player units
+    const aliveCount = Math.ceil(player.memberCount * playerPct / 100);
+    playerRowEl.querySelectorAll('[data-btl-player-idx]').forEach(el => {
+      const idx   = parseInt(el.dataset.btlPlayerIdx, 10);
+      const alive = idx < aliveCount;
+      el.classList.toggle('btl-fallen', !alive);
+      const m = player.members[idx];
+      if (m) el.title = m.name + (alive ? '' : ' (陣亡)');
+    });
 
     // Battle log (last 3 lines)
     document.getElementById('battle-scene-log').innerHTML =
@@ -4960,18 +5586,24 @@ export class GameUI {
         retreat: { icon: '🏃', label: '撤退',     cls: 'btl-result-retreat'},
       };
       const r = resultMeta[result] ?? resultMeta.retreat;
-      const alreadyCaptured  = result === 'victory' && this.isPlayerSettlement(settlement);
-      const alreadyLiberated = result === 'victory' && settlement.controllingNationId === NEUTRAL_NATION_ID;
-      const alreadyPlundered = result === 'victory' && state.plundered;
+      const alreadyCaptured   = result === 'victory' && this.isPlayerSettlement(settlement);
+      const isNeutralTarget   = result === 'victory' && settlement.controllingNationId === NEUTRAL_NATION_ID;
+      const alreadyPlundered  = result === 'victory' && state.plundered;
+      // An "alreadyLiberated" badge is no longer shown for neutral targets –
+      // instead the player may choose to Govern or Plunder even if they
+      // previously liberated the settlement.
 
       let victoryActions = '';
       if (result === 'victory') {
         if (alreadyCaptured) {
           victoryActions = `<div class="btl-captured-badge">🏴 已佔領</div>`;
-        } else if (alreadyLiberated) {
-          victoryActions = `<div class="btl-liberated-badge">🏳 已解放</div>`;
         } else if (alreadyPlundered) {
           victoryActions = `<div class="btl-captured-badge">💰 已掠奪</div>`;
+        } else if (isNeutralTarget) {
+          // Neutral territory: offer Govern or Plunder (no Liberate – already neutral)
+          victoryActions = `
+            <button id="btn-battle-govern"  class="btn-battle-capture">🏰 統治</button>
+            <button id="btn-battle-plunder" class="btn-battle-plunder">💰 掠奪</button>`;
         } else {
           victoryActions = `
             <button id="btn-battle-capture"  class="btn-battle-capture">🏴 佔領</button>
@@ -4985,22 +5617,34 @@ export class GameUI {
         ${victoryActions}
         <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
 
-      if (result === 'victory' && !alreadyCaptured && !alreadyLiberated && !alreadyPlundered) {
-        actionsEl.querySelector('#btn-battle-capture').addEventListener('click', () => {
-          this._captureSettlement(settlement);
-          this._renderBattleScene(); // re-render to flip buttons → badge
-        });
-        actionsEl.querySelector('#btn-battle-plunder').addEventListener('click', () => {
-          this._plunderSettlement(settlement);
-          this._renderBattleScene(); // re-render to show plunder badge
-        });
-        actionsEl.querySelector('#btn-battle-liberate').addEventListener('click', () => {
-          this._liberateSettlement(settlement);
-          this._renderBattleScene(); // re-render to flip buttons → badge
-        });
+      if (result === 'victory' && !alreadyCaptured && !alreadyPlundered) {
+        if (isNeutralTarget) {
+          actionsEl.querySelector('#btn-battle-govern')?.addEventListener('click', () => {
+            this._captureSettlement(settlement);
+            this._renderBattleScene();
+          });
+          actionsEl.querySelector('#btn-battle-plunder')?.addEventListener('click', () => {
+            this._plunderSettlement(settlement);
+            this._renderBattleScene();
+          });
+        } else {
+          actionsEl.querySelector('#btn-battle-capture')?.addEventListener('click', () => {
+            this._captureSettlement(settlement);
+            this._renderBattleScene();
+          });
+          actionsEl.querySelector('#btn-battle-plunder')?.addEventListener('click', () => {
+            this._plunderSettlement(settlement);
+            this._renderBattleScene();
+          });
+          actionsEl.querySelector('#btn-battle-liberate')?.addEventListener('click', () => {
+            this._liberateSettlement(settlement);
+            this._renderBattleScene();
+          });
+        }
       }
       actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
-    } else {
+    } else if (!state._actionsRendered) {
+      // Render command buttons only once – they don't change during active battle
       actionsEl.innerHTML = `
         <button class="btn-battle-cmd" id="btn-battle-attack">⚔ 進攻</button>
         <button class="btn-battle-cmd" id="btn-battle-defend">🛡 防守</button>
@@ -5008,6 +5652,7 @@ export class GameUI {
       actionsEl.querySelector('#btn-battle-attack').addEventListener('click', () => this._handleBattleCommand('attack'));
       actionsEl.querySelector('#btn-battle-defend').addEventListener('click', () => this._handleBattleCommand('defend'));
       actionsEl.querySelector('#btn-battle-retreat').addEventListener('click', () => this._handleBattleCommand('retreat'));
+      state._actionsRendered = true;
     }
   }
 
@@ -5168,6 +5813,8 @@ export class GameUI {
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
       constructionState,
+      tradeRoutes:          [...this._tradeRoutes.entries()],
+      festivalCooldowns:     Object.fromEntries(this._festivalCooldowns),
     };
   }
 
@@ -5220,6 +5867,18 @@ export class GameUI {
           portTile:      entry.portTile ?? null,
         });
       }
+    }
+    if (Array.isArray(state.tradeRoutes)) {
+      this._tradeRoutes = new Map(
+        state.tradeRoutes
+          .filter(([k, v]) => typeof k === 'string' && v && typeof v === 'object')
+          .map(([k, v]) => [k, v]),
+      );
+    }
+    if (state.festivalCooldowns && typeof state.festivalCooldowns === 'object') {
+      this._festivalCooldowns = new Map(
+        Object.entries(state.festivalCooldowns).map(([k, v]) => [k, Number(v)]),
+      );
     }
   }
 
@@ -5345,6 +6004,20 @@ export class GameUI {
         if (this._activePanel === 'nations') this._renderNations();
       }
     }
+
+    // Propagate conquest fear to all surrounding nations.
+    if (this.diplomacySystem) {
+      const pk = this.getPlayerNation();
+      this.diplomacySystem.recordConquest({
+        settlementName:      settlement.name,
+        attackerDisplayName: pk.name,
+        targetNationId:      settlement.nationId,
+      });
+      // Refresh diplomacy panel if it's open so players see the impact immediately.
+      if (this._activePanel === 'nations') {
+        this._renderDiplomacy();
+      }
+    }
   }
 
   /**
@@ -5375,7 +6048,14 @@ export class GameUI {
       });
     });
 
-    this._addInboxMessage('💰', `掠奪了 ${settlement.name}，獲得金幣 ${goldReward} 枚及物資。`);
+    // Plundering damages the settlement's economy (min level 1).
+    const prevEco = settlement.economyLevel;
+    settlement.economyLevel = Math.max(1, settlement.economyLevel - 1);
+    const ecoNote = settlement.economyLevel < prevEco
+      ? `　經濟遭受破壞（⭐ ${prevEco} → ${settlement.economyLevel}）。`
+      : '';
+
+    this._addInboxMessage('💰', `掠奪了 ${settlement.name}，獲得金幣 ${goldReward} 枚及物資。${ecoNote}`);
 
     // Notify map to rebuild (garrison may have changed).
     if (typeof this.onCaptureSettlement === 'function') {
