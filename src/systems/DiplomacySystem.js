@@ -95,6 +95,9 @@ const NPC_PEACE_OFFER_GOLD_RATIO = 0.2;
 /** Probability that two NPC nations accept each other's peace treaty. */
 const NPC_NPC_PEACE_ACCEPT_CHANCE = 0.4;
 
+/** Minimum relation value for NPC to be considered hostile enough to be a joint-war target. */
+const JOINT_WAR_HOSTILITY_THRESHOLD = -30;
+
 /**
  * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
  * Defined here to avoid a circular import.
@@ -593,7 +596,7 @@ export class DiplomacySystem {
       const allyName = this.nationSystem.nations[allyId]?.name ?? '同盟國';
       const attackerName = attackerNationId === _PLAYER_NATION_ID
         ? '玩家'
-        : (this.nationSystem.nations[attackerNationId]?.name ?? '敵國');
+        : (this.nationSystem.nations[attackerNationId]?.name ?? '未知國家');
       this._addMemoryEntry(
         allyId,
         `依互保條約，我國向攻打 ${targetNation.name} 的 ${attackerName} 宣戰`,
@@ -1551,8 +1554,8 @@ export class DiplomacySystem {
     const rel = this.getPlayerRelation(nationId);
 
     if (type === 'nap') {
-      // Base chance 50 %, scaled by current relation.
-      let chance = 0.50 + rel / 200; // ±0.5 range from relation
+      // Base chance 50 %, scaled by relation (range ±100 → ±0.5 adjustment).
+      let chance = 0.50 + rel / 200;
       if (p === PERSONALITY_GENTLE)   chance += 0.20;
       if (p === PERSONALITY_CAUTIOUS) chance += 0.10;
       if (p === PERSONALITY_WARLIKE)  chance -= 0.25;
@@ -1564,9 +1567,10 @@ export class DiplomacySystem {
       const targetId = data.targetNationId ?? -99;
       const relWithTarget = this.getRelation(nationId, targetId);
       // NPC must be hostile toward the target (-30 or below).
-      if (relWithTarget > -30) return false;
-      // Stronger hatred → higher acceptance.
-      let chance = 0.40 + (-relWithTarget - 30) / 140; // -30 → 0.40, -100 → 0.90
+      if (relWithTarget > JOINT_WAR_HOSTILITY_THRESHOLD) return false;
+      // Stronger hatred → higher acceptance:
+      // relWithTarget = -30 → 0 bonus → 40 % base; -100 → 50 % bonus → ~90 % base.
+      let chance = 0.40 + (-relWithTarget + JOINT_WAR_HOSTILITY_THRESHOLD) / 140;
       if (p === PERSONALITY_WARLIKE)  chance += 0.20;
       if (p === PERSONALITY_ARROGANT) chance += 0.10;
       if (p === PERSONALITY_GENTLE)   chance -= 0.20;
@@ -1575,7 +1579,7 @@ export class DiplomacySystem {
     }
 
     if (type === 'mutual_protection') {
-      // Requires the player to already be at friendly/allied status.
+      // Base chance 40 %, scaled by relation (range ±100 → ±0.5 adjustment).
       let chance = 0.40 + rel / 200;
       if (p === PERSONALITY_GENTLE)   chance += 0.25;
       if (p === PERSONALITY_CAUTIOUS) chance += 0.15;

@@ -97,6 +97,9 @@ const _GOV_GREETING = {
 /** Player nation ID constant (mirrors NationSystem value). */
 const _PLAYER_NATION_ID_UI = -1;
 
+/** Minimum NPC hostility value (relation ≤ this) for joint-war target eligibility. */
+const _JOINT_WAR_HOSTILITY_THRESHOLD = -30;
+
 // ---------------------------------------------------------------------------
 // Construction system constants
 // ---------------------------------------------------------------------------
@@ -2905,7 +2908,7 @@ export class GameUI {
     const potentialTargets = this.nationSystem.nations.filter((n, tid) =>
       n && tid !== nationId && tid >= 0 &&
       !this.nationSystem.isNationExtinct(tid) &&
-      this.diplomacySystem.getRelation(nationId, tid) <= -30,
+      this.diplomacySystem.getRelation(nationId, tid) <= _JOINT_WAR_HOSTILITY_THRESHOLD,
     );
     const canJointWar = !atWar && relVal >= 20 && potentialTargets.length > 0;
 
@@ -3026,10 +3029,10 @@ export class GameUI {
     const ruler      = settlement.ruler;
     const nationName = nation?.name ?? settlement.name;
 
-    // Build target list: nations the NPC is hostile toward (relation ≤ -30)
+    // Build target list: nations the NPC is hostile toward (relation ≤ threshold)
     const targets = this.nationSystem.nations.filter((n, tid) =>
       n && tid !== nationId && tid >= 0 && !this.nationSystem.isNationExtinct(tid) &&
-      this.diplomacySystem.getRelation(nationId, tid) <= -30,
+      this.diplomacySystem.getRelation(nationId, tid) <= _JOINT_WAR_HOSTILITY_THRESHOLD,
     ).map(n => `<option value="${n.id}">${n.name}（我方與之關係 ${this.diplomacySystem.getRelation(nationId, n.id)}）</option>`).join('');
 
     content.innerHTML = `
