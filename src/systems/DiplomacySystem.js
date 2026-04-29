@@ -95,6 +95,9 @@ const NPC_PEACE_OFFER_GOLD_RATIO = 0.2;
 /** Probability that two NPC nations accept each other's peace treaty. */
 const NPC_NPC_PEACE_ACCEPT_CHANCE = 0.4;
 
+/** Minimum relation value for NPC to be considered hostile enough to be a joint-war target. */
+const JOINT_WAR_HOSTILITY_THRESHOLD = -30;
+
 /**
  * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
  * Defined here to avoid a circular import.
@@ -303,6 +306,20 @@ export class DiplomacySystem {
      * @type {Set<string>}
      */
     this._warPairs = new Set();
+
+    /**
+     * Active non-aggression pacts. Key: "A:B" where A < B (player = -1).
+     * Nations with an active NAP will not attack each other.
+     * @type {Set<string>}
+     */
+    this._nonAggressionPacts = new Set();
+
+    /**
+     * Active mutual protection pacts. Key: "A:B" where A < B (player = -1).
+     * If either nation is attacked, the other automatically declares war on the attacker.
+     * @type {Set<string>}
+     */
+    this._mutualProtectionPacts = new Set();
 
     /**
      * Peace missives currently in transit.
@@ -568,6 +585,28 @@ export class DiplomacySystem {
         this._addMemoryEntry(cId, memDesc, thirdDelta);
       }
     });
+
+    // ── Mutual Protection Pact trigger ────────────────────────────────────────
+    // If the target has mutual protection allies, those allies automatically
+    // join the war against the attacker.
+    const mpAllies = this.getMutualProtectionAllies(targetNationId);
+    mpAllies.forEach(allyId => {
+      if (allyId === attackerNationId) return; // already fighting
+      this.declareWar(allyId, attackerNationId);
+      const allyName = this.nationSystem.nations[allyId]?.name ?? '同盟國';
+      const attackerName = attackerNationId === _PLAYER_NATION_ID
+        ? '玩家'
+        : (this.nationSystem.nations[attackerNationId]?.name ?? '未知國家');
+      this._addMemoryEntry(
+        allyId,
+        `依互保條約，我國向攻打 ${targetNation.name} 的 ${attackerName} 宣戰`,
+        0,
+      );
+      if (attackerNationId === _PLAYER_NATION_ID) {
+        const penaltyDelta = -(10 + Math.floor(Math.random() * 10));
+        this.modifyPlayerRelation(allyId, penaltyDelta);
+      }
+    });
   }
 
   /**
@@ -780,6 +819,9 @@ export class DiplomacySystem {
         if (tid === id) return;
         const rel = this.getRelation(id, tid);
         if (rel > -20) return; // must be hostile
+
+        // Respect non-aggression pacts: skip this target if a NAP is active.
+        if (this.hasNonAggressionPact(id, tid)) return;
 
         // Evaluate each castle controlled by the target nation.
         castleSettlements.forEach((ts, tidx) => {
@@ -1314,8 +1356,242 @@ export class DiplomacySystem {
   }
 
   // -------------------------------------------------------------------------
-  // Peace missive system
+  // Non-Aggression Pact (互不侵犯條約)
   // -------------------------------------------------------------------------
+
+  /** @param {number} idA @param {number} idB @returns {string} */
+  _pactKey(idA, idB) {
+    const a = Math.min(idA, idB);
+    const b = Math.max(idA, idB);
+    return `${a}:${b}`;
+  }
+
+  /**
+   * Check whether two nations have an active non-aggression pact.
+   * @param {number} idA
+   * @param {number} idB
+   * @returns {boolean}
+   */
+  hasNonAggressionPact(idA, idB) {
+    if (idA === idB) return false;
+    return this._nonAggressionPacts.has(this._pactKey(idA, idB));
+  }
+
+  /**
+   * Establish a non-aggression pact between two nations.
+   * Improves their relation by a small amount as a sign of goodwill.
+   * @param {number} idA  Nation id (use -1 for player).
+   * @param {number} idB  Nation id.
+   */
+  signNonAggressionPact(idA, idB) {
+    if (idA === idB) return;
+    this._nonAggressionPacts.add(this._pactKey(idA, idB));
+    // Relation boost from formalising the agreement.
+    if (idA === _PLAYER_NATION_ID || idB === _PLAYER_NATION_ID) {
+      const npcId = idA === _PLAYER_NATION_ID ? idB : idA;
+      this.modifyPlayerRelation(npcId, 10);
+      this._addMemoryEntry(npcId, '與玩家締結互不侵犯條約，關係 +10', 10);
+    } else {
+      this.modifyNpcRelation(idA, idB, 10);
+    }
+  }
+
+  /**
+   * Break a non-aggression pact (penalty applied to the breaker's relation).
+   * @param {number} breakerNationId  The nation that breaks the pact (use -1 for player).
+   * @param {number} otherNationId    The other party.
+   */
+  breakNonAggressionPact(breakerNationId, otherNationId) {
+    if (!this.hasNonAggressionPact(breakerNationId, otherNationId)) return;
+    this._nonAggressionPacts.delete(this._pactKey(breakerNationId, otherNationId));
+    const delta = -20;
+    if (breakerNationId === _PLAYER_NATION_ID) {
+      this.modifyPlayerRelation(otherNationId, delta);
+      this._addMemoryEntry(otherNationId, `玩家撕毀了互不侵犯條約，關係 ${delta}`, delta);
+    } else if (otherNationId === _PLAYER_NATION_ID) {
+      this.modifyPlayerRelation(breakerNationId, delta);
+      this._addMemoryEntry(breakerNationId, `對方撕毀了互不侵犯條約，關係 ${delta}`, delta);
+    } else {
+      this.modifyNpcRelation(breakerNationId, otherNationId, delta);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Mutual Protection Pact (互保條約)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Check whether two nations have an active mutual protection pact.
+   * @param {number} idA
+   * @param {number} idB
+   * @returns {boolean}
+   */
+  hasMutualProtectionPact(idA, idB) {
+    if (idA === idB) return false;
+    return this._mutualProtectionPacts.has(this._pactKey(idA, idB));
+  }
+
+  /**
+   * Establish a mutual protection pact between two nations.
+   * Each party agrees to declare war on any nation that attacks the other.
+   * @param {number} idA  Nation id (use -1 for player).
+   * @param {number} idB  Nation id.
+   */
+  signMutualProtectionPact(idA, idB) {
+    if (idA === idB) return;
+    this._mutualProtectionPacts.add(this._pactKey(idA, idB));
+    if (idA === _PLAYER_NATION_ID || idB === _PLAYER_NATION_ID) {
+      const npcId = idA === _PLAYER_NATION_ID ? idB : idA;
+      this.modifyPlayerRelation(npcId, 20);
+      this._addMemoryEntry(npcId, '與玩家締結互保條約，關係 +20', 20);
+    } else {
+      this.modifyNpcRelation(idA, idB, 20);
+    }
+  }
+
+  /**
+   * Break a mutual protection pact with a substantial relation penalty.
+   * @param {number} breakerNationId
+   * @param {number} otherNationId
+   */
+  breakMutualProtectionPact(breakerNationId, otherNationId) {
+    if (!this.hasMutualProtectionPact(breakerNationId, otherNationId)) return;
+    this._mutualProtectionPacts.delete(this._pactKey(breakerNationId, otherNationId));
+    const delta = -30;
+    if (breakerNationId === _PLAYER_NATION_ID) {
+      this.modifyPlayerRelation(otherNationId, delta);
+      this._addMemoryEntry(otherNationId, `玩家撕毀了互保條約，關係 ${delta}`, delta);
+    } else if (otherNationId === _PLAYER_NATION_ID) {
+      this.modifyPlayerRelation(breakerNationId, delta);
+      this._addMemoryEntry(breakerNationId, `對方撕毀了互保條約，關係 ${delta}`, delta);
+    } else {
+      this.modifyNpcRelation(breakerNationId, otherNationId, delta);
+    }
+  }
+
+  /**
+   * Return all nation IDs that have a mutual protection pact with `nationId`.
+   * @param {number} nationId
+   * @returns {number[]}
+   */
+  getMutualProtectionAllies(nationId) {
+    const result = [];
+    for (const key of this._mutualProtectionPacts) {
+      const parts = key.split(':');
+      const a = Number(parts[0]);
+      const b = Number(parts[1]);
+      if (a === nationId) result.push(b);
+      else if (b === nationId) result.push(a);
+    }
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // Joint War Declaration (合意宣戰第三國)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Both the player and an NPC ally jointly declare war on a third nation.
+   * Improves player–ally relation and reduces both parties' relation with the target.
+   *
+   * @param {number} allyNationId    NPC ally that agreed to the joint war.
+   * @param {number} targetNationId  The nation being declared on.
+   * @returns {{ messages: string[] }}
+   */
+  applyJointWarDeclaration(allyNationId, targetNationId) {
+    const messages = [];
+    const nations  = this.nationSystem.nations;
+
+    // Declare war on the target from both sides.
+    this.declareWar(_PLAYER_NATION_ID, targetNationId);
+    this.declareWar(allyNationId, targetNationId);
+
+    // Break any NAP with the target (since we're now at war).
+    if (this.hasNonAggressionPact(_PLAYER_NATION_ID, targetNationId)) {
+      this.breakNonAggressionPact(_PLAYER_NATION_ID, targetNationId);
+    }
+    if (this.hasNonAggressionPact(allyNationId, targetNationId)) {
+      this.breakNonAggressionPact(allyNationId, targetNationId);
+    }
+
+    const allyName   = nations[allyNationId]?.name   ?? '同盟國';
+    const targetName = nations[targetNationId]?.name ?? '第三國';
+
+    // Relation effects.
+    const allianceBonus = 15;
+    this.modifyPlayerRelation(allyNationId, allianceBonus);
+    this._addMemoryEntry(allyNationId, `與玩家合意宣戰 ${targetName}，同盟關係加深 +${allianceBonus}`, allianceBonus);
+
+    const targetDelta = -(20 + Math.floor(Math.random() * 15));
+    this.modifyPlayerRelation(targetNationId, targetDelta);
+    this.modifyNpcRelation(allyNationId, targetNationId, targetDelta);
+    this._addMemoryEntry(targetNationId, `玩家與 ${allyName} 聯合宣戰，關係 ${targetDelta}`, targetDelta);
+
+    messages.push(`⚔ ${allyName} 與我方聯合向 ${targetName} 宣戰！`);
+    return { messages };
+  }
+
+  // -------------------------------------------------------------------------
+  // Direct diplomacy evaluation (face-to-face, no missive needed)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Evaluate whether an NPC nation accepts a direct diplomatic proposal.
+   * Called when the player visits the NPC's city hall in person.
+   *
+   * Proposal types:
+   *   - 'nap'              : Non-aggression pact
+   *   - 'joint_war'        : Joint war against a third nation (data.targetNationId required)
+   *   - 'mutual_protection': Mutual protection pact
+   *
+   * @param {number} nationId       NPC nation being approached.
+   * @param {'nap'|'joint_war'|'mutual_protection'} type
+   * @param {{ targetNationId?: number }} [data]
+   * @returns {boolean}  true = accepted
+   */
+  evaluateDirectDiploProposal(nationId, type, data = {}) {
+    const p   = this._rulerPersonality(this.nationSystem.castleSettlements[nationId]);
+    const rel = this.getPlayerRelation(nationId);
+
+    if (type === 'nap') {
+      // Base chance 50 %, scaled by relation (range ±100 → ±0.5 adjustment).
+      let chance = 0.50 + rel / 200;
+      if (p === PERSONALITY_GENTLE)   chance += 0.20;
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.10;
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.25;
+      if (p === PERSONALITY_ARROGANT) chance -= 0.15;
+      return Math.random() < Math.max(0.05, Math.min(0.95, chance));
+    }
+
+    if (type === 'joint_war') {
+      const targetId = data.targetNationId ?? -99;
+      const relWithTarget = this.getRelation(nationId, targetId);
+      // NPC must be hostile toward the target (-30 or below).
+      if (relWithTarget > JOINT_WAR_HOSTILITY_THRESHOLD) return false;
+      // Stronger hatred → higher acceptance:
+      // relWithTarget = -30 → 0 bonus → 40 % base; -100 → 50 % bonus → ~90 % base.
+      let chance = 0.40 + (-relWithTarget + JOINT_WAR_HOSTILITY_THRESHOLD) / 140;
+      if (p === PERSONALITY_WARLIKE)  chance += 0.20;
+      if (p === PERSONALITY_ARROGANT) chance += 0.10;
+      if (p === PERSONALITY_GENTLE)   chance -= 0.20;
+      if (p === PERSONALITY_CAUTIOUS) chance -= 0.10;
+      return Math.random() < Math.max(0.05, Math.min(0.95, chance));
+    }
+
+    if (type === 'mutual_protection') {
+      // Base chance 40 %, scaled by relation (range ±100 → ±0.5 adjustment).
+      let chance = 0.40 + rel / 200;
+      if (p === PERSONALITY_GENTLE)   chance += 0.25;
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.15;
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.20;
+      if (p === PERSONALITY_ARROGANT) chance -= 0.10;
+      return Math.random() < Math.max(0.05, Math.min(0.90, chance));
+    }
+
+    return false;
+  }
+
+
 
   /**
    * Return the world-pixel position of a settlement (castle or village).
@@ -2136,23 +2412,25 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][], warPairs: string[] }} */
+  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][], warPairs: string[], nonAggressionPacts: string[], mutualProtectionPacts: string[] }} */
   getState() {
     return {
-      playerRelations: [...this._playerRelations.entries()],
-      npcRelations:    [...this._npcRelations.entries()],
-      nationMemory:    [...this._nationMemory.entries()],
-      currentDay:      this._currentDay,
-      surrenderIndex:  [...this._surrenderIndex.entries()],
-      npcGold:         [...this._npcGold.entries()],
-      npcArmies:       [...this._npcArmies.entries()],
-      warPairs:        [...this._warPairs],
+      playerRelations:      [...this._playerRelations.entries()],
+      npcRelations:         [...this._npcRelations.entries()],
+      nationMemory:         [...this._nationMemory.entries()],
+      currentDay:           this._currentDay,
+      surrenderIndex:       [...this._surrenderIndex.entries()],
+      npcGold:              [...this._npcGold.entries()],
+      npcArmies:            [...this._npcArmies.entries()],
+      warPairs:             [...this._warPairs],
+      nonAggressionPacts:   [...this._nonAggressionPacts],
+      mutualProtectionPacts:[...this._mutualProtectionPacts],
     };
   }
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number, surrenderIndex?: [number, number][], npcGold?: [number, number][], npcArmies?: [string, object[][][]][] }|null} state
+   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number, surrenderIndex?: [number, number][], npcGold?: [number, number][], npcArmies?: [string, object[][][]][], warPairs?: string[], nonAggressionPacts?: string[], mutualProtectionPacts?: string[] }|null} state
    */
   loadState(state) {
     if (!state) return;
@@ -2204,6 +2482,17 @@ export class DiplomacySystem {
       });
     } else {
       this._detectCurrentWars();
+    }
+    // Restore pact state.
+    if (Array.isArray(state.nonAggressionPacts)) {
+      state.nonAggressionPacts.forEach(key => {
+        if (typeof key === 'string') this._nonAggressionPacts.add(key);
+      });
+    }
+    if (Array.isArray(state.mutualProtectionPacts)) {
+      state.mutualProtectionPacts.forEach(key => {
+        if (typeof key === 'string') this._mutualProtectionPacts.add(key);
+      });
     }
   }
 }

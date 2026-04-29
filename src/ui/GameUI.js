@@ -97,6 +97,9 @@ const _GOV_GREETING = {
 /** Player nation ID constant (mirrors NationSystem value). */
 const _PLAYER_NATION_ID_UI = -1;
 
+/** Minimum NPC hostility value (relation ≤ this) for joint-war target eligibility. */
+const _JOINT_WAR_HOSTILITY_THRESHOLD = -30;
+
 // ---------------------------------------------------------------------------
 // Construction system constants
 // ---------------------------------------------------------------------------
@@ -1233,6 +1236,8 @@ export class GameUI {
       const val     = this.diplomacySystem.getPlayerRelation(id);
       const level   = this.diplomacySystem.getRelationLevel(val);
       const atWar   = this.diplomacySystem.isAtWar(_PLAYER_NATION_ID_UI, id);
+      const hasNap  = this.diplomacySystem.hasNonAggressionPact(_PLAYER_NATION_ID_UI, id);
+      const hasMpt  = this.diplomacySystem.hasMutualProtectionPact(_PLAYER_NATION_ID_UI, id);
 
       const flagH = nation.flagApp
         ? renderFlagHTML(nation.flagApp, 32)
@@ -1240,12 +1245,14 @@ export class GameUI {
 
       const relVal = val > 0 ? `+${val}` : `${val}`;
       const warBadge = atWar ? `<span class="dipl-war-badge">⚔ 戰爭中</span>` : '';
+      const napBadge = hasNap ? `<span class="dipl-pact-badge dipl-nap-badge">☮ 互不侵犯</span>` : '';
+      const mptBadge = hasMpt ? `<span class="dipl-pact-badge dipl-mpt-badge">🛡 互保</span>` : '';
       const headerHTML = `
         <div class="dn-header">
           <span class="dn-flag">${flagH}</span>
           <div class="dn-title-col">
             <div class="dn-name">
-              ${nation.name} ${warBadge}
+              ${nation.name} ${warBadge}${napBadge}${mptBadge}
             </div>
             <div class="dn-ruler-line">
               ${castle ? `${castle.ruler.name}（${castle.ruler.role}） ${_personalityLabel(castle.ruler.traits)}` : ''}
@@ -2840,7 +2847,7 @@ export class GameUI {
       ${isOwnedByPlayer ? `
         <button class="btn-buy gov-letter-btn" id="btn-send-letter">📨 派送信件</button>
         <button class="btn-buy gov-construction-btn" id="btn-open-construction">🏗️ 建設選項</button>
-      ` : ''}
+      ` : `<div id="gov-foreign-diplo"></div>`}
       <div class="gov-ruler-speech">
         <em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em>
       </div>
@@ -2863,7 +2870,258 @@ export class GameUI {
       document.getElementById('btn-open-construction')?.addEventListener('click', () => {
         this._renderConstructionPanel(building, settlement);
       });
+    } else {
+      this._renderForeignDiplomacy(building, settlement);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Foreign city-hall diplomacy UI
+  // -------------------------------------------------------------------------
+
+  /**
+   * Render the diplomatic proposal panel inside a foreign nation's government
+   * building.  The player can propose a Non-Aggression Pact, a Joint War
+   * Declaration, or a Mutual Protection Pact directly (no missive needed —
+   * the ruler is right there).
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement  Foreign settlement.
+   */
+  _renderForeignDiplomacy(building, settlement) {
+    const container = document.getElementById('gov-foreign-diplo');
+    if (!container) return;
+    if (!this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId  = settlement.nationId;
+    const relVal    = this.diplomacySystem.getPlayerRelation(nationId);
+    const relLevel  = this.diplomacySystem.getRelationLevel(relVal);
+    const atWar     = this.diplomacySystem.isAtWar(_PLAYER_NATION_ID_UI, nationId);
+    const hasNap    = this.diplomacySystem.hasNonAggressionPact(_PLAYER_NATION_ID_UI, nationId);
+    const hasMpt    = this.diplomacySystem.hasMutualProtectionPact(_PLAYER_NATION_ID_UI, nationId);
+    const relStr    = relVal > 0 ? `+${relVal}` : `${relVal}`;
+
+    // Conditions for each proposal type
+    const canNap    = !atWar && !hasNap  && relVal >= -20;
+    const canMpt    = !atWar && !hasMpt  && relVal >= 60;
+    // Joint war: need relation ≥ 20 and there must be at least one nation the NPC is hostile toward
+    const potentialTargets = this.nationSystem.nations.filter((n, tid) =>
+      n && tid !== nationId && tid >= 0 &&
+      !this.nationSystem.isNationExtinct(tid) &&
+      this.diplomacySystem.getRelation(nationId, tid) <= _JOINT_WAR_HOSTILITY_THRESHOLD,
+    );
+    const canJointWar = !atWar && relVal >= 20 && potentialTargets.length > 0;
+
+    const pactBadge = (active, label) => active
+      ? `<span class="gov-pact-badge gov-pact-active">${label} 有效</span>`
+      : '';
+
+    container.innerHTML = `
+      <div class="gov-foreign-diplo-section">
+        <div class="gov-foreign-diplo-title">🤝 外交提案</div>
+        <div class="gov-foreign-diplo-rel" style="color:${relLevel.color}">
+          目前關係：${relLevel.icon} ${relLevel.label}（${relStr}）
+          ${atWar ? '<span class="dipl-war-badge">⚔ 戰爭中</span>' : ''}
+        </div>
+        ${hasNap ? pactBadge(true, '☮ 互不侵犯條約') : ''}
+        ${hasMpt ? pactBadge(true, '🛡 互保條約') : ''}
+        <div class="gov-diplo-proposals">
+          <div class="gov-diplo-proposal-card${canNap ? '' : ' disabled'}" id="diplo-nap" role="button" tabindex="${canNap ? 0 : -1}">
+            <span class="gdp-icon">☮</span>
+            <div class="gdp-info">
+              <div class="gdp-name">互不侵犯條約</div>
+              <div class="gdp-desc">${hasNap ? '條約已締結' : !atWar ? (relVal >= -20 ? '雙方同意在協議期間不互相攻伐' : '需要關係值 ≥ -20') : '戰爭狀態下無法締結'}</div>
+            </div>
+            <span class="gdp-arrow">${canNap ? '›' : '🔒'}</span>
+          </div>
+          <div class="gov-diplo-proposal-card${canJointWar ? '' : ' disabled'}" id="diplo-joint-war" role="button" tabindex="${canJointWar ? 0 : -1}">
+            <span class="gdp-icon">⚔</span>
+            <div class="gdp-info">
+              <div class="gdp-name">合意宣戰第三國</div>
+              <div class="gdp-desc">${!atWar ? (relVal >= 20 ? (potentialTargets.length > 0 ? '聯合對共同敵人發動戰爭' : '對方目前無合適的共同敵人') : '需要關係值 ≥ 20') : '戰爭狀態下無法進行'}</div>
+            </div>
+            <span class="gdp-arrow">${canJointWar ? '›' : '🔒'}</span>
+          </div>
+          <div class="gov-diplo-proposal-card${canMpt ? '' : ' disabled'}" id="diplo-mpt" role="button" tabindex="${canMpt ? 0 : -1}">
+            <span class="gdp-icon">🛡</span>
+            <div class="gdp-info">
+              <div class="gdp-name">互保條約</div>
+              <div class="gdp-desc">${hasMpt ? '條約已締結' : !atWar ? (relVal >= 60 ? '雙方同意在任一方受攻擊時共同應戰' : '需要關係值 ≥ 60（盟友）') : '戰爭狀態下無法締結'}</div>
+            </div>
+            <span class="gdp-arrow">${canMpt ? '›' : '🔒'}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const bindCard = (id, fn) => {
+      const el = container.querySelector(`#${id}`);
+      if (!el || el.classList.contains('disabled')) return;
+      el.addEventListener('click', fn);
+      el.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+      });
+    };
+
+    bindCard('diplo-nap',       () => this._renderNapProposal(building, settlement));
+    bindCard('diplo-joint-war', () => this._renderJointWarProposal(building, settlement));
+    bindCard('diplo-mpt',       () => this._renderMutualProtectionProposal(building, settlement));
+  }
+
+  /**
+   * Non-Aggression Pact proposal screen.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderNapProposal(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">☮ 互不侵犯條約</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          你向 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}）提出互不侵犯條約。<br>
+          雙方同意在條約有效期間內不互相攻伐，違約方將承受關係懲罰。
+        </div>
+        <div class="treaty-note">統治者將當場回應你的提案。</div>
+        <button class="btn-buy treaty-send-btn" id="diplo-nap-confirm">☮ 提出條約</button>
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, settlement);
+    });
+
+    document.getElementById('diplo-nap-confirm')?.addEventListener('click', () => {
+      const accepted = this.diplomacySystem.evaluateDirectDiploProposal(nationId, 'nap');
+      if (accepted) {
+        this.diplomacySystem.signNonAggressionPact(_PLAYER_NATION_ID_UI, nationId);
+        this._addInboxMessage('☮', `${nationName} 接受了互不侵犯條約！雙方關係改善 +10。`);
+        this._toast(`✅ ${nationName} 接受了互不侵犯條約！`);
+      } else {
+        const relDelta = -(3 + Math.floor(Math.random() * 5));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._addInboxMessage('❌', `${nationName} 拒絕了互不侵犯條約，關係 ${relDelta}。`);
+        this._toast(`❌ ${nationName} 拒絕了提案。`);
+      }
+      this._renderGovBuilding(building, settlement);
+    });
+  }
+
+  /**
+   * Joint War Declaration proposal screen.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderJointWarProposal(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+
+    // Build target list: nations the NPC is hostile toward (relation ≤ threshold)
+    const targets = this.nationSystem.nations.filter((n, tid) =>
+      n && tid !== nationId && tid >= 0 && !this.nationSystem.isNationExtinct(tid) &&
+      this.diplomacySystem.getRelation(nationId, tid) <= _JOINT_WAR_HOSTILITY_THRESHOLD,
+    ).map(n => `<option value="${n.id}">${n.name}（我方與之關係 ${this.diplomacySystem.getRelation(nationId, n.id)}）</option>`).join('');
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">⚔ 合意宣戰第三國</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          你向 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}）提議聯合向共同敵人宣戰。<br>
+          若對方接受，雙方將同時向目標國宣戰，且同盟關係將加深。
+        </div>
+        <div class="treaty-row">
+          <label class="treaty-label">目標國家</label>
+          <select id="joint-war-target-select" class="treaty-select">${targets}</select>
+        </div>
+        <div class="treaty-note">統治者將評估目標是否符合其戰略利益後當場回應。</div>
+        <button class="btn-buy treaty-send-btn war-send-btn" id="diplo-joint-war-confirm">⚔ 提出聯合宣戰</button>
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, settlement);
+    });
+
+    document.getElementById('diplo-joint-war-confirm')?.addEventListener('click', () => {
+      const targetId = Number(document.getElementById('joint-war-target-select')?.value ?? -1);
+      if (targetId < 0) { this._toast('請選擇目標國家'); return; }
+
+      const targetNation = this.nationSystem.nations[targetId];
+      const accepted = this.diplomacySystem.evaluateDirectDiploProposal(nationId, 'joint_war', { targetNationId: targetId });
+      if (accepted) {
+        const { messages } = this.diplomacySystem.applyJointWarDeclaration(nationId, targetId);
+        messages.forEach(msg => this._addInboxMessage('⚔', msg));
+        this._toast(`✅ ${nationName} 同意聯合對 ${targetNation?.name ?? '目標國'} 宣戰！`);
+      } else {
+        const relDelta = -(2 + Math.floor(Math.random() * 4));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._addInboxMessage('❌', `${nationName} 拒絕了聯合宣戰提案，關係 ${relDelta}。`);
+        this._toast(`❌ ${nationName} 拒絕了提案。`);
+      }
+      this._renderGovBuilding(building, settlement);
+    });
+  }
+
+  /**
+   * Mutual Protection Pact proposal screen.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderMutualProtectionProposal(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">🛡 互保條約</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          你向 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}）提出互保條約。<br>
+          雙方同意：若任一方遭受攻擊，另一方將自動向攻擊者宣戰。<br>
+          這是最深層的軍事同盟，違約代價極重（關係 -30）。
+        </div>
+        <div class="treaty-note">統治者將評估是否信任你後當場回應。</div>
+        <button class="btn-buy treaty-send-btn" id="diplo-mpt-confirm">🛡 提出互保條約</button>
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, settlement);
+    });
+
+    document.getElementById('diplo-mpt-confirm')?.addEventListener('click', () => {
+      const accepted = this.diplomacySystem.evaluateDirectDiploProposal(nationId, 'mutual_protection');
+      if (accepted) {
+        this.diplomacySystem.signMutualProtectionPact(_PLAYER_NATION_ID_UI, nationId);
+        this._addInboxMessage('🛡', `${nationName} 接受了互保條約！雙方關係改善 +20。`);
+        this._toast(`✅ ${nationName} 接受了互保條約！`);
+      } else {
+        const relDelta = -(3 + Math.floor(Math.random() * 5));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._addInboxMessage('❌', `${nationName} 拒絕了互保條約，關係 ${relDelta}。`);
+        this._toast(`❌ ${nationName} 拒絕了提案。`);
+      }
+      this._renderGovBuilding(building, settlement);
+    });
   }
 
   // -------------------------------------------------------------------------
