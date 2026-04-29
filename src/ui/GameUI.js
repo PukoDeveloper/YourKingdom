@@ -6011,6 +6011,12 @@ export class GameUI {
   }
 
   /**
+   * Update the nearby-buildable-terrain state and show/hide the map-build button.
+   * @param {number|null} tx
+   * @param {number|null} ty
+   * @param {number|null} terrainType
+   */
+  setNearbyBuildableTerrain(tx, ty, terrainType) {
     const btn     = document.getElementById('map-build-btn');
     const infoBtn = document.getElementById('map-bldg-info-btn');
     const wrap    = document.getElementById('facility-action-wrap');
