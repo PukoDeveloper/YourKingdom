@@ -306,6 +306,52 @@ export function drawPortBuilding(g, px, py) {
 }
 
 // ---------------------------------------------------------------------------
+// Road tile (drawn over one tile = 48×48 px)
+// ---------------------------------------------------------------------------
+
+/** Road surface colour — matches RoadRenderer constants. */
+const ROAD_SURFACE = 0xC49A6C;
+/** Road border/edge colour — matches RoadRenderer constants. */
+const ROAD_BORDER  = 0x8D6E63;
+
+/**
+ * Draw a single road tile at world-pixel position (px, py).
+ *
+ * Each tile renders a dirt-path centre node plus directional arms for each
+ * connected neighbour.  Connecting tiles drawn with the same dimensions
+ * will align seamlessly edge-to-edge.
+ *
+ * Surface half-width  hw  = 5 px  (total 10 px wide)
+ * Border half-width   hw2 = 7 px  (total 14 px wide, peeks 2 px each side)
+ *
+ * @param {import('pixi.js').Graphics} g
+ * @param {number} px   World-pixel X (top-left corner of the tile)
+ * @param {number} py   World-pixel Y (top-left corner of the tile)
+ * @param {{ n?: boolean, s?: boolean, e?: boolean, w?: boolean }} [connections]
+ *   Which of the four cardinal neighbours are also road tiles.
+ *   Defaults to all false (isolated endpoint cap).
+ */
+export function drawRoadTile(g, px, py, { n = false, s = false, e = false, w = false } = {}) {
+  const c   = T >> 1; // T/2 — centre of the tile in local coords
+  const hw  = 5;      // surface half-width
+  const hw2 = 7;      // border half-width
+
+  // ── Border layer (drawn first so it peeks out beneath the surface) ────────
+  g.rect(px + c - hw2, py + c - hw2, hw2 * 2, hw2 * 2).fill(ROAD_BORDER);
+  if (n) g.rect(px + c - hw2, py,           hw2 * 2, c - hw2).fill(ROAD_BORDER);
+  if (s) g.rect(px + c - hw2, py + c + hw2, hw2 * 2, c - hw2).fill(ROAD_BORDER);
+  if (e) g.rect(px + c + hw2, py + c - hw2, c - hw2, hw2 * 2).fill(ROAD_BORDER);
+  if (w) g.rect(px,           py + c - hw2, c - hw2, hw2 * 2).fill(ROAD_BORDER);
+
+  // ── Surface layer ─────────────────────────────────────────────────────────
+  g.rect(px + c - hw, py + c - hw, hw * 2, hw * 2).fill(ROAD_SURFACE);
+  if (n) g.rect(px + c - hw, py,          hw * 2, c - hw).fill(ROAD_SURFACE);
+  if (s) g.rect(px + c - hw, py + c + hw, hw * 2, c - hw).fill(ROAD_SURFACE);
+  if (e) g.rect(px + c + hw, py + c - hw, c - hw, hw * 2).fill(ROAD_SURFACE);
+  if (w) g.rect(px,          py + c - hw, c - hw, hw * 2).fill(ROAD_SURFACE);
+}
+
+// ---------------------------------------------------------------------------
 // Lumber camp (drawn over one tile = 48×48 px)
 // ---------------------------------------------------------------------------
 

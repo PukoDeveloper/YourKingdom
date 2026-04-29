@@ -404,19 +404,21 @@ export class Game {
 
       // Show / hide the map-build button (forest → lumber camp, mountain → mine, water → bridge).
       // Only show when the player is NOT inside a settlement tile.
-      // Note: bridges target an adjacent water tile because the player cannot stand on water.
-      const MAP_BUILDABLE_TERRAINS = new Set([TERRAIN.FOREST, TERRAIN.MOUNTAIN]);
+      // Lumber camps can be built while standing on the forest tile (FOREST is walkable).
+      // Mines and bridges target an adjacent impassable tile (the player cannot stand on
+      // MOUNTAIN or WATER, so we scan orthogonal neighbours instead).
       let nearbyBuildTile = null;
       if (!hit) {
-        if (MAP_BUILDABLE_TERRAINS.has(t)) {
-          nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: t };
+        if (t === TERRAIN.FOREST) {
+          nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: TERRAIN.FOREST };
         } else {
-          // Check orthogonally adjacent tiles for water so the player can build a bridge
-          // while standing on the bank next to a river or lake.
+          // Check orthogonally adjacent tiles for mountain (mine) or water (bridge).
+          // Mountain is checked first so mines are preferred over bridges if both adjoin.
           const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
           for (const [dx, dy] of ADJACENT_OFFSETS) {
-            if (this._mapData.getTerrain(tileX + dx, tileY + dy) === TERRAIN.WATER) {
-              nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: TERRAIN.WATER };
+            const adjT = this._mapData.getTerrain(tileX + dx, tileY + dy);
+            if (adjT === TERRAIN.MOUNTAIN || adjT === TERRAIN.WATER) {
+              nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
               break;
             }
           }
