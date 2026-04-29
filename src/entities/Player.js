@@ -94,6 +94,22 @@ export class Player {
   }
 
   // ---------------------------------------------------------------------------
+  // Facing direction
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Return the unit vector in the direction the player is currently facing.
+   * Derived from `_facingAngle` (which is `Math.atan2(ny, nx) + π/2`).
+   * @returns {{ dx: number, dy: number }}
+   */
+  getFacingDirection() {
+    return {
+      dx:  Math.sin(this._facingAngle),
+      dy: -Math.cos(this._facingAngle),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Update
   // ---------------------------------------------------------------------------
 

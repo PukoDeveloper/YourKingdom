@@ -413,9 +413,16 @@ export class Game {
           nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: TERRAIN.FOREST };
         } else {
           // Check orthogonally adjacent tiles for mountain (mine) or water (bridge).
-          // Mountain is checked first so mines are preferred over bridges if both adjoin.
+          // Tiles are sorted by alignment with the player's facing direction so the
+          // build button targets whichever adjacent impassable tile the player is
+          // facing toward.
           const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
-          for (const [dx, dy] of ADJACENT_OFFSETS) {
+          const facing = this._player.getFacingDirection();
+          const sortedOffsets = [...ADJACENT_OFFSETS].sort(
+            ([ax, ay], [bx, by]) =>
+              (bx * facing.dx + by * facing.dy) - (ax * facing.dx + ay * facing.dy),
+          );
+          for (const [dx, dy] of sortedOffsets) {
             const adjT = this._mapData.getTerrain(tileX + dx, tileY + dy);
             if (adjT === TERRAIN.MOUNTAIN || adjT === TERRAIN.WATER) {
               nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
