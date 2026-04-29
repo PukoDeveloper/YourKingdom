@@ -423,7 +423,7 @@ export class GameUI {
      * Key: settlementKey.  Value: in-game day number from which the next festival is allowed.
      * @type {Map<string, number>}
      */
-    this._festivaCooldowns = new Map();
+    this._festivalCooldowns = new Map();
 
     if (savedState) {
       this.loadState(savedState);
@@ -3710,7 +3710,7 @@ export class GameUI {
 
       // Festival cooldown check
       const currentDay     = this.diplomacySystem?._currentDay ?? 0;
-      const cooldownExpiry = this._festivaCooldowns.get(key) ?? 0;
+      const cooldownExpiry = this._festivalCooldowns.get(key) ?? 0;
       const festivalReady  = currentDay >= cooldownExpiry;
       const daysLeft       = cooldownExpiry - currentDay;
 
@@ -3803,7 +3803,7 @@ export class GameUI {
         const prevSat = this._satisfactionMap.get(key) ?? -50;
         const newSat  = Math.min(100, prevSat + FESTIVAL_SATISFACTION_BOOST);
         this._satisfactionMap.set(key, newSat);
-        this._festivaCooldowns.set(key, currentDay + FESTIVAL_COOLDOWN_DAYS);
+        this._festivalCooldowns.set(key, currentDay + FESTIVAL_COOLDOWN_DAYS);
         this._addInboxMessage('🎉', `${settlement.name} 舉辦了節慶！民心 ${prevSat >= 0 ? '+' : ''}${prevSat} → ${newSat >= 0 ? '+' : ''}${newSat}（消耗 ${FESTIVAL_COST} 🪙）`);
         this._refreshGoldDisplay();
         this._renderGovBuilding(building, settlement);
@@ -5814,7 +5814,7 @@ export class GameUI {
       inbox:                [...this._inbox],
       constructionState,
       tradeRoutes:          [...this._tradeRoutes.entries()],
-      festivaCooldowns:     Object.fromEntries(this._festivaCooldowns),
+      festivalCooldowns:     Object.fromEntries(this._festivalCooldowns),
     };
   }
 
@@ -5875,9 +5875,9 @@ export class GameUI {
           .map(([k, v]) => [k, v]),
       );
     }
-    if (state.festivaCooldowns && typeof state.festivaCooldowns === 'object') {
-      this._festivaCooldowns = new Map(
-        Object.entries(state.festivaCooldowns).map(([k, v]) => [k, Number(v)]),
+    if (state.festivalCooldowns && typeof state.festivalCooldowns === 'object') {
+      this._festivalCooldowns = new Map(
+        Object.entries(state.festivalCooldowns).map(([k, v]) => [k, Number(v)]),
       );
     }
   }
