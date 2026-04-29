@@ -5787,7 +5787,6 @@ export class GameUI {
   /**
    * Return (or create) the construction state object for a settlement.
    * @param {string} key  Settlement key, e.g. "castle:0"
-  /**
    * @returns {{ buildingQueue: object[], roads: Map<string,object>, builtRoads: Map<string,{tiles:{tx:number,ty:number}[]}> }}
    */
   _getConstructionState(key) {
@@ -6977,10 +6976,6 @@ export class GameUI {
       });
     });
   }
-
-  // -------------------------------------------------------------------------
-  // Construction – port tab
-  // -------------------------------------------------------------------------
 
   /**
    * Return the Settlement object for a given settlement key.
