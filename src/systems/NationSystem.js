@@ -25,6 +25,13 @@ export const TRAIT_RULER = '統治者';
  */
 export const PLAYER_NATION_ID = -1;
 
+/**
+ * Special nation ID for neutral (liberated) settlements.
+ * Settlement.controllingNationId is set to this value when the player liberates a settlement,
+ * releasing it from its original nation's control without annexing it.
+ */
+export const NEUTRAL_NATION_ID = -2;
+
 // ---------------------------------------------------------------------------
 // Static data tables
 // ---------------------------------------------------------------------------
@@ -331,18 +338,20 @@ export class NationSystem {
   /**
    * Return the nation that currently controls a settlement.
    * Returns null when controlled by the player (controllingNationId = PLAYER_NATION_ID).
+   * Returns a neutral descriptor when controllingNationId = NEUTRAL_NATION_ID.
    * @param {Settlement} settlement
    * @returns {{ id: number, name: string, color: string, emblem: string, flagApp: object }|null}
    */
   getControllingNation(settlement) {
-    if (settlement.controllingNationId < 0) return null; // player-owned
-    if (settlement.controllingNationId >= this.nations.length) {
+    if (settlement.controllingNationId === PLAYER_NATION_ID) return null; // player-owned
+    if (settlement.controllingNationId === NEUTRAL_NATION_ID ||
+        settlement.controllingNationId >= this.nations.length) {
       return {
-        id:      -1,
+        id:      NEUTRAL_NATION_ID,
         name:    '中立',
-        color:   '#9E9E9E',
-        emblem:  '⚑',
-        flagApp: { bgColor: '#9E9E9E', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '⚑', symbolShape: 'circle' },
+        color:   '#FFFFFF',
+        emblem:  '🏳',
+        flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' },
       };
     }
     return this.nations[settlement.controllingNationId];

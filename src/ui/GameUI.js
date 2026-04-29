@@ -1,6 +1,6 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
-import { TRAIT_RULER, PLAYER_NATION_ID }   from '../systems/NationSystem.js';
+import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID }   from '../systems/NationSystem.js';
 import {
   RELATION_LEVELS,
   PERSONALITY_COLORS,
@@ -239,6 +239,13 @@ export class GameUI {
      * @type {Set<string>}
      */
     this._capturedSettlements = new Set();
+
+    /**
+     * Set of settlement keys the player has liberated (released as neutral).
+     * Keys are formatted as "castle:<idx>" or "village:<idx>".
+     * @type {Set<string>}
+     */
+    this._liberatedSettlements = new Set();
 
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
@@ -1549,10 +1556,13 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const isPlayer  = settlement.controllingNationId < 0;
+    const isPlayer  = settlement.controllingNationId === PLAYER_NATION_ID;
+    const isNeutral = settlement.controllingNationId === NEUTRAL_NATION_ID;
     const nation    = isPlayer
       ? this.getPlayerNation()
-      : this.nationSystem.getNation(settlement);
+      : isNeutral
+        ? { name: '中立', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } }
+        : this.nationSystem.getNation(settlement);
     const ruler     = settlement.ruler;
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
@@ -2301,7 +2311,7 @@ export class GameUI {
 
     let subtitle = '';
     if (s.type === 'castle' && this.nationSystem) {
-      const nation = s.controllingNationId < 0
+      const nation = s.controllingNationId === PLAYER_NATION_ID
         ? this.getPlayerNation()
         : this.nationSystem.getNation(s);
       subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
@@ -2323,19 +2333,28 @@ export class GameUI {
   _renderLocationGate(settlement) {
     let nation = null;
     if (this.nationSystem) {
-      nation = settlement.controllingNationId < 0
-        ? this.getPlayerNation()
-        : this.nationSystem.getNation(settlement);
+      if (settlement.controllingNationId === PLAYER_NATION_ID) {
+        nation = this.getPlayerNation();
+      } else if (settlement.controllingNationId === NEUTRAL_NATION_ID) {
+        nation = { name: '中立', emblem: '🏳' };
+      } else {
+        nation = this.nationSystem.getNation(settlement);
+      }
     }
     const nationName = nation ? nation.name : settlement.name;
 
-    const isPlayerOwned = settlement.controllingNationId < 0;
-    const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : '🛡️⚔️🛡️';
+    const isPlayerOwned = settlement.controllingNationId === PLAYER_NATION_ID;
+    const isNeutral     = settlement.controllingNationId === NEUTRAL_NATION_ID;
+    const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : isNeutral ? '🏳🕊️🏳' : '🛡️⚔️🛡️';
     const gateMsg = isPlayerOwned
       ? `兩名身著你方盔甲的士兵立正行禮。<br>
            「<em>主公歸來，城門大開！</em>」<br>
            「<em>請入內視察 ${nationName}。</em>」`
-      : `兩名身著銀甲的守衛持槍攔下了你。<br>
+      : isNeutral
+        ? `一名手持白旗的使者在城門前迎候。<br>
+           「<em>歡迎旅人，此地已宣告中立。</em>」<br>
+           「<em>城門對所有人開放，請自由入城。</em>」`
+        : `兩名身著銀甲的守衛持槍攔下了你。<br>
            「<em>停！這裡是 ${nationName} 的城門。</em>」<br>
            「<em>說明來意，方可入城。</em>」`;
 
@@ -4598,20 +4617,40 @@ export class GameUI {
         retreat: { icon: '🏃', label: '撤退',     cls: 'btl-result-retreat'},
       };
       const r = resultMeta[result] ?? resultMeta.retreat;
-      const alreadyCaptured = result === 'victory' && this.isPlayerSettlement(settlement);
-      const captureBtn = result === 'victory' && !alreadyCaptured
-        ? `<button id="btn-battle-capture" class="btn-battle-capture">🏴 佔領 ${settlement.name}</button>`
-        : result === 'victory' && alreadyCaptured
-          ? `<div class="btl-captured-badge">🏴 已佔領</div>`
-          : '';
+      const alreadyCaptured  = result === 'victory' && this.isPlayerSettlement(settlement);
+      const alreadyLiberated = result === 'victory' && settlement.controllingNationId === NEUTRAL_NATION_ID;
+
+      let victoryActions = '';
+      if (result === 'victory') {
+        if (alreadyCaptured) {
+          victoryActions = `<div class="btl-captured-badge">🏴 已佔領</div>`;
+        } else if (alreadyLiberated) {
+          victoryActions = `<div class="btl-liberated-badge">🏳 已解放</div>`;
+        } else {
+          victoryActions = `
+            <button id="btn-battle-capture"  class="btn-battle-capture">🏴 佔領</button>
+            <button id="btn-battle-plunder"  class="btn-battle-plunder">💰 掠奪</button>
+            <button id="btn-battle-liberate" class="btn-battle-liberate">🕊 解放</button>`;
+        }
+      }
+
       actionsEl.innerHTML = `
         <div class="btl-result ${r.cls}">${r.icon} ${r.label}</div>
-        ${captureBtn}
+        ${victoryActions}
         <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
-      if (result === 'victory' && !alreadyCaptured) {
+
+      if (result === 'victory' && !alreadyCaptured && !alreadyLiberated) {
         actionsEl.querySelector('#btn-battle-capture').addEventListener('click', () => {
           this._captureSettlement(settlement);
-          this._renderBattleScene(); // re-render to flip button → badge
+          this._renderBattleScene(); // re-render to flip buttons → badge
+        });
+        actionsEl.querySelector('#btn-battle-plunder').addEventListener('click', () => {
+          this._plunderSettlement(settlement);
+          this._renderBattleScene(); // re-render to show plunder badge
+        });
+        actionsEl.querySelector('#btn-battle-liberate').addEventListener('click', () => {
+          this._liberateSettlement(settlement);
+          this._renderBattleScene(); // re-render to flip buttons → badge
         });
       }
       actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
@@ -4778,6 +4817,7 @@ export class GameUI {
       army:                 this.army.getState(),
       playerKingdom:        { ...this._playerKingdom },
       capturedSettlements:  [...this._capturedSettlements],
+      liberatedSettlements: [...this._liberatedSettlements],
       tavernState:          Object.fromEntries(this._tavernState),
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
@@ -4797,7 +4837,12 @@ export class GameUI {
     if (Array.isArray(state.capturedSettlements)) {
       this._capturedSettlements = new Set(state.capturedSettlements);
       this._playerSettlementCount = this._capturedSettlements.size;
-      // Apply playerOwned flag to Settlement objects so StructureRenderer
+    }
+    if (Array.isArray(state.liberatedSettlements)) {
+      this._liberatedSettlements = new Set(state.liberatedSettlements);
+    }
+    if (Array.isArray(state.capturedSettlements) || Array.isArray(state.liberatedSettlements)) {
+      // Apply playerOwned / neutral flags to Settlement objects so StructureRenderer
       // and all UI code can read ownership directly from the settlement.
       this._syncSettlementOwnership();
     }
@@ -4846,6 +4891,7 @@ export class GameUI {
   /**
    * Iterate `_capturedSettlements` and set ownership on the matching
    * Settlement objects in NationSystem. Clears ownership on all others.
+   * Also restores `NEUTRAL_NATION_ID` for liberated settlements.
    * Safe to call multiple times (idempotent).
    */
   _syncSettlementOwnership() {
@@ -4856,7 +4902,14 @@ export class GameUI {
     ];
     allSettlements.forEach(s => {
       const key = this._settlementKey(s);
-      this._setSettlementOwnership(s, key !== '' && this._capturedSettlements.has(key));
+      if (key !== '' && this._capturedSettlements.has(key)) {
+        this._setSettlementOwnership(s, true);
+      } else if (key !== '' && this._liberatedSettlements.has(key)) {
+        s.playerOwned = false;
+        s.controllingNationId = NEUTRAL_NATION_ID;
+      } else {
+        this._setSettlementOwnership(s, false);
+      }
     });
   }
 
@@ -4900,6 +4953,9 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
+    // If previously liberated, remove from that set first.
+    this._liberatedSettlements.delete(key);
+
     this._setSettlementOwnership(settlement, true);
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
@@ -4942,6 +4998,67 @@ export class GameUI {
         // Refresh diplomacy panel immediately if it is open.
         if (this._activePanel === 'nations') this._renderNations();
       }
+    }
+  }
+
+  /**
+   * Plunder a settlement after victory: award gold and resources without annexing it.
+   * The settlement remains under its original nation's control.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _plunderSettlement(settlement) {
+    const iconMap = {
+      '木材': '🪵', '農產': '🌾', '礦石': '⛏️', '絲綢': '🧵',
+      '煤炭': '🪨', '草藥': '🌿', '魚獲': '🐟', '皮毛': '🦊',
+      '食鹽': '🧂', '陶器': '🏺',
+    };
+
+    // Award plunder gold (slightly more than capture since you're explicitly looting).
+    const goldReward = settlement.type === 'castle'
+      ? 80 + settlement.economyLevel * 25
+      : 30 + settlement.economyLevel * 15;
+    this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: goldReward });
+
+    // Award resources (more than capture since this is pure plunder).
+    settlement.resources.forEach(res => {
+      this.inventory.addItem({
+        name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: 8,
+      });
+    });
+
+    this._addInboxMessage('💰', `掠奪了 ${settlement.name}，獲得金幣 ${goldReward} 枚及物資。`);
+
+    // Notify map to rebuild (garrison may have changed).
+    if (typeof this.onCaptureSettlement === 'function') {
+      this.onCaptureSettlement();
+    }
+  }
+
+  /**
+   * Liberate a settlement after victory: release it as a neutral city.
+   * The settlement is freed from its original nation's control and flies a white flag.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _liberateSettlement(settlement) {
+    const key = this._settlementKey(settlement);
+    if (!key) return;
+
+    // Remove from captured set if it was previously captured.
+    if (this._capturedSettlements.has(key)) {
+      this._capturedSettlements.delete(key);
+      this._playerSettlementCount = this._capturedSettlements.size;
+    }
+
+    // Mark as liberated (neutral).
+    this._liberatedSettlements.add(key);
+    settlement.playerOwned = false;
+    settlement.controllingNationId = NEUTRAL_NATION_ID;
+
+    this._addInboxMessage('🕊', `解放了 ${settlement.name}，該地區恢復中立，升起白旗。`);
+
+    // Notify map to rebuild so the white flag is shown immediately.
+    if (typeof this.onCaptureSettlement === 'function') {
+      this.onCaptureSettlement();
     }
   }
 

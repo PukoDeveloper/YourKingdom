@@ -14,7 +14,7 @@ import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
 import { GameUI }           from './ui/GameUI.js';
 import { SaveManager }      from './systems/SaveManager.js';
-import { NationSystem }     from './systems/NationSystem.js';
+import { NationSystem, PLAYER_NATION_ID, NEUTRAL_NATION_ID }     from './systems/NationSystem.js';
 import { DiplomacySystem }  from './systems/DiplomacySystem.js';
 
 /** Auto-save interval in milliseconds. */
@@ -333,9 +333,11 @@ export class Game {
       if (hit) {
         const settlIcon = hit.settlement.type === 'castle' ? '🏰' : '🏘️';
         let nationLine, regionLine;
-        if (hit.settlement.controllingNationId < 0) {
+        if (hit.settlement.controllingNationId === PLAYER_NATION_ID) {
           const pk = this._gameUI.getPlayerNation();
           nationLine = `🏴 ${pk.name}`;
+        } else if (hit.settlement.controllingNationId === NEUTRAL_NATION_ID) {
+          nationLine = `🏳 中立`;
         } else {
           const nation = this._nationSystem.getNation(hit.settlement);
           nationLine = `${nation.emblem} ${nation.name}`;
