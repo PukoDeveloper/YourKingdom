@@ -175,14 +175,79 @@ const CONSTR_BUILDING_DAYS = 10;
 /** Port construction gold cost. */
 const CONSTR_PORT_COST = 200;
 
-/** Gold cost per tile to build a road. */
+/** Gold cost per tile to build a road (fallback for unknown terrain). */
 const CONSTR_ROAD_COST_PER_TILE = 20;
 
-/** In-game hours to build one road tile (work hours only). */
+/** In-game hours to build one road tile (fallback for unknown terrain). */
 const CONSTR_ROAD_HOURS_PER_TILE = 3;
 
 /** In-game hours to demolish one road tile (work hours only). */
 const CONSTR_ROAD_DEMO_HOURS_PER_TILE = 0.5;
+
+/**
+ * A* pathfinding traversal cost per terrain type.
+ * Lower = preferred route.  WATER and MOUNTAIN are impassable (Infinity).
+ */
+const ROAD_PATH_COST = {
+  [TERRAIN.GRASS]:          1.0,
+  [TERRAIN.SAND]:           0.9,
+  [TERRAIN.HILL]:           1.8,
+  [TERRAIN.FOREST]:         1.5,
+  [TERRAIN.CASTLE_GROUND]:  0.5,
+  [TERRAIN.VILLAGE_GROUND]: 0.5,
+  [TERRAIN.PORT_GROUND]:    0.5,
+};
+
+/** Gold cost per tile based on terrain type (road construction). */
+const ROAD_GOLD_PER_TILE = {
+  [TERRAIN.GRASS]:          18,
+  [TERRAIN.SAND]:           12,
+  [TERRAIN.HILL]:           35,
+  [TERRAIN.FOREST]:         28,
+  [TERRAIN.CASTLE_GROUND]:  5,
+  [TERRAIN.VILLAGE_GROUND]: 5,
+  [TERRAIN.PORT_GROUND]:    5,
+};
+
+/** Work-hours per tile based on terrain type (road construction). */
+const ROAD_HOURS_PER_TILE_TERRAIN = {
+  [TERRAIN.GRASS]:          2.5,
+  [TERRAIN.SAND]:           1.5,
+  [TERRAIN.HILL]:           6.0,
+  [TERRAIN.FOREST]:         5.0,
+  [TERRAIN.CASTLE_GROUND]:  1.0,
+  [TERRAIN.VILLAGE_GROUND]: 1.0,
+  [TERRAIN.PORT_GROUND]:    1.0,
+};
+
+// ---------------------------------------------------------------------------
+// Road pathfinding helper (module-level, outside the class)
+// ---------------------------------------------------------------------------
+
+/**
+ * Bresenham line walk: returns true if any WATER tile lies on the straight
+ * line between (x0, y0) and (x1, y1).
+ */
+function _hasWaterOnLine(tiles, x0, y0, x1, y1) {
+  let dx = Math.abs(x1 - x0);
+  let dy = Math.abs(y1 - y0);
+  let x  = x0;
+  let y  = y0;
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx - dy;
+
+  for (;;) {
+    if (x >= 0 && y >= 0 && x < MAP_WIDTH && y < MAP_HEIGHT) {
+      if (tiles[y * MAP_WIDTH + x] === TERRAIN.WATER) return true;
+    }
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 <  dx) { err += dx; y += sy; }
+  }
+  return false;
+}
 
 /**
  * Work-hours advanced per phase transition.
@@ -440,12 +505,19 @@ export class GameUI {
     this.onPortBuilt = null;
 
     /**
+     * Callback invoked whenever a road is completed or demolished.
+     * The game uses this to rebuild the road overlay on the world map.
+     * @type {(() => void)|null}
+     */
+    this.onRoadBuilt = null;
+
+    /**
      * Per-settlement construction state.
      * Key: settlement key (e.g. "castle:0").
      * Value: {
      *   buildingQueue: [{ type: string, name: string, icon: string, daysLeft: number }],
-     *   roads:         Map<roadKey, { targetKey, targetName, tilesTotal, hoursLeft, isDemo }>,
-     *   builtRoads:    Set<roadKey>,
+     *   roads:         Map<roadKey, { targetKey, targetName, tilesTotal, totalHours, hoursLeft, isDemo, path }>,
+     *   builtRoads:    Map<roadKey, { tiles: {tx,ty}[] }>,
      *   hasPort:       boolean,
      *   portTile:      { tx: number, ty: number }|null
      * }
@@ -3012,12 +3084,14 @@ export class GameUI {
             const isDemo = road.isDemo;
 
             if (!isDemo) {
-              // Mark as built on both endpoints
-              if (fromState) { fromState.roads.delete(rk); fromState.builtRoads.add(rk); }
-              if (toState)   { toState.roads.delete(rk);   toState.builtRoads.add(rk); }
+              // Mark as built on both endpoints, storing the tile path.
+              const roadTiles = road.path ?? [];
+              if (fromState) { fromState.roads.delete(rk); fromState.builtRoads.set(rk, { tiles: roadTiles }); }
+              if (toState)   { toState.roads.delete(rk);   toState.builtRoads.set(rk, { tiles: roadTiles }); }
               const fromSett = this._getSettlementByKey(fromKey);
               const toSett   = this._getSettlementByKey(toKey);
               this._addInboxMessage('🛤️', `道路 ${fromSett?.name ?? fromKey} ↔ ${toSett?.name ?? toKey} 已建造完成！`);
+              if (this.onRoadBuilt) this.onRoadBuilt();
             } else {
               // Demolition complete – just remove
               if (fromState) fromState.roads.delete(rk);
@@ -3025,6 +3099,7 @@ export class GameUI {
               const fromSett = this._getSettlementByKey(fromKey);
               const toSett   = this._getSettlementByKey(toKey);
               this._addInboxMessage('🪚', `道路 ${fromSett?.name ?? fromKey} ↔ ${toSett?.name ?? toKey} 已拆除完成。`);
+              if (this.onRoadBuilt) this.onRoadBuilt();
             }
           } else {
             // Mirror updated hoursLeft to both endpoint road entries
@@ -5637,14 +5712,14 @@ export class GameUI {
   /**
    * Return (or create) the construction state object for a settlement.
    * @param {string} key  Settlement key, e.g. "castle:0"
-   * @returns {{ buildingQueue: object[], roads: Map<string,object>, builtRoads: Set<string>, hasPort: boolean, portTile: {tx:number,ty:number}|null }}
+   * @returns {{ buildingQueue: object[], roads: Map<string,object>, builtRoads: Map<string,{tiles:{tx:number,ty:number}[]}>, hasPort: boolean, portTile: {tx:number,ty:number}|null }}
    */
   _getConstructionState(key) {
     if (!this._constructionState.has(key)) {
       this._constructionState.set(key, {
         buildingQueue: [],
         roads:         new Map(),
-        builtRoads:    new Set(),
+        builtRoads:    new Map(),
         hasPort:       false,
         portTile:      null,
       });
@@ -5732,6 +5807,197 @@ export class GameUI {
   }
 
   /**
+   * Return the tile paths for all built roads, deduplicated by road key.
+   * Used by `RoadRenderer` to draw the road overlay on the world map.
+   * @returns {{ tx: number, ty: number }[][]}
+   */
+  getBuiltRoadTilePaths() {
+    const result = [];
+    const seen   = new Set();
+    for (const state of this._constructionState.values()) {
+      for (const [rk, data] of state.builtRoads) {
+        if (!seen.has(rk) && data.tiles && data.tiles.length > 1) {
+          seen.add(rk);
+          result.push(data.tiles);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Return a Set of `"tx,ty"` strings for every tile that belongs to a built
+   * road.  Used by Player to check whether it is standing on a road tile
+   * (and apply the speed bonus).
+   * @returns {Set<string>}
+   */
+  getBuiltRoadTileSet() {
+    const set = new Set();
+    for (const state of this._constructionState.values()) {
+      for (const data of state.builtRoads.values()) {
+        for (const { tx, ty } of (data.tiles ?? [])) {
+          set.add(`${tx},${ty}`);
+        }
+      }
+    }
+    return set;
+  }
+
+  /**
+   * Compute the actual A* road path between two settlements (4-directional,
+   * avoids WATER and MOUNTAIN).  Returns the tile path plus terrain-based
+   * gold cost and work-hour totals.
+   *
+   * @param {import('../systems/NationSystem.js').Settlement} fromSett
+   * @param {import('../systems/NationSystem.js').Settlement} toSett
+   * @returns {{
+   *   path:            { tx: number, ty: number }[] | null,
+   *   blockedByRiver:  boolean,
+   *   totalCost:       number,
+   *   totalHours:      number
+   * }}
+   */
+  _computeRoadPath(fromSett, toSett) {
+    if (!this._mapData) {
+      return { path: null, blockedByRiver: false, totalCost: 0, totalHours: 0 };
+    }
+
+    const tiles = this._mapData.tiles;
+    const from  = this._getSettlementCenter(fromSett);
+    const to    = this._getSettlementCenter(toSett);
+
+    // Snap coordinates to the nearest non-impassable tile.
+    const snap = (tx0, ty0) => {
+      for (let r = 0; r <= 8; r++) {
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+            const x = tx0 + dx, y = ty0 + dy;
+            if (x < 0 || y < 0 || x >= MAP_WIDTH || y >= MAP_HEIGHT) continue;
+            const t = tiles[y * MAP_WIDTH + x];
+            if (t !== TERRAIN.WATER && t !== TERRAIN.MOUNTAIN) return [x, y];
+          }
+        }
+      }
+      return null;
+    };
+
+    const startSnap = snap(from.tx, from.ty);
+    const endSnap   = snap(to.tx,   to.ty);
+
+    if (!startSnap || !endSnap) {
+      const blocked = _hasWaterOnLine(tiles, from.tx, from.ty, to.tx, to.ty);
+      return { path: null, blockedByRiver: blocked, totalCost: 0, totalHours: 0 };
+    }
+
+    const [sx, sy] = startSnap;
+    const [ex, ey] = endSnap;
+
+    if (sx === ex && sy === ey) {
+      return { path: [{ tx: sx, ty: sy }], blockedByRiver: false, totalCost: 0, totalHours: 0 };
+    }
+
+    // ── 4-directional A* ────────────────────────────────────────────────────
+    const N    = MAP_WIDTH * MAP_HEIGHT;
+    const KEY  = (x, y) => y * MAP_WIDTH + x;
+    const DIRS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    const heur = (x, y) => Math.abs(x - ex) + Math.abs(y - ey);
+
+    // Inline binary min-heap (priority queue)
+    const heapData = [];
+    const heapPush = (key, pri) => {
+      heapData.push({ key, pri });
+      let i = heapData.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heapData[p].pri <= heapData[i].pri) break;
+        [heapData[p], heapData[i]] = [heapData[i], heapData[p]];
+        i = p;
+      }
+    };
+    const heapPop = () => {
+      const top  = heapData[0];
+      const last = heapData.pop();
+      if (heapData.length > 0) {
+        heapData[0] = last;
+        let i = 0;
+        for (;;) {
+          let s = i;
+          const l = 2 * i + 1, r = l + 1;
+          if (l < heapData.length && heapData[l].pri < heapData[s].pri) s = l;
+          if (r < heapData.length && heapData[r].pri < heapData[s].pri) s = r;
+          if (s === i) break;
+          [heapData[s], heapData[i]] = [heapData[i], heapData[s]];
+          i = s;
+        }
+      }
+      return top;
+    };
+
+    const gCost = new Float32Array(N).fill(Infinity);
+    const parent = new Int32Array(N).fill(-1);
+
+    const sk = KEY(sx, sy);
+    gCost[sk] = 0;
+    heapPush(sk, heur(sx, sy));
+    const ek = KEY(ex, ey);
+
+    while (heapData.length > 0) {
+      const { key: ck } = heapPop();
+      if (ck === ek) break;
+
+      const cx = ck % MAP_WIDTH;
+      const cy = (ck / MAP_WIDTH) | 0;
+
+      for (const [ddx, ddy] of DIRS) {
+        const nx = cx + ddx, ny = cy + ddy;
+        if (nx < 0 || ny < 0 || nx >= MAP_WIDTH || ny >= MAP_HEIGHT) continue;
+
+        const t = tiles[ny * MAP_WIDTH + nx];
+        if (t === TERRAIN.WATER || t === TERRAIN.MOUNTAIN) continue;
+
+        const moveCost = ROAD_PATH_COST[t] ?? 1.0;
+        const nk  = KEY(nx, ny);
+        const ng  = gCost[ck] + moveCost;
+        if (ng < gCost[nk]) {
+          gCost[nk]  = ng;
+          parent[nk] = ck;
+          heapPush(nk, ng + heur(nx, ny));
+        }
+      }
+    }
+
+    if (parent[ek] === -1 && ek !== sk) {
+      const blockedByRiver = _hasWaterOnLine(tiles, sx, sy, ex, ey);
+      return { path: null, blockedByRiver, totalCost: 0, totalHours: 0 };
+    }
+
+    // ── Reconstruct path ────────────────────────────────────────────────────
+    const keyPath = [];
+    let cur = ek;
+    while (cur !== -1) { keyPath.push(cur); cur = parent[cur]; }
+    keyPath.reverse();
+
+    let totalCost  = 0;
+    let totalHours = 0;
+    const path = keyPath.map(k => {
+      const tx = k % MAP_WIDTH;
+      const ty = (k / MAP_WIDTH) | 0;
+      const t  = tiles[ty * MAP_WIDTH + tx];
+      totalCost  += ROAD_GOLD_PER_TILE[t]          ?? CONSTR_ROAD_COST_PER_TILE;
+      totalHours += ROAD_HOURS_PER_TILE_TERRAIN[t] ?? CONSTR_ROAD_HOURS_PER_TILE;
+      return { tx, ty };
+    });
+
+    return {
+      path,
+      blockedByRiver: false,
+      totalCost:  Math.round(totalCost),
+      totalHours: Math.round(totalHours * 10) / 10,
+    };
+  }
+
+  /**
    * Return worker objects for all in-progress construction tasks so that
    * `WorkerRenderer` can draw moving tokens on the world map.
    *
@@ -5791,7 +6057,7 @@ export class GameUI {
         const toCenter   = this._getSettlementCenter(toSett);
 
         const hoursPerTile = road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE;
-        const totalHours   = road.tilesTotal * hoursPerTile;
+        const totalHours   = road.totalHours ?? (road.tilesTotal * hoursPerTile);
         const progress     = totalHours > 0
           ? Math.max(0, Math.min(1, 1 - road.hoursLeft / totalHours))
           : 0;
@@ -6076,12 +6342,11 @@ export class GameUI {
     // Existing roads: built + in-progress
     const roadsHTML = (() => {
       const rows = [];
-      // Built roads
-      for (const rk of state.builtRoads) {
-        const parts  = rk.split('↔');
-        const other  = parts.find(p => p !== key) ?? '';
-        const oSett  = this._getSettlementByKey(other);
-        const name   = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : other;
+      // Built roads (builtRoads is now a Map<roadKey, {tiles}>)
+      for (const [rk] of state.builtRoads) {
+        const other = rk.split('↔').find(p => p !== key) ?? '';
+        const oSett = this._getSettlementByKey(other);
+        const name  = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : other;
         rows.push(`
           <div class="constr-road-row">
             <span class="crr-icon">🛤️</span>
@@ -6095,9 +6360,8 @@ export class GameUI {
         const other      = rk.split('↔').find(p => p !== key) ?? '';
         const oSett      = this._getSettlementByKey(other);
         const name       = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : road.targetName;
-        const hoursPerTile = road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE;
-        const totalHours = road.tilesTotal * hoursPerTile;
-        const pct        = Math.round((1 - road.hoursLeft / totalHours) * 100);
+        const totalHours = road.totalHours ?? (road.tilesTotal * (road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE));
+        const pct        = Math.round((1 - road.hoursLeft / Math.max(totalHours, 0.01)) * 100);
         const label      = road.isDemo ? `🪚 拆除中 ${pct}%` : `🚧 施工中 ${pct}%`;
         rows.push(`
           <div class="constr-road-row">
@@ -6109,16 +6373,16 @@ export class GameUI {
       return rows.length ? rows.join('') : '<div class="constr-empty-note">（尚無道路）</div>';
     })();
 
-    // Build new road options
+    // Build new road form
     const newRoadHTML = targets.length === 0
       ? '<div class="constr-empty-note">無可連接的己方地區</div>'
       : `<div class="constr-road-form">
           <label class="constr-road-label">目標地區</label>
           <select id="constr-road-target" class="constr-road-select">
-            ${targets.map(t => `<option value="${t.key}" data-tiles="${this._getRoadTiles(settlement, t.settlement)}">${t.label}</option>`).join('')}
+            ${targets.map(t => `<option value="${t.key}">${t.label}</option>`).join('')}
           </select>
-          <div id="constr-road-info" class="constr-road-info"></div>
-          <button class="btn-buy constr-road-build-btn" id="btn-build-road">🚧 開始建造</button>
+          <div id="constr-road-info" class="constr-road-info">計算路線中…</div>
+          <button class="btn-buy constr-road-build-btn" id="btn-build-road" disabled>🚧 開始建造</button>
         </div>`;
 
     panel.innerHTML = `
@@ -6128,26 +6392,51 @@ export class GameUI {
       ${newRoadHTML}
     `;
 
-    // Update road info on target change
+    // Cached path result for the currently selected target.
+    let cachedRoadPath = null;
+
     const updateRoadInfo = () => {
-      const sel = document.getElementById('constr-road-target');
-      if (!sel) return;
-      const opt   = sel.options[sel.selectedIndex];
-      const tiles = Number(opt?.dataset?.tiles ?? 0);
-      const hours = tiles * CONSTR_ROAD_HOURS_PER_TILE;
-      const cost  = tiles * CONSTR_ROAD_COST_PER_TILE;
+      const sel    = document.getElementById('constr-road-target');
       const infoEl = document.getElementById('constr-road-info');
-      if (infoEl) {
-        const rk = this._roadKey(key, sel.value);
-        const alreadyBuilt = state.builtRoads.has(rk);
-        const inProgress   = state.roads.has(rk);
-        if (alreadyBuilt) {
-          infoEl.innerHTML = '<span style="color:#66bb6a">✅ 此路段已完成</span>';
-        } else if (inProgress) {
-          infoEl.innerHTML = '<span style="color:#ffa726">⚠️ 此路段正在施工</span>';
+      const buildBtn = document.getElementById('btn-build-road');
+      if (!sel || !infoEl) return;
+
+      const targetKey  = sel.value;
+      const rk         = this._roadKey(key, targetKey);
+      cachedRoadPath   = null;
+
+      if (state.builtRoads.has(rk)) {
+        infoEl.innerHTML = '<span style="color:#66bb6a">✅ 此路段已完成</span>';
+        if (buildBtn) buildBtn.disabled = true;
+        return;
+      }
+      if (state.roads.has(rk)) {
+        infoEl.innerHTML = '<span style="color:#ffa726">⚠️ 此路段正在施工</span>';
+        if (buildBtn) buildBtn.disabled = true;
+        return;
+      }
+
+      const targetSett = this._getSettlementByKey(targetKey);
+      if (!targetSett) {
+        infoEl.textContent = '（找不到目標地區）';
+        if (buildBtn) buildBtn.disabled = true;
+        return;
+      }
+
+      // Compute the actual A* route.
+      const result = this._computeRoadPath(settlement, targetSett);
+      if (!result.path) {
+        if (result.blockedByRiver) {
+          infoEl.innerHTML = '<span style="color:#ef5350">🌊 被河流阻擋，需要建造橋樑才可通過</span>';
         } else {
-          infoEl.innerHTML = `路程約 ${tiles} 格 · 預計 ${hours} 工時 · 費用 🪙${cost}`;
+          infoEl.innerHTML = '<span style="color:#ef5350">⛰️ 無可行路線（山地阻擋）</span>';
         }
+        if (buildBtn) buildBtn.disabled = true;
+      } else {
+        infoEl.innerHTML =
+          `路程 ${result.path.length} 格 · 預計 ${result.totalHours} 工時 · 費用 🪙${result.totalCost}`;
+        if (buildBtn) buildBtn.disabled = false;
+        cachedRoadPath = { ...result, rk, targetKey };
       }
     };
 
@@ -6155,79 +6444,82 @@ export class GameUI {
     updateRoadInfo();
 
     document.getElementById('btn-build-road')?.addEventListener('click', () => {
-      const sel = document.getElementById('constr-road-target');
-      if (!sel) return;
-      const targetKey  = sel.value;
-      const opt        = sel.options[sel.selectedIndex];
-      const tiles      = Number(opt?.dataset?.tiles ?? 0);
-      const cost       = tiles * CONSTR_ROAD_COST_PER_TILE;
-      const rk         = this._roadKey(key, targetKey);
+      if (!cachedRoadPath?.path) { this._toast('⚠️ 請先選擇可行路線'); return; }
+
+      const { path, totalCost, totalHours, rk, targetKey } = cachedRoadPath;
 
       if (state.builtRoads.has(rk)) { this._toast('✅ 此路段已建完！'); return; }
       if (state.roads.has(rk))      { this._toast('⚠️ 此路段已在施工中！'); return; }
-      if (tiles < 1)                 { this._toast('目標太近，無需建造道路。'); return; }
-      if (this._getGold() < cost)   { this._toast('💸 金幣不足！'); return; }
+      if (this._getGold() < totalCost) { this._toast('💸 金幣不足！'); return; }
 
-      this._spendGold(cost);
+      this._spendGold(totalCost);
 
-      // Find target name for display
       const targetSett = this._getSettlementByKey(targetKey);
       const targetName = targetSett ? targetSett.name : targetKey;
+      const tiles      = path.length;
 
-      // Add road to this settlement's queue
+      // Add road to this settlement's in-progress queue.
       state.roads.set(rk, {
         targetKey,
         targetName,
         tilesTotal:  tiles,
-        hoursLeft:   tiles * CONSTR_ROAD_HOURS_PER_TILE,
+        totalHours,
+        hoursLeft:   totalHours,
         isDemo:      false,
+        path,
       });
 
-      // Mirror the in-progress road state to the target settlement so the
-      // target side also shows the road when the player visits there.
+      // Mirror to the target settlement so it shows in its road tab too.
       const targetState = this._getConstructionState(targetKey);
       targetState.roads.set(rk, {
-        targetKey: key,
+        targetKey:  key,
         targetName: settlement.name,
-        tilesTotal:  tiles,
-        hoursLeft:   tiles * CONSTR_ROAD_HOURS_PER_TILE,
-        isDemo:      false,
+        tilesTotal: tiles,
+        totalHours,
+        hoursLeft:  totalHours,
+        isDemo:     false,
+        path,
       });
 
-      this._addInboxMessage('🚧', `開始修建 ${settlement.name} → ${targetName} 的道路（${tiles} 格，需 ${tiles * CONSTR_ROAD_HOURS_PER_TILE} 工時）。`);
+      this._addInboxMessage('🚧', `開始修建 ${settlement.name} → ${targetName} 的道路（${tiles} 格，需 ${totalHours} 工時）。`);
       this._renderConstructionPanel(govBuilding, settlement);
     });
 
     // Demolish road
     panel.querySelectorAll('.crr-demo-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const rk = btn.dataset.rkey;
-        if (!state.builtRoads.has(rk)) return;
+        const rk       = btn.dataset.rkey;
+        const roadData = state.builtRoads.get(rk);
+        if (!roadData) return;
+
         state.builtRoads.delete(rk);
 
-        // Determine tiles (use both settlement keys to find target)
-        const other      = rk.split('↔').find(p => p !== key) ?? '';
-        const otherSett  = this._getSettlementByKey(other);
-        const tiles      = otherSett ? this._getRoadTiles(settlement, otherSett) : 1;
+        const other       = rk.split('↔').find(p => p !== key) ?? '';
+        const otherSett   = this._getSettlementByKey(other);
+        const roadTiles   = roadData.tiles ?? [];
+        const tiles       = roadTiles.length || 1;
+        const demoHours   = tiles * CONSTR_ROAD_DEMO_HOURS_PER_TILE;
 
-        // Also remove from target side built roads
         const targetState = this._getConstructionState(other);
         targetState.builtRoads.delete(rk);
 
-        // Queue demolition
         state.roads.set(rk, {
           targetKey:   other,
           targetName:  otherSett?.name ?? other,
           tilesTotal:  tiles,
-          hoursLeft:   tiles * CONSTR_ROAD_DEMO_HOURS_PER_TILE,
+          totalHours:  demoHours,
+          hoursLeft:   demoHours,
           isDemo:      true,
+          path:        roadTiles,
         });
         targetState.roads.set(rk, {
           targetKey:   key,
           targetName:  settlement.name,
           tilesTotal:  tiles,
-          hoursLeft:   tiles * CONSTR_ROAD_DEMO_HOURS_PER_TILE,
+          totalHours:  demoHours,
+          hoursLeft:   demoHours,
           isDemo:      true,
+          path:        roadTiles,
         });
 
         this._addInboxMessage('🪚', `開始拆除 ${settlement.name} 的道路。`);
@@ -7409,7 +7701,7 @@ export class GameUI {
         key,
         buildingQueue: state.buildingQueue,
         roads: [...state.roads.entries()].map(([rk, r]) => ({ roadKey: rk, ...r })),
-        builtRoads: [...state.builtRoads],
+        builtRoads: [...state.builtRoads.entries()].map(([rk, data]) => ({ roadKey: rk, tiles: data.tiles ?? [] })),
         hasPort: state.hasPort,
         portTile: state.portTile,
       });
@@ -7483,7 +7775,18 @@ export class GameUI {
         this._constructionState.set(entry.key, {
           buildingQueue: entry.buildingQueue ?? [],
           roads,
-          builtRoads:    new Set(entry.builtRoads ?? []),
+          builtRoads: (() => {
+            const m = new Map();
+            for (const r of (entry.builtRoads ?? [])) {
+              if (typeof r === 'string') {
+                // Legacy format: just the road key string, no tile path.
+                m.set(r, { tiles: [] });
+              } else if (r?.roadKey) {
+                m.set(r.roadKey, { tiles: r.tiles ?? [] });
+              }
+            }
+            return m;
+          })(),
           hasPort:       entry.hasPort ?? false,
           portTile:      entry.portTile ?? null,
         });

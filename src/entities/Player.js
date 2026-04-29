@@ -10,6 +10,7 @@ const SPEED              = 200;  // world pixels per second
 const RADIUS             = 12;   // player body radius in world pixels
 const FOREST_SPEED_MULT  = 0.4;  // speed multiplier when inside forest
 const HILL_SPEED_MULT    = 0.65; // speed multiplier when traversing hills
+const ROAD_SPEED_MULT    = 1.25; // speed multiplier bonus when walking on a built road
 
 /** Default player name used when no saved name is present. */
 const DEFAULT_PLAYER_NAME = '主角';
@@ -96,24 +97,43 @@ export class Player {
   // ---------------------------------------------------------------------------
 
   /**
-   * @param {number}  dt      delta-time in seconds
-   * @param {number}  dirX    horizontal direction component (may be > 1 before normalise)
-   * @param {number}  dirY    vertical direction component
-   * @param {MapData} mapData map data used for terrain collision
+   * @param {number}  dt         delta-time in seconds
+   * @param {number}  dirX       horizontal direction component (may be > 1 before normalise)
+   * @param {number}  dirY       vertical direction component
+   * @param {MapData} mapData    map data used for terrain collision
+   * @param {Set<string>|null} [roadTileSet]
+   *   Set of `"tx,ty"` encoded road tiles.  When the player stands on a road
+   *   tile they receive a 25 % speed bonus (capped at 1.2× base speed).
    */
-  update(dt, dirX, dirY, mapData) {
+  update(dt, dirX, dirY, mapData, roadTileSet = null) {
     const len = Math.sqrt(dirX * dirX + dirY * dirY);
 
     if (len > 0.01) {
       const nx = dirX / len;
       const ny = dirY / len;
 
-      // Apply forest/hill speed penalty based on the tile the player currently stands on
-      const terrain   = mapData ? mapData.getTerrainAtWorld(this.x, this.y) : null;
+      // Apply terrain-based speed modifier, with road bonus overriding penalties.
+      const terrain = mapData ? mapData.getTerrainAtWorld(this.x, this.y) : null;
       let speedMult = 1;
-      if (terrain === TERRAIN.FOREST) speedMult = FOREST_SPEED_MULT;
-      else if (terrain === TERRAIN.HILL) speedMult = HILL_SPEED_MULT;
-      const step      = SPEED * speedMult * dt;
+      if (roadTileSet) {
+        const tx = Math.floor(this.x / TILE_SIZE);
+        const ty = Math.floor(this.y / TILE_SIZE);
+        if (roadTileSet.has(`${tx},${ty}`)) {
+          // Road: 25 % faster than base terrain speed, capped at 1.2 (roads are
+          // "略快" on grass, hills, and forest – not super-highways).
+          const base = terrain === TERRAIN.FOREST ? FOREST_SPEED_MULT
+                     : terrain === TERRAIN.HILL   ? HILL_SPEED_MULT
+                     : 1.0;
+          speedMult = Math.min(1.2, base * ROAD_SPEED_MULT);
+        } else {
+          if (terrain === TERRAIN.FOREST) speedMult = FOREST_SPEED_MULT;
+          else if (terrain === TERRAIN.HILL) speedMult = HILL_SPEED_MULT;
+        }
+      } else {
+        if (terrain === TERRAIN.FOREST) speedMult = FOREST_SPEED_MULT;
+        else if (terrain === TERRAIN.HILL) speedMult = HILL_SPEED_MULT;
+      }
+      const step = SPEED * speedMult * dt;
 
       // Attempt X and Y movement independently so the player can slide along
       // mountain / water edges rather than being stopped completely.
