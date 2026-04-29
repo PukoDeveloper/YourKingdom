@@ -156,14 +156,14 @@ export function generateFlagAppearance(s1, s2) {
  */
 function _svgFlagSymbol(shape, size, fill = '#FFFFFF') {
   const cx = size / 2, cy = size / 2, r = size * 0.32;
-  let c = '';
+  let svgContent = '';
   switch (shape) {
     case 'cross':
-      c = `<rect x="${cx-r*0.18}" y="${cy-r}" width="${r*0.36}" height="${r*2}" fill="${fill}"/>` +
+      svgContent = `<rect x="${cx-r*0.18}" y="${cy-r}" width="${r*0.36}" height="${r*2}" fill="${fill}"/>` +
           `<rect x="${cx-r}" y="${cy-r*0.18}" width="${r*2}" height="${r*0.36}" fill="${fill}"/>`;
       break;
     case 'diamond':
-      c = `<polygon points="${cx},${cy-r} ${cx+r},${cy} ${cx},${cy+r} ${cx-r},${cy}" fill="${fill}"/>`;
+      svgContent = `<polygon points="${cx},${cy-r} ${cx+r},${cy} ${cx},${cy+r} ${cx-r},${cy}" fill="${fill}"/>`;
       break;
     case 'star': {
       const pts = [];
@@ -172,73 +172,73 @@ function _svgFlagSymbol(shape, size, fill = '#FFFFFF') {
         const rd = i % 2 === 0 ? r : r * 0.45;
         pts.push(`${cx + rd * Math.cos(a)},${cy + rd * Math.sin(a)}`);
       }
-      c = `<polygon points="${pts.join(' ')}" fill="${fill}"/>`;
+      svgContent = `<polygon points="${pts.join(' ')}" fill="${fill}"/>`;
       break;
     }
     case 'crown':
-      c = `<polygon points="${cx-r},${cy+r*0.3} ${cx-r},${cy-r*0.4} ${cx-r*0.4},${cy} ${cx},${cy-r} ${cx+r*0.4},${cy} ${cx+r},${cy-r*0.4} ${cx+r},${cy+r*0.3}" fill="${fill}"/>`;
+      svgContent = `<polygon points="${cx-r},${cy+r*0.3} ${cx-r},${cy-r*0.4} ${cx-r*0.4},${cy} ${cx},${cy-r} ${cx+r*0.4},${cy} ${cx+r},${cy-r*0.4} ${cx+r},${cy+r*0.3}" fill="${fill}"/>`;
       break;
     case 'sun': {
-      c = `<circle cx="${cx}" cy="${cy}" r="${r*0.4}" fill="${fill}"/>`;
+      svgContent = `<circle cx="${cx}" cy="${cy}" r="${r*0.4}" fill="${fill}"/>`;
       for (let i = 0; i < 8; i++) {
         const a = (i * Math.PI) / 4;
-        c += `<line x1="${cx + r*0.52*Math.cos(a)}" y1="${cy + r*0.52*Math.sin(a)}" x2="${cx + r*Math.cos(a)}" y2="${cy + r*Math.sin(a)}" stroke="${fill}" stroke-width="${r*0.18}" stroke-linecap="round"/>`;
+        svgContent += `<line x1="${cx + r*0.52*Math.cos(a)}" y1="${cy + r*0.52*Math.sin(a)}" x2="${cx + r*Math.cos(a)}" y2="${cy + r*Math.sin(a)}" stroke="${fill}" stroke-width="${r*0.18}" stroke-linecap="round"/>`;
       }
       break;
     }
     case 'circle':
-      c = `<circle cx="${cx}" cy="${cy}" r="${r*0.65}" fill="${fill}"/>`;
+      svgContent = `<circle cx="${cx}" cy="${cy}" r="${r*0.65}" fill="${fill}"/>`;
       break;
     case 'bolt':
-      c = `<polygon points="${cx+r*0.2},${cy-r} ${cx-r*0.15},${cy-r*0.05} ${cx+r*0.28},${cy-r*0.05} ${cx-r*0.2},${cy+r} ${cx+r*0.15},${cy+r*0.05} ${cx-r*0.28},${cy+r*0.05}" fill="${fill}"/>`;
+      svgContent = `<polygon points="${cx+r*0.2},${cy-r} ${cx-r*0.15},${cy-r*0.05} ${cx+r*0.28},${cy-r*0.05} ${cx-r*0.2},${cy+r} ${cx+r*0.15},${cy+r*0.05} ${cx-r*0.28},${cy+r*0.05}" fill="${fill}"/>`;
       break;
     case 'flame':
-      c = `<path d="M${cx},${cy+r} C${cx-r*0.7},${cy+r*0.3} ${cx-r*0.6},${cy-r*0.3} ${cx-r*0.2},${cy-r*0.5} C${cx-r*0.3},${cy-r*0.7} ${cx},${cy-r} C${cx+r*0.1},${cy-r*0.7} ${cx+r*0.4},${cy-r*0.5} ${cx+r*0.6},${cy-r*0.3} C${cx+r*0.7},${cy+r*0.3} ${cx},${cy+r} Z" fill="${fill}"/>`;
+      svgContent = `<path d="M${cx},${cy+r} C${cx-r*0.7},${cy+r*0.3} ${cx-r*0.6},${cy-r*0.3} ${cx-r*0.2},${cy-r*0.5} C${cx-r*0.3},${cy-r*0.7} ${cx},${cy-r} C${cx+r*0.1},${cy-r*0.7} ${cx+r*0.4},${cy-r*0.5} ${cx+r*0.6},${cy-r*0.3} C${cx+r*0.7},${cy+r*0.3} ${cx},${cy+r} Z" fill="${fill}"/>`;
       break;
     case 'wave': {
-      const sw = r * 0.22;
-      c = `<path d="M${cx-r},${cy-r*0.1} Q${cx-r*0.5},${cy-r*0.55} ${cx},${cy-r*0.1} Q${cx+r*0.5},${cy+r*0.35} ${cx+r},${cy-r*0.1}" stroke="${fill}" stroke-width="${sw}" fill="none" stroke-linecap="round"/>` +
-          `<path d="M${cx-r},${cy+r*0.35} Q${cx-r*0.5},${cy-r*0.1} ${cx},${cy+r*0.35} Q${cx+r*0.5},${cy+r*0.8} ${cx+r},${cy+r*0.35}" stroke="${fill}" stroke-width="${sw*0.85}" fill="none" stroke-linecap="round"/>`;
+      const strokeW = r * 0.22;
+      svgContent = `<path d="M${cx-r},${cy-r*0.1} Q${cx-r*0.5},${cy-r*0.55} ${cx},${cy-r*0.1} Q${cx+r*0.5},${cy+r*0.35} ${cx+r},${cy-r*0.1}" stroke="${fill}" stroke-width="${strokeW}" fill="none" stroke-linecap="round"/>` +
+          `<path d="M${cx-r},${cy+r*0.35} Q${cx-r*0.5},${cy-r*0.1} ${cx},${cy+r*0.35} Q${cx+r*0.5},${cy+r*0.8} ${cx+r},${cy+r*0.35}" stroke="${fill}" stroke-width="${strokeW*0.85}" fill="none" stroke-linecap="round"/>`;
       break;
     }
     case 'bird':
-      c = `<polygon points="${cx},${cy} ${cx-r},${cy-r*0.55} ${cx-r*0.3},${cy-r*0.25} ${cx},${cy-r*0.65} ${cx+r*0.3},${cy-r*0.25} ${cx+r},${cy-r*0.55}" fill="${fill}"/>` +
+      svgContent = `<polygon points="${cx},${cy} ${cx-r},${cy-r*0.55} ${cx-r*0.3},${cy-r*0.25} ${cx},${cy-r*0.65} ${cx+r*0.3},${cy-r*0.25} ${cx+r},${cy-r*0.55}" fill="${fill}"/>` +
           `<ellipse cx="${cx}" cy="${cy+r*0.25}" rx="${r*0.18}" ry="${r*0.42}" fill="${fill}"/>`;
       break;
     case 'dragon':
-      c = `<circle cx="${cx-r*0.8}" cy="${cy+r*0.25}" r="${r*0.22}" fill="${fill}"/>` +
+      svgContent = `<circle cx="${cx-r*0.8}" cy="${cy+r*0.25}" r="${r*0.22}" fill="${fill}"/>` +
           `<path d="M${cx-r*0.58},${cy+r*0.25} Q${cx-r*0.3},${cy-r*0.5} ${cx},${cy-r*0.15} Q${cx+r*0.3},${cy+r*0.45} ${cx+r*0.6},${cy-r*0.2} Q${cx+r*0.85},${cy-r*0.5} ${cx+r},${cy-r*0.25}" stroke="${fill}" stroke-width="${r*0.28}" fill="none" stroke-linecap="round"/>`;
       break;
     case 'leaf':
-      c = `<path d="M${cx},${cy+r} C${cx-r*0.75},${cy+r*0.3} ${cx-r*0.75},${cy-r*0.3} ${cx},${cy-r} C${cx+r*0.75},${cy-r*0.3} ${cx+r*0.75},${cy+r*0.3} ${cx},${cy+r} Z" fill="${fill}"/>` +
+      svgContent = `<path d="M${cx},${cy+r} C${cx-r*0.75},${cy+r*0.3} ${cx-r*0.75},${cy-r*0.3} ${cx},${cy-r} C${cx+r*0.75},${cy-r*0.3} ${cx+r*0.75},${cy+r*0.3} ${cx},${cy+r} Z" fill="${fill}"/>` +
           `<line x1="${cx}" y1="${cy+r}" x2="${cx}" y2="${cy-r}" stroke="rgba(0,0,0,0.3)" stroke-width="${r*0.1}"/>`;
       break;
     case 'shield':
-      c = `<path d="M${cx-r},${cy-r*0.4} L${cx+r},${cy-r*0.4} L${cx+r},${cy+r*0.15} Q${cx+r},${cy+r} ${cx},${cy+r} Q${cx-r},${cy+r} ${cx-r},${cy+r*0.15} Z" fill="${fill}"/>`;
+      svgContent = `<path d="M${cx-r},${cy-r*0.4} L${cx+r},${cy-r*0.4} L${cx+r},${cy+r*0.15} Q${cx+r},${cy+r} ${cx},${cy+r} Q${cx-r},${cy+r} ${cx-r},${cy+r*0.15} Z" fill="${fill}"/>`;
       break;
     case 'hammer':
-      c = `<rect x="${cx-r*0.12}" y="${cy-r*0.25}" width="${r*0.24}" height="${r*1.25}" fill="${fill}" rx="${r*0.05}"/>` +
+      svgContent = `<rect x="${cx-r*0.12}" y="${cy-r*0.25}" width="${r*0.24}" height="${r*1.25}" fill="${fill}" rx="${r*0.05}"/>` +
           `<rect x="${cx-r*0.58}" y="${cy-r}" width="${r*1.16}" height="${r*0.52}" fill="${fill}" rx="${r*0.08}"/>`;
       break;
     case 'anchor': {
-      const sw2 = r * 0.17;
-      c = `<circle cx="${cx}" cy="${cy-r*0.62}" r="${r*0.28}" fill="none" stroke="${fill}" stroke-width="${sw2}"/>` +
-          `<line x1="${cx}" y1="${cy-r*0.34}" x2="${cx}" y2="${cy+r}" stroke="${fill}" stroke-width="${sw2}"/>` +
-          `<line x1="${cx-r*0.62}" y1="${cy+r*0.5}" x2="${cx+r*0.62}" y2="${cy+r*0.5}" stroke="${fill}" stroke-width="${sw2*0.88}"/>` +
-          `<path d="M${cx-r*0.62},${cy+r*0.5} Q${cx-r*0.75},${cy+r*0.9} ${cx-r*0.38},${cy+r}" stroke="${fill}" stroke-width="${sw2*0.88}" fill="none"/>` +
-          `<path d="M${cx+r*0.62},${cy+r*0.5} Q${cx+r*0.75},${cy+r*0.9} ${cx+r*0.38},${cy+r}" stroke="${fill}" stroke-width="${sw2*0.88}" fill="none"/>`;
+      const anchorStrokeWidth = r * 0.17;
+      svgContent = `<circle cx="${cx}" cy="${cy-r*0.62}" r="${r*0.28}" fill="none" stroke="${fill}" stroke-width="${anchorStrokeWidth}"/>` +
+          `<line x1="${cx}" y1="${cy-r*0.34}" x2="${cx}" y2="${cy+r}" stroke="${fill}" stroke-width="${anchorStrokeWidth}"/>` +
+          `<line x1="${cx-r*0.62}" y1="${cy+r*0.5}" x2="${cx+r*0.62}" y2="${cy+r*0.5}" stroke="${fill}" stroke-width="${anchorStrokeWidth*0.88}"/>` +
+          `<path d="M${cx-r*0.62},${cy+r*0.5} Q${cx-r*0.75},${cy+r*0.9} ${cx-r*0.38},${cy+r}" stroke="${fill}" stroke-width="${anchorStrokeWidth*0.88}" fill="none"/>` +
+          `<path d="M${cx+r*0.62},${cy+r*0.5} Q${cx+r*0.75},${cy+r*0.9} ${cx+r*0.38},${cy+r}" stroke="${fill}" stroke-width="${anchorStrokeWidth*0.88}" fill="none"/>`;
       break;
     }
     case 'tower':
-      c = `<rect x="${cx-r*0.48}" y="${cy-r*0.28}" width="${r*0.96}" height="${r*1.28}" fill="${fill}" rx="${r*0.04}"/>` +
+      svgContent = `<rect x="${cx-r*0.48}" y="${cy-r*0.28}" width="${r*0.96}" height="${r*1.28}" fill="${fill}" rx="${r*0.04}"/>` +
           `<rect x="${cx-r*0.65}" y="${cy-r}" width="${r*0.28}" height="${r*0.52}" fill="${fill}"/>` +
           `<rect x="${cx-r*0.14}" y="${cy-r}" width="${r*0.28}" height="${r*0.52}" fill="${fill}"/>` +
           `<rect x="${cx+r*0.37}" y="${cy-r}" width="${r*0.28}" height="${r*0.52}" fill="${fill}"/>`;
       break;
     default:
-      c = `<circle cx="${cx}" cy="${cy}" r="${r*0.65}" fill="${fill}"/>`;
+      svgContent = `<circle cx="${cx}" cy="${cy}" r="${r*0.65}" fill="${fill}"/>`;
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="position:relative;z-index:1;flex-shrink:0">${c}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="position:relative;z-index:1;flex-shrink:0">${svgContent}</svg>`;
 }
 
 /**
@@ -362,8 +362,8 @@ export function renderCharHTML(charApp, size = 36) {
   } = charApp;
 
   // Body shape modifiers (relative width / height multipliers)
-  const _bp = { standard: [1.0, 1.0], tall: [0.82, 1.3], stocky: [1.28, 0.88], slim: [0.68, 1.12] };
-  const [bwMult, bhMult] = _bp[bodyShape] ?? _bp.standard;
+  const bodyShapeMultipliers = { standard: [1.0, 1.0], tall: [0.82, 1.3], stocky: [1.28, 0.88], slim: [0.68, 1.12] };
+  const [bwMult, bhMult] = bodyShapeMultipliers[bodyShape] ?? bodyShapeMultipliers.standard;
 
   const headSize = Math.round(size * 0.55);
   const bodyW    = Math.round(size * bwMult);
@@ -651,10 +651,10 @@ function _drawSymbolShape(g, cx, cy, r, shape) {
       g.rect(cx - r * 0.58, cy - r,         r * 1.16, r * 0.52).fill(color);
       break;
     case 'anchor': {
-      const aw = r * 0.18;
-      g.circle(cx, cy - r * 0.62, r * 0.28).stroke({ color, width: aw });
-      g.moveTo(cx, cy - r * 0.34).lineTo(cx, cy + r).stroke({ color, width: aw });
-      g.moveTo(cx - r * 0.62, cy + r * 0.5).lineTo(cx + r * 0.62, cy + r * 0.5).stroke({ color, width: aw * 0.88 });
+      const anchorStrokeW = r * 0.18;
+      g.circle(cx, cy - r * 0.62, r * 0.28).stroke({ color, width: anchorStrokeW });
+      g.moveTo(cx, cy - r * 0.34).lineTo(cx, cy + r).stroke({ color, width: anchorStrokeW });
+      g.moveTo(cx - r * 0.62, cy + r * 0.5).lineTo(cx + r * 0.62, cy + r * 0.5).stroke({ color, width: anchorStrokeW * 0.88 });
       const pts1 = [];
       const pts2 = [];
       for (let i = 0; i <= 8; i++) {
@@ -665,10 +665,10 @@ function _drawSymbolShape(g, cx, cy, r, shape) {
       }
       g.moveTo(pts1[0], pts1[1]);
       for (let i = 2; i < pts1.length; i += 2) g.lineTo(pts1[i], pts1[i + 1]);
-      g.stroke({ color, width: aw * 0.88 });
+      g.stroke({ color, width: anchorStrokeW * 0.88 });
       g.moveTo(pts2[0], pts2[1]);
       for (let i = 2; i < pts2.length; i += 2) g.lineTo(pts2[i], pts2[i + 1]);
-      g.stroke({ color, width: aw * 0.88 });
+      g.stroke({ color, width: anchorStrokeW * 0.88 });
       break;
     }
     case 'tower':
@@ -701,8 +701,8 @@ export function drawCharGraphics(g, radius, charApp) {
   const r = radius;
 
   // Body shape multipliers
-  const _sc = { standard: [1.0, 1.0], tall: [0.82, 1.15], stocky: [1.28, 0.88], slim: [0.68, 1.12] };
-  const [rxMul, ryMul] = _sc[bodyShape] ?? _sc.standard;
+  const bodyShapeScales = { standard: [1.0, 1.0], tall: [0.82, 1.15], stocky: [1.28, 0.88], slim: [0.68, 1.12] };
+  const [rxMul, ryMul] = bodyShapeScales[bodyShape] ?? bodyShapeScales.standard;
   const rx = r * rxMul;
   const ry = r * ryMul;
 

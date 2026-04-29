@@ -1263,11 +1263,11 @@ export class GameUI {
      * @param {string} pendingKey key to update in the `pending` object
      */
     const _wireSwatches = (attr, pendingKey) => {
-      const camel = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      const camelAttr = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       const btns = content.querySelectorAll(`[data-${attr}]`);
       btns.forEach(btn => {
         btn.addEventListener('click', () => {
-          pending[pendingKey] = Number(btn.dataset[camel]);
+          pending[pendingKey] = Number(btn.dataset[camelAttr]);
           btns.forEach(b => b.classList.remove('selected'));
           btn.classList.add('selected');
           _apply();
