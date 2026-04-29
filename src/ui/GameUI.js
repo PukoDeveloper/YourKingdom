@@ -2991,11 +2991,14 @@ export class GameUI {
     const detail = document.getElementById('squad-detail');
     const captain = squad.captain;
 
-    // Separate members into "present" and "on mission" (dispatched to ruler/trade/build/messenger)
+    // Separate members into "present" and "on mission" in a single pass.
     const assignedIds = this._getAllAssignedUnitIds();
 
-    const presentMembers  = squad.members.filter(m => !assignedIds.has(m.id));
-    const missionMembers  = squad.members.filter(m =>  assignedIds.has(m.id));
+    const presentMembers = [];
+    const missionMembers = [];
+    for (const m of squad.members) {
+      (assignedIds.has(m.id) ? missionMembers : presentMembers).push(m);
+    }
 
     const memberCards = [];
     for (let i = 0; i < MAX_MEMBERS; i++) {
@@ -3034,15 +3037,24 @@ export class GameUI {
       }
     }
 
-    // Build "on mission" section for dispatched members
+    // Build "on mission" section for dispatched members.
+    // Pre-compute a map of unitId → missionLabel to avoid repeated iteration inside .map().
+    const missionLabelMap = new Map();
+    for (const id of this._messengerUnitIds) missionLabelMap.set(id, '📨 信使中');
+    for (const [, unitId] of this._assignedRulers) {
+      if (!missionLabelMap.has(unitId)) missionLabelMap.set(unitId, '🏯 地區統治');
+    }
+    for (const arr of this._tradeRouteWorkers.values()) {
+      for (const id of arr) { if (!missionLabelMap.has(id)) missionLabelMap.set(id, '🛤 貿易路線'); }
+    }
+    for (const arr of this._buildingWorkers.values()) {
+      for (const id of arr) { if (!missionLabelMap.has(id)) missionLabelMap.set(id, '🏗 建設工程'); }
+    }
+
     const missionCards = missionMembers.map(m => {
       const isCaptain  = m.id === squad.captainId;
       const avatarHTML = m.appearance ? renderCharHTML(m.appearance, 32) : '';
-      let missionLabel = '執行任務中';
-      if (this._messengerUnitIds.has(m.id)) missionLabel = '📨 信使中';
-      else if ([...this._assignedRulers.values()].includes(m.id)) missionLabel = '🏯 地區統治';
-      else if ([...this._tradeRouteWorkers.values()].some(arr => arr.includes(m.id))) missionLabel = '🛤 貿易路線';
-      else if ([...this._buildingWorkers.values()].some(arr => arr.includes(m.id))) missionLabel = '🏗 建設工程';
+      const missionLabel = missionLabelMap.get(m.id) ?? '執行任務中';
       return `
         <div class="unit-card-compact on-mission${isCaptain ? ' captain' : ''}"
              data-id="${m.id}" role="button" tabindex="0">
