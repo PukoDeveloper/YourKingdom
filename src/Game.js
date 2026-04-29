@@ -386,6 +386,15 @@ export class Game {
         isPort ? 'port' : null,
       );
 
+      // Show / hide the map-build button (forest → lumber camp, mountain → mine, water → bridge).
+      // Only show when the player is NOT inside a settlement tile.
+      const MAP_BUILDABLE_TERRAINS = new Set([TERRAIN.FOREST, TERRAIN.MOUNTAIN, TERRAIN.WATER]);
+      if (!hit && MAP_BUILDABLE_TERRAINS.has(t)) {
+        this._gameUI.setNearbyBuildableTerrain(tileX, tileY, t);
+      } else {
+        this._gameUI.setNearbyBuildableTerrain(null, null, null);
+      }
+
       // Grant sea access when the player stands on a player-built port tile.
       const playerTile = { tx: Math.floor(this._player.x / TILE_SIZE), ty: Math.floor(this._player.y / TILE_SIZE) };
       const builtPorts = this._gameUI.getBuiltPortTiles();
