@@ -89,6 +89,12 @@ const NPC_WAR_CASUALTY_COUNT = 2;
  */
 const NPC_ACTION_STAGGER_PERIOD = 2;
 
+/** Proportion of NPC gold offered in a spontaneous peace missive. */
+const NPC_PEACE_OFFER_GOLD_RATIO = 0.2;
+
+/** Probability that two NPC nations accept each other's peace treaty. */
+const NPC_NPC_PEACE_ACCEPT_CHANCE = 0.4;
+
 /**
  * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
  * Defined here to avoid a circular import.
@@ -1739,7 +1745,7 @@ export class DiplomacySystem {
     }
 
     // NPC-NPC peace (simplified)
-    const accepted = Math.random() < 0.4;
+    const accepted = Math.random() < NPC_NPC_PEACE_ACCEPT_CHANCE;
     if (accepted) {
       this.applyPeaceTreaty(senderNationId, receiverNationId, terms);
     }
@@ -2036,7 +2042,7 @@ export class DiplomacySystem {
           const fromPx = _marchCastlePx(this._mapData.castles[id]);
           const toPx   = fromPx ? this._findNearestPlayerSettlement(fromPx) : null;
           if (fromPx && toPx) {
-            const offeredGold = Math.floor((this._npcGold.get(id) ?? 0) * 0.2);
+            const offeredGold = Math.floor((this._npcGold.get(id) ?? 0) * NPC_PEACE_OFFER_GOLD_RATIO);
             const terms = {
               goldFromSender: 0,
               goldFromNpc:    offeredGold,
