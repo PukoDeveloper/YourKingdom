@@ -3,6 +3,7 @@ import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
 import { RoadRenderer }     from './world/RoadRenderer.js';
+import { MapBuildingRenderer } from './world/MapBuildingRenderer.js';
 import { NpcArmyRenderer }  from './world/NpcArmyRenderer.js';
 import { MissiveRenderer }  from './world/MissiveRenderer.js';
 import { WorkerRenderer }   from './world/WorkerRenderer.js';
@@ -99,6 +100,10 @@ export class Game {
     // Road overlay (drawn on top of terrain, below structures).
     this._roadRenderer = new RoadRenderer();
     this._world.addChild(this._roadRenderer.container);
+
+    // Map-building overlay (lumber camps, mines, bridges) – above roads.
+    this._mapBuildingRenderer = new MapBuildingRenderer();
+    this._world.addChild(this._mapBuildingRenderer.container);
 
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
@@ -205,10 +210,15 @@ export class Game {
     // Cached road-tile Set (rebuilt whenever roads change; passed to Player every frame).
     this._builtRoadTileSet = new Set();
 
+    // Cached bridge-tile Set (rebuilt whenever a bridge is added; passed to Player every frame).
+    this._builtBridgeTileSet = new Set();
+
     // Restore built roads from save data.
     if (savedState) {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
-      this._builtRoadTileSet = this._gameUI.getBuiltRoadTileSet();
+      this._builtRoadTileSet   = this._gameUI.getBuiltRoadTileSet();
+      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings());
+      this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
     }
 
     // Rebuild map structures whenever the player captures a new settlement.
@@ -224,6 +234,12 @@ export class Game {
     this._gameUI.onRoadBuilt = () => {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
       this._builtRoadTileSet = this._gameUI.getBuiltRoadTileSet();
+    };
+
+    // Rebuild map-building overlay and bridge tile set whenever a map building changes.
+    this._gameUI.onMapBuildingChanged = () => {
+      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings());
+      this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
     };
 
     // Advance in-game days when resting at an inn.
@@ -262,7 +278,7 @@ export class Game {
 
   _update(dt) {
     const dir = this._input.getDirection();
-    this._player.update(dt, dir.x, dir.y, this._mapData, this._builtRoadTileSet);
+    this._player.update(dt, dir.x, dir.y, this._mapData, this._builtRoadTileSet, this._builtBridgeTileSet);
 
     this._camera.follow(this._player.x, this._player.y);
     this._camera.update(dt);

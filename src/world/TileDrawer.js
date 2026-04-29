@@ -304,3 +304,131 @@ export function drawPortBuilding(g, px, py) {
     px + W - 16, py + 20,
   ]).fill(0x1565C0);
 }
+
+// ---------------------------------------------------------------------------
+// Lumber camp (drawn over one tile = 48×48 px)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw a lumber camp marker at world-pixel position (px, py).
+ * Occupies exactly one tile (T×T pixels) on a FOREST tile.
+ * @param {import('pixi.js').Graphics} g
+ * @param {number} px  World-pixel X (top-left of tile)
+ * @param {number} py  World-pixel Y (top-left of tile)
+ */
+export function drawLumberCampBuilding(g, px, py) {
+  // --- Cleared ground patch ---
+  g.rect(px + 4, py + 4, T - 8, T - 8).fill({ color: 0x6D4C41, alpha: 0.85 });
+
+  // --- Log pile (bottom area) – three stacked cylinders ---
+  for (let i = 0; i < 3; i++) {
+    const lx = px + 6 + i * 12;
+    const ly = py + T - 16;
+    g.rect(lx, ly, 10, 8).fill(0x8D6E63);
+    g.ellipse(lx + 5, ly, 5, 3).fill(0xA1887F);
+    g.ellipse(lx + 5, ly + 8, 5, 3).fill(0x6D4C41);
+  }
+
+  // --- Small wooden hut (top-left area) ---
+  // Walls
+  g.rect(px + 5, py + 8, 22, 18).fill(0xA1887F);
+  // Roof (triangle)
+  g.poly([
+    px + 3,  py + 8,
+    px + 16, py + 1,
+    px + 29, py + 8,
+  ]).fill(0x5D4037);
+  // Door
+  g.rect(px + 13, py + 18, 7, 8).fill(0x3E2723);
+
+  // --- Axe symbol (right side) ---
+  // Handle
+  g.rect(px + 34, py + 10, 3, 20).fill(0x8D6E63);
+  // Blade
+  g.poly([
+    px + 37, py + 10,
+    px + 44, py + 14,
+    px + 37, py + 22,
+  ]).fill(0xBDBDBD);
+}
+
+// ---------------------------------------------------------------------------
+// Mine building (drawn over one tile = 48×48 px)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw a mine entrance marker at world-pixel position (px, py).
+ * Occupies exactly one tile (T×T pixels) on a MOUNTAIN tile.
+ * @param {import('pixi.js').Graphics} g
+ * @param {number} px  World-pixel X (top-left of tile)
+ * @param {number} py  World-pixel Y (top-left of tile)
+ */
+export function drawMineBuilding(g, px, py) {
+  // --- Rocky ground patch ---
+  g.rect(px + 3, py + 3, T - 6, T - 6).fill({ color: 0x455A64, alpha: 0.85 });
+
+  // --- Mine entrance arch ---
+  g.rect(px + 14, py + 16, 20, 26).fill(0x263238);      // tunnel interior
+  g.rect(px + 12, py + 14, 24, 4).fill(0x607D8B);       // lintel
+  g.rect(px + 12, py + 14, 4, 28).fill(0x607D8B);       // left post
+  g.rect(px + 32, py + 14, 4, 28).fill(0x607D8B);       // right post
+
+  // --- Support beams inside tunnel ---
+  g.rect(px + 16, py + 20, 2, 18).fill(0x8D6E63);
+  g.rect(px + 30, py + 20, 2, 18).fill(0x8D6E63);
+  g.rect(px + 16, py + 20, 16, 2).fill(0x8D6E63);
+
+  // --- Ore cart tracks (bottom of entrance) ---
+  g.rect(px + 16, py + 38, 16, 2).fill(0x78909C);
+  g.rect(px + 18, py + 36, 2, 6).fill(0x78909C);
+  g.rect(px + 28, py + 36, 2, 6).fill(0x78909C);
+
+  // --- Ore/rock pile (right side) ---
+  g.circle(px + 40, py + 36, 5).fill(0x546E7A);
+  g.circle(px + 44, py + 30, 4).fill(0x78909C);
+  g.circle(px + 38, py + 28, 3).fill(0x90A4AE);
+
+  // --- Small pickaxe icon (top-right) ---
+  g.rect(px + 36, py + 7, 2, 10).fill(0x8D6E63);
+  g.poly([
+    px + 36, py + 7,
+    px + 44, py + 5,
+    px + 40, py + 12,
+  ]).fill(0xBDBDBD);
+}
+
+// ---------------------------------------------------------------------------
+// Bridge building (drawn over one tile = 48×48 px)
+// ---------------------------------------------------------------------------
+
+/**
+ * Draw a wooden bridge overlay at world-pixel position (px, py).
+ * Sits on top of a WATER tile to indicate a passable crossing.
+ * @param {import('pixi.js').Graphics} g
+ * @param {number} px  World-pixel X (top-left of tile)
+ * @param {number} py  World-pixel Y (top-left of tile)
+ */
+export function drawBridgeBuilding(g, px, py) {
+  // --- Bridge deck (horizontal planks covering the water) ---
+  // Main deck surface
+  g.rect(px, py + 16, T, 16).fill(0x8B6914);
+
+  // Plank lines (vertical grain)
+  for (let bx = 4; bx < T; bx += 8) {
+    g.rect(px + bx, py + 16, 2, 16).fill(0x6B4E0B);
+  }
+
+  // --- Horizontal railing top beam ---
+  g.rect(px, py + 14, T, 3).fill(0x5D4037);
+  // --- Horizontal railing bottom beam ---
+  g.rect(px, py + 33, T, 3).fill(0x5D4037);
+
+  // --- Railing posts (vertical) ---
+  for (let rx = 4; rx < T; rx += 12) {
+    g.rect(px + rx, py + 10, 3, 26).fill(0x5D4037);
+  }
+
+  // --- Rope/cable highlight on railings ---
+  g.moveTo(px, py + 15).lineTo(px + T, py + 15)
+    .stroke({ color: 0xA1887F, width: 1, alpha: 0.7 });
+}

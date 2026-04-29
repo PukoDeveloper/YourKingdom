@@ -105,8 +105,11 @@ export class Player {
    * @param {Set<string>|null} [roadTileSet]
    *   Set of `"tx,ty"` encoded road tiles.  When the player stands on a road
    *   tile they receive a 25 % speed bonus (capped at 1.2× base speed).
+   * @param {Set<string>|null} [bridgeTileSet]
+   *   Set of `"tx,ty"` encoded bridge tiles.  Bridge tiles are WATER terrain
+   *   but are treated as passable land for movement purposes.
    */
-  update(dt, dirX, dirY, mapData, roadTileSet = null) {
+  update(dt, dirX, dirY, mapData, roadTileSet = null, bridgeTileSet = null) {
     const len = Math.sqrt(dirX * dirX + dirY * dirY);
 
     if (len > 0.01) {
@@ -138,12 +141,12 @@ export class Player {
       // Attempt X and Y movement independently so the player can slide along
       // mountain / water edges rather than being stopped completely.
       const nextX = this.x + nx * step;
-      if (!mapData || (!this._touchesMountain(mapData, nextX, this.y) && !this._touchesWater(mapData, nextX, this.y))) {
+      if (!mapData || (!this._touchesMountain(mapData, nextX, this.y) && !this._touchesWater(mapData, nextX, this.y, bridgeTileSet))) {
         this.x = nextX;
       }
 
       const nextY = this.y + ny * step;
-      if (!mapData || (!this._touchesMountain(mapData, this.x, nextY) && !this._touchesWater(mapData, this.x, nextY))) {
+      if (!mapData || (!this._touchesMountain(mapData, this.x, nextY) && !this._touchesWater(mapData, this.x, nextY, bridgeTileSet))) {
         this.y = nextY;
       }
 
@@ -151,10 +154,14 @@ export class Player {
     }
 
     // Track sea state: detect landing (water → land) and clear embark permission.
+    // A bridge tile counts as land for this purpose.
     if (mapData) {
-      const onWater = mapData.getTerrainAtWorld(this.x, this.y) === TERRAIN.WATER;
+      const tx = Math.floor(this.x / TILE_SIZE);
+      const ty = Math.floor(this.y / TILE_SIZE);
+      const onBridge = bridgeTileSet ? bridgeTileSet.has(`${tx},${ty}`) : false;
+      const onWater = !onBridge && mapData.getTerrainAtWorld(this.x, this.y) === TERRAIN.WATER;
       if (this.atSea && !onWater) {
-        // Just stepped onto land after being at sea – revoke sea access.
+        // Just stepped onto land (or bridge) after being at sea – revoke sea access.
         this.canEmbark = false;
       }
       this.atSea = onWater;
@@ -193,22 +200,33 @@ export class Player {
   /**
    * Returns true if the player's body (centre + cardinal-edge probe points)
    * would overlap a WATER tile at the given world position.
-   * Returns false when the player has sea access (canEmbark or already atSea).
+   * Returns false when the player has sea access (canEmbark or already atSea),
+   * or when the tile is a bridge (bridgeTileSet contains the tile key).
    *
    * @param {MapData} mapData
    * @param {number}  worldX
    * @param {number}  worldY
+   * @param {Set<string>|null} [bridgeTileSet]  Set of `"tx,ty"` bridge tile keys.
    */
-  _touchesWater(mapData, worldX, worldY) {
+  _touchesWater(mapData, worldX, worldY, bridgeTileSet = null) {
     // Allow water movement when the player is already at sea or has embark access.
     if (this.atSea || this.canEmbark) return false;
-    const isWater = (wx, wy) => mapData.getTerrainAtWorld(wx, wy) === TERRAIN.WATER;
+    const isBlockingWater = (wx, wy) => {
+      if (mapData.getTerrainAtWorld(wx, wy) !== TERRAIN.WATER) return false;
+      // Bridge tiles are treated as passable land.
+      if (bridgeTileSet) {
+        const tx = Math.floor(wx / TILE_SIZE);
+        const ty = Math.floor(wy / TILE_SIZE);
+        if (bridgeTileSet.has(`${tx},${ty}`)) return false;
+      }
+      return true;
+    };
     return (
-      isWater(worldX,          worldY         ) ||
-      isWater(worldX + RADIUS, worldY         ) ||
-      isWater(worldX - RADIUS, worldY         ) ||
-      isWater(worldX,          worldY + RADIUS) ||
-      isWater(worldX,          worldY - RADIUS)
+      isBlockingWater(worldX,          worldY         ) ||
+      isBlockingWater(worldX + RADIUS, worldY         ) ||
+      isBlockingWater(worldX - RADIUS, worldY         ) ||
+      isBlockingWater(worldX,          worldY + RADIUS) ||
+      isBlockingWater(worldX,          worldY - RADIUS)
     );
   }
 }
