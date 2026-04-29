@@ -692,46 +692,11 @@ export class GameUI {
   // -------------------------------------------------------------------------
 
   _seedDemo() {
-    // Loot
-    this.inventory.addItem({ name: '金幣',     type: 'loot',      icon: '🪙', quantity: 50 });
-    this.inventory.addItem({ name: '木材',     type: 'loot',      icon: '🪵', quantity: 20 });
-    this.inventory.addItem({ name: '鐵礦石',   type: 'loot',      icon: '⛏️', quantity: 15 });
-    // Equipment
-    this.inventory.addItem({ name: '長劍',     type: 'weapon',    icon: '🗡️', quantity: 1,
-      description: '鋒利的長劍，適合近戰。', stats: { attack: 12 } });
-    this.inventory.addItem({ name: '鐵頭盔',   type: 'helmet',    icon: '⛑️', quantity: 1,
-      description: '堅固的鐵製頭盔。', stats: { defense: 6 } });
-    this.inventory.addItem({ name: '鎖甲',     type: 'chest',     icon: '🥋', quantity: 1,
-      description: '由鐵環編織的護甲。', stats: { defense: 10 } });
-    this.inventory.addItem({ name: '護腿甲',   type: 'legs',      icon: '🦵', quantity: 1,
-      description: '保護腿部的金屬護甲。', stats: { defense: 4 } });
-    this.inventory.addItem({ name: '皮靴',     type: 'boots',     icon: '👢', quantity: 1,
-      description: '輕便耐用的皮革靴子。', stats: { speed: 2 } });
-    // Accessories
-    this.inventory.addItem({ name: '護身符',   type: 'accessory', icon: '📿', quantity: 1,
-      description: '帶有神秘魔力的護身符。', stats: { morale: 5 } });
-    this.inventory.addItem({ name: '玉佩',     type: 'accessory', icon: '💎', quantity: 1,
-      description: '溫潤的翡翠玉佩。' });
+    // Money
+    this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: 50 });
     // Food
-    this.inventory.addItem({ name: '乾糧',     type: 'food',      icon: '🍱', quantity: 10,
+    this.inventory.addItem({ name: '乾糧', type: 'food', icon: '🍱', quantity: 10,
       description: '補充行軍所需的體力。' });
-    this.inventory.addItem({ name: '肉乾',     type: 'food',      icon: '🥩', quantity: 5,
-      description: '耐儲的高熱量食物。' });
-    // Potions
-    this.inventory.addItem({ name: '治療藥水', type: 'potion',    icon: '🧪', quantity: 3,
-      description: '恢復生命值' });
-    this.inventory.addItem({ name: '強化藥水', type: 'potion',    icon: '⚗️', quantity: 1,
-      description: '暫時大幅提升攻擊力' });
-    // Utility
-    this.inventory.addItem({ name: '速度符',   type: 'utility',   icon: '💨', quantity: 1,
-      description: '短暫提升移動速度' });
-    this.inventory.addItem({ name: '偵察鷹',   type: 'utility',   icon: '🦅', quantity: 2,
-      description: '派出鷹隼偵察地形' });
-    // Trophies / war spoils
-    this.inventory.addItem({ name: '敵將首級', type: 'trophy', icon: '🏆', quantity: 1,
-      description: '擊倒敵方將領所獲得的戰功證明。' });
-    this.inventory.addItem({ name: '勝利旗幟', type: 'trophy', icon: '🚩', quantity: 1,
-      description: '從攻下的城池上取下的旗幟。' });
     // Map item
     this.inventory.addItem({ name: '地圖', type: 'map', icon: '🗺️', quantity: 1,
       stackable: false, description: '記錄王國全域地形的羊皮紙地圖，可查看整片大陸。' });
@@ -1154,7 +1119,6 @@ export class GameUI {
       { id: 'loot',      label: '資源' },
       { id: 'trophy',    label: '戰利品' },
       { id: 'map',       label: '地圖' },
-      { id: 'guide',     label: '指南' },
       { id: 'other',     label: '其他' },
     ];
   }
@@ -1191,6 +1155,7 @@ export class GameUI {
     if (tab === 'all')       return items;
     if (tab === 'equipment') return items.filter(i => i.type === this._equipSubTab);
     if (tab === 'potion')    return items.filter(i => i.type === 'potion' || i.type === 'consumable');
+    if (tab === 'map')       return items.filter(i => i.type === 'map' || i.type === 'guide');
     if (tab === 'other')     return items.filter(i => !GameUI._KNOWN_TYPES.has(i.type));
     return items.filter(i => i.type === tab);
   }
@@ -1208,6 +1173,7 @@ export class GameUI {
       if (id === 'all')       return allItems.length;
       if (id === 'equipment') return allItems.filter(i => EQUIP.includes(i.type)).length;
       if (id === 'potion')    return allItems.filter(i => i.type === 'potion' || i.type === 'consumable').length;
+      if (id === 'map')       return allItems.filter(i => i.type === 'map' || i.type === 'guide').length;
       if (id === 'other')     return allItems.filter(i => !GameUI._KNOWN_TYPES.has(i.type)).length;
       return allItems.filter(i => i.type === id).length;
     };
@@ -1668,7 +1634,7 @@ export class GameUI {
         content: `
           <div class="guide-section">
             <div class="guide-section-heading">開啟背包</div>
-            <p>點選畫面右上角的 🎒 按鈕即可開啟背包。物品依類型分為多個分頁：裝備、飾品、糧食、藥水、實用、資源、戰利品、地圖、指南。</p>
+            <p>點選畫面右上角的 🎒 按鈕即可開啟背包。物品依類型分為多個分頁：裝備、飾品、糧食、藥水、實用、資源、戰利品、地圖（含指南）、其他。</p>
           </div>
           <div class="guide-section">
             <div class="guide-section-heading">查看與使用物品</div>
