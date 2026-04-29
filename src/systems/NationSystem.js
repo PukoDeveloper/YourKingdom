@@ -15,6 +15,7 @@ import { Unit } from './Army.js';
 import { FLAG_STRIPE_STYLES, FLAG_STRIPE_COLORS } from './AppearanceSystem.js';
 import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 import { BuildingSystem } from './BuildingSystem.js';
+import { generateRulerSpecialtyTrait } from './CharacterSystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
@@ -214,11 +215,12 @@ export class NationSystem {
       const personality = _pick(ALL_PERSONALITIES, h(12));
       const castleName  = _pick(CASTLE_NAME_PREFIXES, h(13)) + _pick(CASTLE_NAME_SUFFIXES, h(14));
 
+      const specialtyTraits = generateRulerSpecialtyTrait(c.x * 7 + c.y * 13 + seed, [TRAIT_RULER, personality]);
       const ruler = new Unit({
         id:     -(i + 1),       // negative IDs mark NPC rulers
         name:   rulerName,
         role:   rulerRole,
-        traits: [TRAIT_RULER, personality],
+        traits: [TRAIT_RULER, personality, ...specialtyTraits],
         stats: {
           attack:  Math.floor(8  + h(8)  * 12),
           defense: Math.floor(8  + h(9)  * 12),
@@ -248,11 +250,12 @@ export class NationSystem {
       const rulerRole  = _pick(VILLAGE_TITLES, h(7));
       const nationId   = this._nearestCastleNation(v.x, v.y, castles);
 
+      const vSpecialtyTraits = generateRulerSpecialtyTrait(v.x * 7 + v.y * 13 + seed + 500, [TRAIT_RULER]);
       const ruler = new Unit({
         id:     -(1000 + i + 1),
         name:   rulerName,
         role:   rulerRole,
-        traits: [TRAIT_RULER],
+        traits: [TRAIT_RULER, ...vSpecialtyTraits],
         stats: {
           attack:  Math.floor(3 + h(8) * 7),
           defense: Math.floor(3 + h(9) * 7),

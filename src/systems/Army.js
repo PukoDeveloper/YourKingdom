@@ -5,6 +5,7 @@
  */
 
 import { generateCharAppearance, charAppearanceFromIndices } from './AppearanceSystem.js';
+import { generateRandomTraits } from './CharacterSystem.js';
 
 export const MAX_MEMBERS   = 10;
 export const MAX_SQUADS    = 3;
@@ -169,7 +170,12 @@ export class Army {
    * @returns {{ placed: boolean, unit: Unit, squad?: Squad }}
    */
   acquireUnit(unitData, squadId = null) {
-    const unit = new Unit({ ...unitData, id: this._nextUnitId++, traits: unitData.traits ?? [] });
+    // If no traits are explicitly supplied, generate random ones for this character.
+    const explicitTraits = unitData.traits ?? [];
+    const autoTraits = explicitTraits.length === 0
+      ? generateRandomTraits(this._nextUnitId * 31 + 7, [])
+      : [];
+    const unit = new Unit({ ...unitData, id: this._nextUnitId++, traits: [...explicitTraits, ...autoTraits] });
 
     const squad = squadId !== null
       ? this.squads.find(s => s.id === squadId && s.hasCapacity())

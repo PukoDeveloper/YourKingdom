@@ -37,6 +37,12 @@ import {
   CATALOG_GENERAL, CATALOG_BLACKSMITH, CATALOG_MAGE, CATALOG_TAVERN_FOOD,
 } from '../systems/BuildingSystem.js';
 import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
+import {
+  TRAIT_DEFS,
+  getTaxBonus,
+  getTradeBonus,
+  renderTraitBadgesHTML,
+} from '../systems/CharacterSystem.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
 const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形', '三色橫', '三色縱', '斜十字', '邊框'];
@@ -424,6 +430,15 @@ export class GameUI {
      * @type {Map<string, number>}
      */
     this._festivalCooldowns = new Map();
+
+    /**
+     * Player-assigned rulers for settlements.
+     * Key: settlementKey (e.g. "castle:0").
+     * Value: unit ID (number) of the army member assigned as ruler.
+     * When set, this unit's traits apply to the settlement (e.g. 一絲不苟 → +tax).
+     * @type {Map<string, number>}
+     */
+    this._assignedRulers = new Map();
 
     if (savedState) {
       this.loadState(savedState);
@@ -1962,7 +1977,7 @@ export class GameUI {
       : isNeutral
         ? { name: '中立自治', color: '#9e9e9e', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } }
         : this.nationSystem.getNation(settlement);
-    const ruler     = settlement.ruler;
+    const ruler     = this._getEffectiveRuler(settlement);
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
     const typeLabel = settlement.type === 'castle' ? '城堡' : '村落';
@@ -1990,15 +2005,8 @@ export class GameUI {
 
     // Ruler section – hidden for neutral (liberated) settlements
     let rulerHTML = '';
-    if (!isNeutral) {
-      const rulerTraitsHTML = ruler.traits.map(t => {
-        const persColor = PERSONALITY_COLORS[t];
-        const cls = t === TRAIT_RULER
-          ? 'trait-ruler'
-          : persColor ? 'trait-personality' : '';
-        const style = persColor ? ` style="color:${persColor};border-color:${persColor}88"` : '';
-        return `<span class="trait-tag ${cls}"${style}>${t}</span>`;
-      }).join('');
+    if (!isNeutral && ruler) {
+      const rulerTraitsHTML = renderTraitBadgesHTML(ruler.traits, PERSONALITY_COLORS);
       rulerHTML = `
         <div class="sd-ruler-section">
           <div class="sd-ruler-title">👑 統治者</div>
@@ -2613,7 +2621,11 @@ export class GameUI {
             continue;
           }
         }
-        totalTradeGold += route.dailyGold;
+        // Apply 天生運動員 trade bonus from the from-settlement's effective ruler
+        const fromRuler    = this._getEffectiveRuler(fromSett);
+        const tradeBonus   = getTradeBonus(fromRuler);
+        const routeIncome  = Math.round(route.dailyGold * (1.0 + tradeBonus));
+        totalTradeGold += routeIncome;
       }
       if (totalTradeGold > 0) {
         this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: totalTradeGold });
@@ -3661,12 +3673,13 @@ export class GameUI {
     const content = document.getElementById('location-content');
     if (!content) return;
 
-    const ruler  = settlement.ruler;
-    const traits = ruler?.traits?.filter(t => t !== '統治者') ?? [];
     const isOwnedByPlayer = this.isPlayerSettlement(settlement);
-
-    // Tax section (player-owned only)
     const key = this._settlementKey(settlement);
+
+    // Use effective ruler (player-assigned or original)
+    const ruler  = this._getEffectiveRuler(settlement);
+    const traits = ruler?.traits?.filter(t => t !== '統治者') ?? [];
+    const isAssigned = isOwnedByPlayer && key && !!this._getAssignedRulerUnit(key);
     const satisfaction = isOwnedByPlayer
       ? (this._satisfactionMap.get(key) ?? -50)
       : null;
@@ -3682,18 +3695,30 @@ export class GameUI {
 
     // Tax yield: economyLevel × 20 + floor(population / 100),
     // scaled by satisfaction, then reduced by garrison maintenance cost.
+    // Ruler bonus: +20% if the effective ruler has 一絲不苟.
     let taxYield = 0;
     let taxHTML  = '';
     if (isOwnedByPlayer) {
+      const effectiveRuler = this._getEffectiveRuler(settlement);
       const baseTax  = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
       // Satisfaction factor: -100 → 10 %, 0 → 100 % (capped at 100 %)
       const factor          = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
       const afterSat        = Math.round(baseTax * factor);
+      // Ruler trait bonus
+      const taxBonusMult    = 1.0 + getTaxBonus(effectiveRuler);
+      const afterRuler      = Math.round(afterSat * taxBonusMult);
       // Garrison penalty: every active soldier you maintain reduces tax income.
       const playerUnits     = this.army.getSquads()
         .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
       const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
-      taxYield              = Math.max(1, afterSat - garrisonPenalty);
+      taxYield              = Math.max(1, afterRuler - garrisonPenalty);
+
+      const rulerBonusHTML = taxBonusMult > 1.0
+        ? `<div class="gov-stat-row-small">
+             <span class="gov-stat-label">領導者加成（一絲不苟）</span>
+             <span class="gov-stat-val" style="color:#66bb6a">×${taxBonusMult.toFixed(2)}</span>
+           </div>`
+        : '';
 
       const penaltyHTML = garrisonPenalty > 0
         ? `<div class="gov-stat-row-small">
@@ -3725,6 +3750,7 @@ export class GameUI {
             <span class="gov-stat-label">民心滿意度</span>
             <span class="gov-sat-val" style="color:${satColor}">${satLabel}（${satisfaction >= 0 ? '+' : ''}${satisfaction}）</span>
           </div>
+          ${rulerBonusHTML}
           ${penaltyHTML}
           <div class="gov-stat-row-small">
             <span class="gov-stat-label">預期稅收</span>
@@ -3756,16 +3782,20 @@ export class GameUI {
         </div>`;
     }
 
+    // Build trait badge HTML for the ruler
+    const traitBadgesHTML = renderTraitBadgesHTML(ruler?.traits ?? [], PERSONALITY_COLORS);
+
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">${building.icon} ${building.name}</div>
       <div class="gov-ruler-section">
         <div class="gov-ruler-icon">👑</div>
         <div class="gov-ruler-info">
-          <div class="gov-ruler-name">${ruler?.name ?? '不詳'}</div>
+          <div class="gov-ruler-name">${ruler?.name ?? '不詳'}${isAssigned ? ' <span class="gov-ruler-assigned-badge">（指派）</span>' : ''}</div>
           <div class="gov-ruler-role">${ruler?.role ?? ''}</div>
-          ${traits.length ? `<div class="gov-ruler-traits">${traits.join('・')}</div>` : ''}
+          ${traits.length ? `<div class="gov-ruler-traits">${traitBadgesHTML}</div>` : ''}
         </div>
+        ${isOwnedByPlayer ? `<button class="btn-buy gov-replace-ruler-btn" id="btn-replace-ruler">👥 替換統治者</button>` : ''}
       </div>
       <div class="gov-stats-row">
         <div class="gov-stat"><span class="gov-stat-label">人口</span><span class="gov-stat-val">${settlement.population.toLocaleString()}</span></div>
@@ -3783,6 +3813,13 @@ export class GameUI {
     `;
 
     this._attachFacilityBack(settlement);
+
+    // Replace-ruler button
+    if (isOwnedByPlayer) {
+      document.getElementById('btn-replace-ruler')?.addEventListener('click', () => {
+        this._openReplaceRulerModal(building, settlement);
+      });
+    }
 
     if (isOwnedByPlayer) {
       const currentDay = this.diplomacySystem?._currentDay ?? 0;
@@ -3834,6 +3871,137 @@ export class GameUI {
     } else {
       this._renderForeignDiplomacy(building, settlement);
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Replace ruler modal (town management)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Open an inline ruler-replacement panel showing all army members.
+   * The player can assign any member as the settlement ruler.
+   * Closing the panel returns to the gov building screen.
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _openReplaceRulerModal(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const key          = this._settlementKey(settlement);
+    const assignedUnit = key ? this._getAssignedRulerUnit(key) : null;
+
+    // Gather all army members (across all squads), excluding the hero
+    const allUnits = [];
+    this.army.getSquads().forEach(sq => {
+      sq.members.forEach(m => {
+        if (m.role !== 'hero') allUnits.push({ unit: m, squad: sq });
+      });
+    });
+
+    const renderUnitRow = ({ unit }) => {
+      const isCurrentlyAssigned = assignedUnit?.id === unit.id;
+      const traitBadges = renderTraitBadgesHTML(unit.traits, PERSONALITY_COLORS);
+      const taxB  = getTaxBonus(unit);
+      const trdB  = getTradeBonus(unit);
+      const effectHints = [
+        taxB  > 0 ? `<span class="ruler-effect-hint" style="color:#66bb6a">稅收 +${Math.round(taxB * 100)}%</span>` : '',
+        trdB  > 0 ? `<span class="ruler-effect-hint" style="color:#42a5f5">貿易 +${Math.round(trdB * 100)}%</span>` : '',
+      ].filter(Boolean).join(' ');
+      return `
+        <div class="ruler-candidate-row${isCurrentlyAssigned ? ' ruler-candidate-active' : ''}"
+             data-unit-id="${unit.id}">
+          <div class="ruler-candidate-info">
+            <div class="ruler-candidate-name">${unit.name}
+              <span class="ruler-candidate-role">${unit.role}</span>
+              ${isCurrentlyAssigned ? '<span class="gov-ruler-assigned-badge">（當前）</span>' : ''}
+            </div>
+            <div class="ruler-candidate-traits">${traitBadges}</div>
+            ${effectHints ? `<div class="ruler-candidate-effects">${effectHints}</div>` : ''}
+            <div class="ruler-candidate-stats">
+              攻 ${unit.stats.attack} 　防 ${unit.stats.defense} 　士氣 ${unit.stats.morale}
+            </div>
+          </div>
+          <button class="btn-buy ruler-assign-btn${isCurrentlyAssigned ? ' disabled' : ''}"
+                  data-unit-id="${unit.id}"
+                  ${isCurrentlyAssigned ? 'disabled' : ''}>
+            ${isCurrentlyAssigned ? '✓ 已指派' : '指派'}
+          </button>
+        </div>`;
+    };
+
+    const unassignBtn = assignedUnit
+      ? `<button class="btn-buy gov-replace-ruler-btn" id="btn-unassign-ruler" style="margin-bottom:8px">
+           🔄 恢復原始統治者（${settlement.ruler?.name ?? '原統治者'}）
+         </button>`
+      : '';
+
+    content.innerHTML = `
+      <div class="ruler-replace-panel">
+        <div class="fac-title">👥 選擇地區統治者</div>
+        <div class="ruler-replace-note">
+          選擇一名成員擔任 <strong>${settlement.name}</strong> 的領導者。
+          擁有「一絲不苟」特質的人物可提升稅收，擁有「天生運動員」者可加速貿易。
+        </div>
+        ${unassignBtn}
+        <div class="ruler-candidate-list">
+          ${allUnits.length > 0
+            ? allUnits.map(renderUnitRow).join('')
+            : '<div class="ruler-no-candidates">隊伍中暫無可指派的成員。</div>'}
+        </div>
+        <button class="btn-buy" id="btn-ruler-replace-back" style="margin-top:8px">← 返回</button>
+      </div>
+    `;
+
+    // Back button
+    document.getElementById('btn-ruler-replace-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, settlement);
+    });
+
+    // Unassign button
+    document.getElementById('btn-unassign-ruler')?.addEventListener('click', () => {
+      if (key) {
+        this._assignedRulers.delete(key);
+        this._addInboxMessage('👑', `${settlement.name} 的統治者已恢復為原始領導者 ${settlement.ruler?.name ?? ''}。`);
+      }
+      this._renderGovBuilding(building, settlement);
+    });
+
+    // Assign buttons
+    content.querySelectorAll('.ruler-assign-btn:not([disabled])').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        if (!key || isNaN(unitId)) return;
+
+        // Check if this unit is already assigned as ruler to another settlement
+        for (const [existingKey, existingId] of this._assignedRulers) {
+          if (existingId === unitId && existingKey !== key) {
+            const otherSett = this._getSettlementByKey(existingKey);
+            this._toast(`❌ ${this._findUnitById(unitId)?.name ?? '此人'} 已擔任 ${otherSett?.name ?? existingKey} 的統治者。`);
+            return;
+          }
+        }
+
+        this._assignedRulers.set(key, unitId);
+        const unit = this._findUnitById(unitId);
+        this._addInboxMessage('👑', `已指派 ${unit?.name ?? '成員'} 擔任 ${settlement.name} 的統治者！`);
+        this._renderGovBuilding(building, settlement);
+      });
+    });
+  }
+
+  /**
+   * Find a unit across all army squads by id.
+   * @param {number} unitId
+   * @returns {import('../systems/Army.js').Unit|null}
+   */
+  _findUnitById(unitId) {
+    for (const squad of this.army.getSquads()) {
+      const unit = squad.members.find(m => m.id === unitId);
+      if (unit) return unit;
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------
@@ -5815,6 +5983,7 @@ export class GameUI {
       constructionState,
       tradeRoutes:          [...this._tradeRoutes.entries()],
       festivalCooldowns:     Object.fromEntries(this._festivalCooldowns),
+      assignedRulers:       [...this._assignedRulers.entries()],
     };
   }
 
@@ -5880,6 +6049,11 @@ export class GameUI {
         Object.entries(state.festivalCooldowns).map(([k, v]) => [k, Number(v)]),
       );
     }
+    if (Array.isArray(state.assignedRulers)) {
+      this._assignedRulers = new Map(
+        state.assignedRulers.filter(([k, v]) => typeof k === 'string' && typeof v === 'number'),
+      );
+    }
   }
 
   /**
@@ -5934,6 +6108,41 @@ export class GameUI {
       : this.nationSystem.villageSettlements;
     const idx = arr.indexOf(settlement);
     return idx >= 0 ? `${settlement.type}:${idx}` : '';
+  }
+
+  /**
+   * Return the army Unit assigned as the ruler of a player-owned settlement,
+   * or null if no explicit assignment has been made.
+   * @param {string} key  Settlement key (e.g. "castle:0").
+   * @returns {import('../systems/Army.js').Unit|null}
+   */
+  _getAssignedRulerUnit(key) {
+    const unitId = this._assignedRulers.get(key);
+    if (unitId == null) return null;
+    for (const squad of this.army.getSquads()) {
+      const unit = squad.members.find(m => m.id === unitId);
+      if (unit) return unit;
+    }
+    // Unit no longer exists (e.g. removed) – clear the assignment.
+    this._assignedRulers.delete(key);
+    return null;
+  }
+
+  /**
+   * Return the effective ruler for a settlement.
+   * For player-owned settlements: returns the player-assigned unit if set,
+   * otherwise returns the original settlement ruler.
+   * For all other settlements: returns the original ruler.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @returns {import('../systems/Army.js').Unit|null}
+   */
+  _getEffectiveRuler(settlement) {
+    const key = this._settlementKey(settlement);
+    if (key && settlement.controllingNationId === PLAYER_NATION_ID) {
+      const assigned = this._getAssignedRulerUnit(key);
+      if (assigned) return assigned;
+    }
+    return settlement.ruler ?? null;
   }
 
   /**
