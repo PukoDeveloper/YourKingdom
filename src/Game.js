@@ -22,6 +22,12 @@ import { DiplomacySystem }  from './systems/DiplomacySystem.js';
 /** Auto-save interval in milliseconds. */
 const AUTO_SAVE_INTERVAL_MS = 60_000;
 
+/**
+ * Fixed orthogonal offsets used when scanning for adjacent impassable tiles
+ * (mountain/water) next to the player.  Sorted at call-time by facing direction.
+ */
+const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+
 export class Game {
   async init() {
     // -----------------------------------------------------------------------
@@ -213,6 +219,14 @@ export class Game {
     // Cached bridge-tile Set (rebuilt whenever a bridge is added; passed to Player every frame).
     this._builtBridgeTileSet = new Set();
 
+    // HUD tile cache: avoid redundant settlement / build-button DOM updates every frame.
+    /** @type {number} */
+    this._hudTileX = -1;
+    /** @type {number} */
+    this._hudTileY = -1;
+    /** @type {object|null} */
+    this._hudHit   = null;
+
     // Restore built roads from save data.
     if (savedState) {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
@@ -222,7 +236,11 @@ export class Game {
     }
 
     // Rebuild map structures whenever the player captures a new settlement.
-    this._gameUI.onCaptureSettlement = () => this._structureRenderer.rebuild();
+    // Also invalidate the HUD tile cache so the terrain label updates immediately.
+    this._gameUI.onCaptureSettlement = () => {
+      this._structureRenderer.rebuild();
+      this._hudTileX = -1; // force HUD refresh next frame
+    };
 
     // Rebuild map structures whenever the player changes their kingdom flag or name.
     this._gameUI.onPlayerKingdomChanged = () => this._structureRenderer.rebuild();
@@ -374,7 +392,48 @@ export class Game {
       let label = TERRAIN_NAMES[t] ?? '';
       const tileX = Math.floor(this._player.x / TILE_SIZE);
       const tileY = Math.floor(this._player.y / TILE_SIZE);
-      const hit = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
+
+      // Only re-run settlement / build-button queries when the player tile changes.
+      // This avoids ~60 redundant DOM mutations per second while the player is standing still.
+      const tileChanged = tileX !== this._hudTileX || tileY !== this._hudTileY;
+      if (tileChanged) {
+        this._hudTileX = tileX;
+        this._hudTileY = tileY;
+        this._hudHit   = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
+
+        const isPort = t === TERRAIN.PORT_GROUND;
+        this._gameUI.setNearbySettlement(
+          this._hudHit ? this._hudHit.settlement : null,
+          isPort ? 'port' : null,
+        );
+
+        let nearbyBuildTile = null;
+        if (!this._hudHit) {
+          if (t === TERRAIN.FOREST) {
+            nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: TERRAIN.FOREST };
+          } else {
+            const facing = this._player.getFacingDirection();
+            const sortedOffsets = [...ADJACENT_OFFSETS].sort(
+              ([ax, ay], [bx, by]) =>
+                (bx * facing.dx + by * facing.dy) - (ax * facing.dx + ay * facing.dy),
+            );
+            for (const [dx, dy] of sortedOffsets) {
+              const adjT = this._mapData.getTerrain(tileX + dx, tileY + dy);
+              if (adjT === TERRAIN.MOUNTAIN || adjT === TERRAIN.WATER) {
+                nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
+                break;
+              }
+            }
+          }
+        }
+        if (nearbyBuildTile) {
+          this._gameUI.setNearbyBuildableTerrain(nearbyBuildTile.tx, nearbyBuildTile.ty, nearbyBuildTile.terrainType);
+        } else {
+          this._gameUI.setNearbyBuildableTerrain(null, null, null);
+        }
+      }
+
+      const hit = this._hudHit;
       if (hit) {
         const settlIcon = hit.settlement.type === 'castle' ? '🏰' : '🏘️';
         let nationLine, regionLine;
@@ -395,45 +454,13 @@ export class Game {
         this._terrainLabel.textContent = label;
       }
 
-      // Show / hide the enter-facility button
-      const isPort = t === TERRAIN.PORT_GROUND;
-      this._gameUI.setNearbySettlement(
-        hit ? hit.settlement : null,
-        isPort ? 'port' : null,
-      );
-
-      // Show / hide the map-build button (forest → lumber camp, mountain → mine, water → bridge).
-      // Only show when the player is NOT inside a settlement tile.
-      // Lumber camps can be built while standing on the forest tile (FOREST is walkable).
-      // Mines and bridges target an adjacent impassable tile (the player cannot stand on
-      // MOUNTAIN or WATER, so we scan orthogonal neighbours instead).
-      let nearbyBuildTile = null;
-      if (!hit) {
-        if (t === TERRAIN.FOREST) {
-          nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: TERRAIN.FOREST };
-        } else {
-          // Check orthogonally adjacent tiles for mountain (mine) or water (bridge).
-          // Mountain is checked first so mines are preferred over bridges if both adjoin.
-          const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
-          for (const [dx, dy] of ADJACENT_OFFSETS) {
-            const adjT = this._mapData.getTerrain(tileX + dx, tileY + dy);
-            if (adjT === TERRAIN.MOUNTAIN || adjT === TERRAIN.WATER) {
-              nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
-              break;
-            }
-          }
-        }
-      }
-      if (nearbyBuildTile) {
-        this._gameUI.setNearbyBuildableTerrain(nearbyBuildTile.tx, nearbyBuildTile.ty, nearbyBuildTile.terrainType);
-      } else {
-        this._gameUI.setNearbyBuildableTerrain(null, null, null);
-      }
-
-      // Grant sea access when the player stands on a player-built port tile.
-      const playerTile = { tx: Math.floor(this._player.x / TILE_SIZE), ty: Math.floor(this._player.y / TILE_SIZE) };
+      // Grant sea access when the player stands on or adjacent to a player-built port water tile.
+      // (The port marker is on a water tile; the player can only stand on the adjacent land tile.)
+      const playerTile = { tx: tileX, ty: tileY };
       const builtPorts = this._gameUI.getBuiltPortTiles();
-      const onBuiltPort = builtPorts.some(p => p.tx === playerTile.tx && p.ty === playerTile.ty);
+      const onBuiltPort = builtPorts.some(p =>
+        Math.abs(p.tx - playerTile.tx) + Math.abs(p.ty - playerTile.ty) <= 1,
+      );
       if (onBuiltPort && !this._player.atSea) {
         this._player.canEmbark = true;
       }

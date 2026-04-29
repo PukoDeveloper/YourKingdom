@@ -77,8 +77,9 @@ export class Camera {
       cy = mapPixelH / 2;
     }
 
-    worldContainer.x = halfW - cx;
-    worldContainer.y = halfH - cy;
+    // Round to integer pixels to avoid sub-pixel rendering gaps between chunk sprites.
+    worldContainer.x = Math.round(halfW - cx);
+    worldContainer.y = Math.round(halfH - cy);
   }
 
   /** Call when the browser window is resized. */
