@@ -2781,6 +2781,88 @@
       }
 
       /* =====================================================================
+         Foreign city-hall diplomacy panel
+         ===================================================================== */
+      .gov-foreign-diplo-section {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(100,181,246,0.2);
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 14px;
+      }
+      .gov-foreign-diplo-title {
+        color: #64b5f6;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .gov-foreign-diplo-rel {
+        font-size: 12px;
+        margin-bottom: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .gov-pact-badge {
+        display: inline-block;
+        font-size: 11px;
+        border-radius: 6px;
+        padding: 2px 7px;
+        margin-bottom: 6px;
+        margin-right: 4px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .gov-pact-active {
+        background: rgba(100,181,246,0.15);
+        border: 1px solid rgba(100,181,246,0.35);
+        color: #90caf9;
+      }
+      .gov-diplo-proposals {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .gov-diplo-proposal-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 9px;
+        padding: 9px 10px;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .gov-diplo-proposal-card:hover:not(.disabled) { background: rgba(255,255,255,0.1); }
+      .gov-diplo-proposal-card.disabled {
+        opacity: 0.4;
+        cursor: default;
+        pointer-events: none;
+      }
+      .gdp-icon { font-size: 20px; flex-shrink: 0; }
+      .gdp-info { flex: 1; min-width: 0; }
+      .gdp-name {
+        color: #e3f2fd;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 2px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .gdp-desc {
+        color: rgba(255,255,255,0.5);
+        font-size: 11px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .gdp-arrow { color: rgba(255,255,255,0.4); font-size: 18px; }
+      .diplo-proposal-intro {
+        color: rgba(255,255,255,0.75);
+        font-size: 13px;
+        line-height: 1.6;
+        margin-bottom: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+
+      /* =====================================================================
          Inbox panel
          ===================================================================== */
       .inbox-tab-btn {
@@ -2907,6 +2989,26 @@
         margin-left: 4px;
         vertical-align: middle;
         letter-spacing: 0.03em;
+      }
+      .dipl-pact-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        border-radius: 4px;
+        padding: 1px 5px;
+        margin-left: 4px;
+        vertical-align: middle;
+        letter-spacing: 0.03em;
+      }
+      .dipl-nap-badge {
+        background: rgba(38,166,154,0.2);
+        border: 1px solid rgba(38,166,154,0.5);
+        color: #80cbc4;
+      }
+      .dipl-mpt-badge {
+        background: rgba(100,181,246,0.2);
+        border: 1px solid rgba(100,181,246,0.5);
+        color: #90caf9;
       }
       /* Government building: letter button */
       .gov-letter-btn {
