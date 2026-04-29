@@ -2891,16 +2891,19 @@ export class GameUI {
         }
       }
 
-      // Auto-invest: fire when satisfaction is acceptable and economy not maxed
+      // Auto-invest: fire when satisfaction is acceptable and economy not maxed.
+      // Uses `lastAutoInvestEcoLevel` to gate one investment per economy level, so the
+      // flag stays enabled but the same level isn't invested repeatedly each day.
       if (plan.autoInvest && sat > minSat) {
-        const maxEco  = (settlement.economyLevel ?? 1) >= 5;
-        const cost    = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
-        if (!maxEco && this._getGold() >= cost) {
+        const ecoLevel = settlement.economyLevel ?? 1;
+        const maxEco   = ecoLevel >= 5;
+        const cost     = INVEST_BASE_COST * ecoLevel;
+        const alreadyInvestedThisLevel = plan.lastAutoInvestEcoLevel === ecoLevel;
+        if (!maxEco && !alreadyInvestedThisLevel && this._getGold() >= cost) {
           this._spendGold(cost);
-          settlement.economyLevel = Math.min(5, (settlement.economyLevel ?? 1) + 1);
+          settlement.economyLevel = Math.min(5, ecoLevel + 1);
+          plan.lastAutoInvestEcoLevel = ecoLevel; // remember the level we just upgraded from
           this._addInboxMessage('💰', `【自動投資】${settlement.name} 自動投資發展！經濟等級升至 ${'⭐'.repeat(settlement.economyLevel)}（消耗 🪙${cost}）。`);
-          // Only invest once per day (mark plan so we don't double-invest if multi-settlement)
-          plan.autoInvest = false; // will be re-enabled by the UI – one-shot per upgrade
         }
       }
     }
@@ -4145,6 +4148,7 @@ export class GameUI {
       this._addGold(amount);
       this._regionalTreasury.set(key, 0);
       this._addInboxMessage('💰', `已從 ${settlement.name} 金庫提取 🪙${amount}。`);
+      this._refreshGoldDisplay();
       this._renderGovTabContent(building, settlement);
     });
 
@@ -5586,11 +5590,13 @@ export class GameUI {
     // Already-built buildings (with demolish option for non-government buildings)
     const builtBuildingsHTML = (settlement.buildings ?? []).map((b, idx) => {
       const isGovBldg = b.type === BLDG_PALACE || b.type === BLDG_CHIEF_HOUSE;
+      // Use recorded build cost; fall back to 0 for seed-generated buildings that weren't player-built.
       const cost      = _BUILDING_COSTS[b.type] ?? 0;
       const refund    = Math.floor(cost * DEMOLISH_REFUND_RATIO);
+      const refundLabel = refund > 0 ? `退還 🪙${refund}` : '無退款（非玩家建造）';
       return `<div class="constr-built-row">
         <span class="constr-built-tag">✅ ${b.name}</span>
-        ${!isGovBldg ? `<button class="btn-buy constr-demolish-btn" data-bldg-idx="${idx}" data-refund="${refund}" title="拆除退還 🪙${refund}">🪚 拆除</button>` : ''}
+        ${!isGovBldg ? `<button class="btn-buy constr-demolish-btn" data-bldg-idx="${idx}" data-refund="${refund}" title="拆除 · ${refundLabel}">🪚 拆除</button>` : ''}
       </div>`;
     }).join('') || '';
 
