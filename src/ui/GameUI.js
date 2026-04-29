@@ -18,9 +18,14 @@ import {
   CHAR_HEADGEAR_LABELS,
   CHAR_ARMOR_COLORS_CSS,
   CHAR_MARK_COLORS_CSS,
+  CHAR_BODY_SHAPES,
+  CHAR_BODY_SHAPE_LABELS,
+  CHAR_FACE_ACCESSORIES,
+  CHAR_FACE_ACCESSORY_LABELS,
   FLAG_BG_COLORS,
   FLAG_STRIPE_COLORS,
   FLAG_STRIPE_STYLES,
+  FLAG_SYMBOL_LABELS,
   FLAG_SYMBOLS,
 } from '../systems/AppearanceSystem.js';
 import {
@@ -34,7 +39,7 @@ import {
 import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
-const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形'];
+const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形', '三色橫', '三色縱', '斜十字', '邊框'];
 
 /** Kingdom type definitions. requiresSettlement = true means locked until the player controls a settlement. */
 const _KINGDOM_TYPES = [
@@ -57,7 +62,7 @@ const DEFAULT_KINGDOM = {
 };
 
 /** Default appearance indices used when no player is available. */
-const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0 };
+const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0, bodyShapeIdx: 0, faceAccIdx: 0 };
 
 /** Terrain themes applied to the battle scene background. */
 const _BATTLE_THEMES = {
@@ -93,6 +98,20 @@ const _GOV_GREETING = {
   palace:      '本王近來為治理疆土而殫精竭慮，汝此番到訪，所為何事？',
   chief_house: '哎呀，稀客稀客！快請進，我讓內人沏茶。近來村裡一切都好，有勞掛念。',
 };
+
+/**
+ * Escape a string for safe use inside an HTML attribute value.
+ * @param {string} s
+ * @returns {string}
+ */
+function _escapeAttr(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 /** Player nation ID constant (mirrors NationSystem value). */
 const _PLAYER_NATION_ID_UI = -1;
@@ -216,6 +235,13 @@ export class GameUI {
 
     /** Currently active minimap layer: 'terrain' | 'territory' */
     this._minimapLayer = 'terrain';
+
+    /** Minimap zoom multiplier (1 = 100%, range 1–4). */
+    this._minimapZoom = 1;
+
+    /** Minimap canvas pan offset in logical canvas pixels. */
+    this._minimapPanX = 0;
+    this._minimapPanY = 0;
 
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
@@ -518,6 +544,11 @@ export class GameUI {
       <div id="ui-minimap-box">
         <div id="ui-minimap-header">
           <span id="ui-minimap-title">🗺️ 王國地圖</span>
+          <div id="ui-minimap-zoom">
+            <button class="mm-zoom-btn" id="mm-zoom-out" title="縮小">−</button>
+            <span id="mm-zoom-label">100%</span>
+            <button class="mm-zoom-btn" id="mm-zoom-in"  title="放大">＋</button>
+          </div>
           <button id="ui-minimap-close">✕</button>
         </div>
         <div id="ui-minimap-tabs">
@@ -622,6 +653,45 @@ export class GameUI {
       this._minimapLayer = btn.dataset.layer;
       this._redrawMinimap();
     });
+
+    // Minimap zoom buttons
+    document.getElementById('mm-zoom-in').addEventListener('click',  () => this._minimapZoomBy(+1));
+    document.getElementById('mm-zoom-out').addEventListener('click', () => this._minimapZoomBy(-1));
+
+    // Minimap canvas drag-to-pan (pointer events — works for both mouse and touch)
+    const wrap = document.getElementById('ui-minimap-canvas-wrap');
+    let _panActive = false;
+    let _panLastX  = 0;
+    let _panLastY  = 0;
+
+    wrap.addEventListener('pointerdown', (e) => {
+      if (this._minimapZoom <= 1) return; // no pan needed at 1× zoom
+      _panActive = true;
+      _panLastX  = e.clientX;
+      _panLastY  = e.clientY;
+      wrap.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    wrap.addEventListener('pointermove', (e) => {
+      if (!_panActive) return;
+      const dx = e.clientX - _panLastX;
+      const dy = e.clientY - _panLastY;
+      _panLastX = e.clientX;
+      _panLastY = e.clientY;
+      this._minimapPanBy(dx, dy);
+      e.preventDefault();
+    });
+
+    const _endPan = () => { _panActive = false; };
+    wrap.addEventListener('pointerup',     _endPan);
+    wrap.addEventListener('pointercancel', _endPan);
+
+    // Mouse-wheel zoom on the canvas wrap
+    wrap.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this._minimapZoomBy(e.deltaY < 0 ? +1 : -1);
+    }, { passive: false });
   }
 
   // -------------------------------------------------------------------------
@@ -909,13 +979,30 @@ export class GameUI {
 
     const SCALE = 2; // pixels per tile
     const canvas = document.getElementById('ui-minimap-canvas');
-    const maxBoxWidth = Math.min(window.innerWidth * 0.88, 396) - 24; // 12px padding each side
-    const displayScale = Math.min(1, maxBoxWidth / (MAP_WIDTH * SCALE));
+    const wrap   = document.getElementById('ui-minimap-canvas-wrap');
 
+    // Canvas bitmap size (fixed; CSS transform handles display zoom)
     canvas.width  = MAP_WIDTH  * SCALE;
     canvas.height = MAP_HEIGHT * SCALE;
-    canvas.style.width  = `${Math.round(MAP_WIDTH  * SCALE * displayScale)}px`;
-    canvas.style.height = `${Math.round(MAP_HEIGHT * SCALE * displayScale)}px`;
+
+    // Natural display size at zoom=1 – fit inside the box
+    const maxBoxWidth = Math.min(window.innerWidth * 0.88, 396) - 24;
+    const displayScale = Math.min(1, maxBoxWidth / (MAP_WIDTH * SCALE));
+    const naturalW = Math.round(MAP_WIDTH  * SCALE * displayScale);
+    const naturalH = Math.round(MAP_HEIGHT * SCALE * displayScale);
+
+    canvas.style.width  = `${naturalW}px`;
+    canvas.style.height = `${naturalH}px`;
+    // Store natural size so zoom/pan calculations are consistent
+    canvas._naturalW = naturalW;
+    canvas._naturalH = naturalH;
+    wrap.style.height = `${naturalH + 24}px`; // match canvas + padding
+
+    // Reset zoom / pan on every open
+    this._minimapZoom = 1;
+    this._minimapPanX = 0;
+    this._minimapPanY = 0;
+    this._applyMinimapTransform();
 
     // Sync tab button UI to current layer state
     document.querySelectorAll('.mm-tab-btn').forEach(b => {
@@ -1081,6 +1168,66 @@ export class GameUI {
     ctx.fill();
   }
 
+  /**
+   * Apply the current zoom/pan state to the minimap canvas via CSS transform.
+   * Also updates the zoom percentage label.
+   */
+  _applyMinimapTransform() {
+    const canvas = document.getElementById('ui-minimap-canvas');
+    const wrap   = document.getElementById('ui-minimap-canvas-wrap');
+    if (!canvas) return;
+
+    const z  = this._minimapZoom;
+    const px = this._minimapPanX;
+    const py = this._minimapPanY;
+
+    // Clamp pan so canvas never scrolls fully out of view
+    const nw = canvas._naturalW ?? canvas.clientWidth;
+    const nh = canvas._naturalH ?? canvas.clientHeight;
+    const maxPanX = ((z - 1) * nw) / 2;
+    const maxPanY = ((z - 1) * nh) / 2;
+    this._minimapPanX = Math.max(-maxPanX, Math.min(maxPanX, this._minimapPanX));
+    this._minimapPanY = Math.max(-maxPanY, Math.min(maxPanY, this._minimapPanY));
+
+    canvas.style.transform       = `scale(${z}) translate(${this._minimapPanX / z}px, ${this._minimapPanY / z}px)`;
+    canvas.style.transformOrigin = 'center center';
+
+    // Centre the canvas in the wrap at all times (wrap uses flexbox center)
+    const zoomLabel = document.getElementById('mm-zoom-label');
+    if (zoomLabel) zoomLabel.textContent = `${Math.round(z * 100)}%`;
+
+    // Disable drag cursor when not zoomed in
+    if (wrap) wrap.style.cursor = z > 1 ? 'grab' : 'default';
+  }
+
+  /**
+   * Change zoom level by `steps` (positive = zoom in, negative = zoom out).
+   * Zoom steps: 1× → 1.5× → 2× → 3× → 4×
+   */
+  _minimapZoomBy(steps) {
+    const LEVELS = [1, 1.5, 2, 3, 4];
+    const current = this._minimapZoom;
+    let idx = LEVELS.findIndex(l => Math.abs(l - current) < 0.01);
+    if (idx === -1) idx = 0;
+    idx = Math.max(0, Math.min(LEVELS.length - 1, idx + steps));
+    this._minimapZoom = LEVELS[idx];
+    // When zooming out to 1× reset pan
+    if (this._minimapZoom === 1) {
+      this._minimapPanX = 0;
+      this._minimapPanY = 0;
+    }
+    this._applyMinimapTransform();
+  }
+
+  /**
+   * Pan the minimap by `dx`/`dy` CSS pixels.
+   */
+  _minimapPanBy(dx, dy) {
+    this._minimapPanX += dx;
+    this._minimapPanY += dy;
+    this._applyMinimapTransform();
+  }
+
   _closeMinimap() {
     document.getElementById('ui-minimap-overlay').classList.remove('visible');
   }
@@ -1152,6 +1299,8 @@ export class GameUI {
       ? this.player.appearance
       : charAppearanceFromIndices(DEFAULT_APPEARANCE_INDICES);
 
+    const playerName = this.player?.name ?? '主角';
+
     const _swatch = (colors, selectedIdx, dataAttr) =>
       colors.map((c, i) =>
         `<button class="ap-swatch${i === selectedIdx ? ' selected' : ''}" data-${dataAttr}="${i}"
@@ -1162,10 +1311,27 @@ export class GameUI {
       `<button class="ap-choice${i === app.headgearIdx ? ' selected' : ''}" data-headgear="${i}">${CHAR_HEADGEAR_LABELS[i]}</button>`
     ).join('');
 
+    const bodyShapeHTML = CHAR_BODY_SHAPES.map((s, i) =>
+      `<button class="ap-choice${i === (app.bodyShapeIdx ?? 0) ? ' selected' : ''}" data-body-shape="${i}">${CHAR_BODY_SHAPE_LABELS[i]}</button>`
+    ).join('');
+
+    const faceAccHTML = CHAR_FACE_ACCESSORIES.map((a, i) =>
+      `<button class="ap-choice${i === (app.faceAccIdx ?? 0) ? ' selected' : ''}" data-face-acc="${i}">${CHAR_FACE_ACCESSORY_LABELS[i]}</button>`
+    ).join('');
+
     content.innerHTML = `
       <div class="ap-preview-row">
         <div id="ap-preview-wrap"></div>
         <span class="ap-preview-label">玩家外觀預覽</span>
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">角色名稱</div>
+        <input type="text" id="ap-name-input" class="kp-name-input"
+               value="${_escapeAttr(playerName)}" maxlength="16" placeholder="輸入角色名稱…">
+      </div>
+      <div class="ap-section">
+        <div class="ap-section-title">體型</div>
+        <div class="ap-choices">${bodyShapeHTML}</div>
       </div>
       <div class="ap-section">
         <div class="ap-section-title">衣甲顏色</div>
@@ -1184,6 +1350,10 @@ export class GameUI {
         </div>
       </div>
       <div class="ap-section">
+        <div class="ap-section-title">臉部飾品</div>
+        <div class="ap-choices">${faceAccHTML}</div>
+      </div>
+      <div class="ap-section">
         <div class="ap-section-title">標記顏色</div>
         <div class="ap-swatches" id="ap-mark-swatches">
           ${_swatch(CHAR_MARK_COLORS_CSS, app.markColorIdx, 'mark')}
@@ -1193,10 +1363,13 @@ export class GameUI {
 
     // Track pending changes without hitting the player object on every click
     let pending = {
+      playerName:    playerName,
       bodyColorIdx:  app.bodyColorIdx,
       headgearIdx:   app.headgearIdx,
       armorColorIdx: app.armorColorIdx,
       markColorIdx:  app.markColorIdx,
+      bodyShapeIdx:  app.bodyShapeIdx  ?? 0,
+      faceAccIdx:    app.faceAccIdx    ?? 0,
     };
 
     const _refreshPreview = () => {
@@ -1208,23 +1381,35 @@ export class GameUI {
     const _apply = () => {
       if (this.player) this.player.setAppearance(pending);
       // Sync the hero Unit in the army so the party screen reflects the new look.
-      // The hero is always in squad 0 and cannot be moved to another squad.
       if (this.army) {
         const heroUnit = this.army.squads[0]?.members.find(m => m.role === 'hero');
-        if (heroUnit) heroUnit.appearance = charAppearanceFromIndices(pending);
+        if (heroUnit) {
+          heroUnit.appearance = charAppearanceFromIndices(pending);
+          heroUnit.name = pending.playerName;
+        }
       }
     };
 
+    // Player name input
+    const nameInput = content.querySelector('#ap-name-input');
+    let _nameTimer = null;
+    nameInput.addEventListener('input', () => {
+      pending.playerName = nameInput.value.trim() || '主角';
+      clearTimeout(_nameTimer);
+      _nameTimer = setTimeout(() => _apply(), 300);
+    });
+
     /**
      * Wire up swatch/choice buttons for one appearance part.
-     * @param {string} attr      data attribute name (e.g. 'body', 'armor', 'mark')
+     * @param {string} attr      data attribute name
      * @param {string} pendingKey key to update in the `pending` object
      */
     const _wireSwatches = (attr, pendingKey) => {
+      const camelAttr = attr.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
       const btns = content.querySelectorAll(`[data-${attr}]`);
       btns.forEach(btn => {
         btn.addEventListener('click', () => {
-          pending[pendingKey] = Number(btn.dataset[attr]);
+          pending[pendingKey] = Number(btn.dataset[camelAttr]);
           btns.forEach(b => b.classList.remove('selected'));
           btn.classList.add('selected');
           _apply();
@@ -1233,10 +1418,12 @@ export class GameUI {
       });
     };
 
-    _wireSwatches('body',    'bodyColorIdx');
-    _wireSwatches('headgear','headgearIdx');
-    _wireSwatches('armor',   'armorColorIdx');
-    _wireSwatches('mark',    'markColorIdx');
+    _wireSwatches('body',       'bodyColorIdx');
+    _wireSwatches('headgear',   'headgearIdx');
+    _wireSwatches('armor',      'armorColorIdx');
+    _wireSwatches('mark',       'markColorIdx');
+    _wireSwatches('body-shape', 'bodyShapeIdx');
+    _wireSwatches('face-acc',   'faceAccIdx');
   }
 
   _renderAppearanceKingdom() {
@@ -1265,8 +1452,8 @@ export class GameUI {
                style="background:${c};width:28px;height:28px;border-radius:50%;cursor:pointer"></button>`
     ).join('');
 
-    const symbolHTML = FLAG_SYMBOLS.map((s, i) =>
-      `<button class="ap-choice${i === k.flagSymbolIdx ? ' selected' : ''}" data-flag-symbol="${i}">${s}</button>`
+    const symbolHTML = FLAG_SYMBOL_LABELS.map((label, i) =>
+      `<button class="ap-choice${i === k.flagSymbolIdx ? ' selected' : ''}" data-flag-symbol="${i}" title="${label}">${label}</button>`
     ).join('');
 
     const kingdomTypeHTML = _KINGDOM_TYPES.map(t => {

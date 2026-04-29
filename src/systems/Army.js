@@ -267,6 +267,8 @@ export class Army {
             headgearIdx:   m.appearance.headgearIdx,
             armorColorIdx: m.appearance.armorColorIdx,
             markColorIdx:  m.appearance.markColorIdx,
+            bodyShapeIdx:  m.appearance.bodyShapeIdx  ?? 0,
+            faceAccIdx:    m.appearance.faceAccIdx    ?? 0,
           },
         })),
       })),

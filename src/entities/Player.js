@@ -11,6 +11,9 @@ const RADIUS             = 12;   // player body radius in world pixels
 const FOREST_SPEED_MULT  = 0.4;  // speed multiplier when inside forest
 const HILL_SPEED_MULT    = 0.65; // speed multiplier when traversing hills
 
+/** Default player name used when no saved name is present. */
+const DEFAULT_PLAYER_NAME = '主角';
+
 export class Player {
   /**
    * @param {number} worldX  starting world-pixel X
@@ -20,6 +23,9 @@ export class Player {
   constructor(worldX, worldY, appearanceIndices = null) {
     this.x = worldX;
     this.y = worldY;
+
+    /** Player's display name. */
+    this.name = appearanceIndices?.playerName || DEFAULT_PLAYER_NAME;
 
     /** Last non-zero movement direction for idle facing. */
     this._facingAngle = -Math.PI / 2; // facing north by default
@@ -59,9 +65,13 @@ export class Player {
 
   /**
    * Change the player's appearance and rebuild the sprite.
-   * @param {{ bodyColorIdx: number, headgearIdx: number, armorColorIdx: number, markColorIdx: number }} indices
+   * @param {{ bodyColorIdx: number, headgearIdx: number, armorColorIdx: number, markColorIdx: number,
+   *           bodyShapeIdx?: number, faceAccIdx?: number, playerName?: string }} indices
    */
   setAppearance(indices) {
+    if (indices.playerName !== undefined) {
+      this.name = indices.playerName || DEFAULT_PLAYER_NAME;
+    }
     this.appearance = charAppearanceFromIndices(indices);
     this._graphics.clear();
     drawCharGraphics(this._graphics, RADIUS, this.appearance);
@@ -71,10 +81,13 @@ export class Player {
   getAppearanceState() {
     const a = this.appearance;
     return {
+      playerName:    this.name,
       bodyColorIdx:  a.bodyColorIdx,
       headgearIdx:   a.headgearIdx,
       armorColorIdx: a.armorColorIdx,
       markColorIdx:  a.markColorIdx,
+      bodyShapeIdx:  a.bodyShapeIdx  ?? 0,
+      faceAccIdx:    a.faceAccIdx    ?? 0,
     };
   }
 
