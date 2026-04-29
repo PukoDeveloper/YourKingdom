@@ -1,4 +1,5 @@
 import { Container, Graphics } from 'pixi.js';
+import { drawCharGraphics } from '../systems/AppearanceSystem.js';
 
 // ---------------------------------------------------------------------------
 // Visual constants
@@ -105,12 +106,20 @@ export class MissiveRenderer {
    * @returns {Graphics}
    */
   _buildToken(missive) {
-    const color = TYPE_COLOR[missive.type] ?? DEFAULT_COLOR;
     const g = new Graphics();
 
     // ── Drop shadow ──────────────────────────────────────────────────────────
     g.ellipse(0, TOKEN_RADIUS * 0.6, TOKEN_RADIUS + 2, 3)
       .fill({ color: 0x000000, alpha: 0.20 });
+
+    if (missive.messengerAppearance) {
+      // Draw the assigned messenger's character appearance.
+      drawCharGraphics(g, TOKEN_RADIUS, missive.messengerAppearance);
+      return g;
+    }
+
+    // Fall back to type-colored circle with envelope icon.
+    const color = TYPE_COLOR[missive.type] ?? DEFAULT_COLOR;
 
     // ── Body circle ──────────────────────────────────────────────────────────
     g.circle(0, 0, TOKEN_RADIUS)
