@@ -6186,7 +6186,14 @@ export class GameUI {
     let workerStatusHTML = '<span style="color:#9e9e9e">無工人在途</span>';
     if (activeWorkers.length > 0) {
       const parts = activeWorkers.map(w => {
-        const phaseLabel = w.phase === 'return' ? '返回中 🔙' : '外出送貨中 🚶';
+        let phaseLabel;
+        if (w.phase === 'return') {
+          phaseLabel = '返回中 🔙';
+        } else if (w.phase === 'outbound') {
+          phaseLabel = '外出送貨中 🚶';
+        } else {
+          phaseLabel = '待命中';
+        }
         return `<span>${phaseLabel}</span>`;
       });
       workerStatusHTML = parts.join('　');
@@ -6246,7 +6253,7 @@ export class GameUI {
         } else {
           w.ty += Math.sign(dy);
         }
-      } else {
+      } else if (w.phase === 'outbound') {
         // Outbound: heading to target city.
         const targetSett = this._getSettlementByKey(w.targetKey);
         if (!targetSett) { outboundArrived.push(w); continue; }
@@ -6262,6 +6269,9 @@ export class GameUI {
         } else {
           w.ty += Math.sign(dy);
         }
+      } else {
+        // Unknown phase – treat as arrived so the worker is cleaned up.
+        outboundArrived.push(w);
       }
     }
 
