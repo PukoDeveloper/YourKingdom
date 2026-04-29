@@ -1145,13 +1145,16 @@ export class GameUI {
   _openMinimap() {
     if (!this._mapData) return;
 
-    const SCALE = 2; // pixels per tile
+    const SCALE = 2; // pixels per tile (CSS-pixel space)
+    const dpr   = window.devicePixelRatio || 1;
     const canvas = document.getElementById('ui-minimap-canvas');
     const wrap   = document.getElementById('ui-minimap-canvas-wrap');
 
-    // Canvas bitmap size (fixed; CSS transform handles display zoom)
-    canvas.width  = MAP_WIDTH  * SCALE;
-    canvas.height = MAP_HEIGHT * SCALE;
+    // Canvas bitmap size scaled by devicePixelRatio for sharp text on HiDPI screens
+    canvas.width  = MAP_WIDTH  * SCALE * dpr;
+    canvas.height = MAP_HEIGHT * SCALE * dpr;
+    // Store dpr in instance state so _redrawMinimap can apply the matching ctx scale
+    this._minimapDpr = dpr;
 
     // Natural display size at zoom=1 – fit inside the box
     const maxBoxWidth = Math.min(window.innerWidth * 0.88, 396) - 24;
@@ -1190,6 +1193,9 @@ export class GameUI {
     const SCALE = 2;
     const canvas = document.getElementById('ui-minimap-canvas');
     const ctx = canvas.getContext('2d');
+    const dpr = this._minimapDpr || 1;
+    // Reset and apply devicePixelRatio scale so all drawing is in CSS-pixel space
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const COLORS = GameUI._MINIMAP_COLORS;
 
     // --- Base terrain layer ---
@@ -1223,7 +1229,7 @@ export class GameUI {
     const pk = this.getPlayerNation();
 
     /** Font size (px) for the territory nation-name labels. */
-    const TERRITORY_LABEL_FONT_SIZE = 7;
+    const TERRITORY_LABEL_FONT_SIZE = 10;
 
     // Collect all settlements with their controlling color
     const allSettlements = [
@@ -1270,12 +1276,12 @@ export class GameUI {
       if (label) {
         const lx = cx;
         const ly = cy + size * scale + scale * 3;
-        ctx.font = `bold ${TERRITORY_LABEL_FONT_SIZE}px sans-serif`;
+        ctx.font = `bold ${TERRITORY_LABEL_FONT_SIZE}px 'PingFang SC', 'Microsoft YaHei', sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         // Outline for readability
-        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = 'rgba(0,0,0,0.9)';
+        ctx.lineWidth = 3;
         ctx.strokeText(label, lx, ly);
         ctx.fillStyle = color;
         ctx.fillText(label, lx, ly);
@@ -1290,9 +1296,9 @@ export class GameUI {
   _drawMinimapSettlements(ctx, scale) {
     if (!this._mapData) return;
     /** Multiplier applied to `scale` to derive the icon font size in canvas pixels. */
-    const ICON_SCALE_MULTIPLIER = 4;
-    const iconSize = Math.max(7, scale * ICON_SCALE_MULTIPLIER); // font size in canvas pixels
-    ctx.font = `${iconSize}px sans-serif`;
+    const ICON_SCALE_MULTIPLIER = 5;
+    const iconSize = Math.max(9, scale * ICON_SCALE_MULTIPLIER); // font size in canvas pixels
+    ctx.font = `${iconSize}px 'PingFang SC', 'Microsoft YaHei', sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
@@ -7819,7 +7825,9 @@ export class GameUI {
     el.textContent = msg;
     el.classList.add('show');
     clearTimeout(this._toastTimer);
-    this._toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+    // Show longer for longer messages: at least 3 s, up to 8 s
+    const duration = Math.min(8000, Math.max(3000, msg.length * 80));
+    this._toastTimer = setTimeout(() => el.classList.remove('show'), duration);
   }
 
   // -------------------------------------------------------------------------
