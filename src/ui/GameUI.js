@@ -230,6 +230,9 @@ const FESTIVAL_SATISFACTION_BOOST = 20;
 const FESTIVAL_COOLDOWN_DAYS = 7;
 /** Gold cost multiplied by the current economy level for the Invest & Develop action. */
 const INVEST_BASE_COST = 100;
+
+/** Refund ratio when demolishing a player-built building (50 %). */
+const DEMOLISH_REFUND_RATIO = 0.5;
 /** Days between automatic demand-resource rotations. */
 const DEMAND_ROTATION_INTERVAL = 10;
 /**
@@ -508,6 +511,30 @@ export class GameUI {
      * @type {import('../systems/Army.js').Unit|null}
      */
     this._pendingMessengerUnit = null;
+
+    /**
+     * Regional treasury – tax and trade income accumulated per settlement.
+     * Key: settlementKey (e.g. "castle:0").
+     * Value: number (gold amount waiting to be collected by the player).
+     * @type {Map<string, number>}
+     */
+    this._regionalTreasury = new Map();
+
+    /**
+     * City planning automation settings per settlement.
+     * Key: settlementKey.
+     * Value: {
+     *   autoTax: boolean,
+     *   autoFestival: boolean,
+     *   autoInvest: boolean,
+     *   minSatisfaction: number,  // -100..100; auto actions only fire above this threshold
+     * }
+     * @type {Map<string, { autoTax: boolean, autoFestival: boolean, autoInvest: boolean, minSatisfaction: number }>}
+     */
+    this._cityPlans = new Map();
+
+    /** Active city-hall department tab: 'gov' | 'construction' | 'planning' */
+    this._cityHallTab = 'gov';
 
     if (savedState) {
       this.loadState(savedState);
@@ -2697,6 +2724,10 @@ export class GameUI {
           // Import routes require no worker assignment – the foreign merchants handle it.
           const routeIncome = route.dailyGold ?? 0;
           totalTradeGold += routeIncome;
+          // Accumulate import income in the destination settlement's regional treasury.
+          const destKey = route.toKey;
+          const tCur = this._regionalTreasury.get(destKey) ?? 0;
+          this._regionalTreasury.set(destKey, tCur + routeIncome);
           continue;
         }
 
@@ -2721,10 +2752,16 @@ export class GameUI {
         // Trade bonus: each worker with 天生運動員 contributes
         const tradeBonus = workers.reduce((sum, u) => sum + getTradeBonus(u), 0);
         const routeIncome  = Math.round(route.dailyGold * (1.0 + tradeBonus));
+
+        // Accumulate into the regional treasury of the from-settlement.
+        const cur = this._regionalTreasury.get(route.fromKey) ?? 0;
+        this._regionalTreasury.set(route.fromKey, cur + routeIncome);
         totalTradeGold += routeIncome;
       }
       if (totalTradeGold > 0) {
-        this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: totalTradeGold });
+        // Income goes to regional treasuries (already accumulated above for export routes).
+        // Import routes go to the player destination settlement treasury.
+        // The old direct-add is replaced; treasury accumulation is done per-route above.
       }
       brokenRoutes.forEach(({ routeId, name }) => {
         this._tradeRouteWorkers.delete(routeId);
@@ -2775,9 +2812,113 @@ export class GameUI {
       }
     }
 
+    // City planning automation – run auto-tax / auto-festival / auto-invest
+    // for each player settlement that has a plan configured.
+    this._processCityPlanAutomation();
+
+    // Notify player when any regional treasury has accumulated income.
+    {
+      let total = 0;
+      const parts = [];
+      for (const [key, amount] of this._regionalTreasury) {
+        if (amount > 0) {
+          total += amount;
+          const s = this._getSettlementByKey(key);
+          if (s) parts.push(`${s.name} 🪙${amount}`);
+        }
+      }
+      if (total > 0 && parts.length > 0) {
+        this._addInboxMessage('🏦', `各地金庫有新收入待領取（${parts.join('、')}），請親自前往城市提取。`);
+      }
+    }
+
     if (this._activePanel === 'team' && this._teamInfoTab === 'info') {
       this._renderTeamInfo();
     }
+  }
+
+  /**
+   * Process city planning automation for all settlements that have auto settings enabled.
+   * Called at the end of each in-game day.
+   */
+  _processCityPlanAutomation() {
+    const currentDay = this.diplomacySystem?._currentDay ?? 0;
+    for (const [key, plan] of this._cityPlans) {
+      const settlement = this._getSettlementByKey(key);
+      if (!settlement || settlement.controllingNationId !== PLAYER_NATION_ID) continue;
+
+      const sat = this._satisfactionMap.get(key) ?? -50;
+      const minSat = plan.minSatisfaction ?? -100;
+
+      // Gather tax info for auto-tax
+      if (plan.autoTax && sat > minSat) {
+        const ruler = this._getEffectiveRuler(settlement);
+        const baseTax = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
+        const factor  = Math.min(1.0, 0.1 + 0.9 * ((sat + 100) / 100));
+        const taxBonusMult = 1.0 + getTaxBonus(ruler);
+        const playerUnits  = this.army.getSquads()
+          .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
+        const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+        const taxYield = Math.max(1, Math.round(baseTax * factor * taxBonusMult) - garrisonPenalty);
+        // Deposit tax into regional treasury (player picks up at city hall)
+        const cur = this._regionalTreasury.get(key) ?? 0;
+        this._regionalTreasury.set(key, cur + taxYield);
+        // Collect tax reduces satisfaction
+        const newSat = Math.max(-100, sat - 10);
+        this._satisfactionMap.set(key, newSat);
+        this._addInboxMessage('🏦', `【自動徵稅】${settlement.name} 本日自動收稅 🪙${taxYield}，存入地區金庫（民心 ${newSat >= 0 ? '+' : ''}${newSat}）。`);
+      }
+
+      // Auto-festival: fire if satisfaction is below minSat threshold AND festival is ready
+      if (plan.autoFestival) {
+        const cooldownExpiry = this._festivalCooldowns.get(key) ?? 0;
+        const festivalReady  = currentDay >= cooldownExpiry;
+        // Only auto-festival when satisfaction is low (below minSat or below -20 if not set)
+        const festivalThreshold = Math.max(minSat, -20);
+        const currentSat = this._satisfactionMap.get(key) ?? -50;
+        if (festivalReady && currentSat < festivalThreshold) {
+          const gold = this._getGold();
+          if (gold >= FESTIVAL_COST) {
+            this._spendGold(FESTIVAL_COST);
+            const prevSat = currentSat;
+            const newSat  = Math.min(100, prevSat + FESTIVAL_SATISFACTION_BOOST);
+            this._satisfactionMap.set(key, newSat);
+            this._festivalCooldowns.set(key, currentDay + FESTIVAL_COOLDOWN_DAYS);
+            this._addInboxMessage('🎉', `【自動節慶】${settlement.name} 自動舉辦節慶！民心 ${prevSat >= 0 ? '+' : ''}${prevSat} → ${newSat >= 0 ? '+' : ''}${newSat}（消耗 🪙${FESTIVAL_COST}）。`);
+          } else {
+            this._addInboxMessage('⚠', `【自動節慶】${settlement.name} 想舉辦節慶，但金幣不足（需 🪙${FESTIVAL_COST}）。`);
+          }
+        }
+      }
+
+      // Auto-invest: fire when satisfaction is acceptable and economy not maxed.
+      // Uses `lastAutoInvestEcoLevel` to gate one investment per economy level, so the
+      // flag stays enabled but the same level isn't invested repeatedly each day.
+      if (plan.autoInvest && sat > minSat) {
+        const ecoLevel = settlement.economyLevel ?? 1;
+        const maxEco   = ecoLevel >= 5;
+        const cost     = INVEST_BASE_COST * ecoLevel;
+        const alreadyInvestedThisLevel = plan.lastAutoInvestEcoLevel === ecoLevel;
+        if (!maxEco && !alreadyInvestedThisLevel && this._getGold() >= cost) {
+          this._spendGold(cost);
+          settlement.economyLevel = Math.min(5, ecoLevel + 1);
+          plan.lastAutoInvestEcoLevel = ecoLevel; // remember the level we just upgraded from
+          this._addInboxMessage('💰', `【自動投資】${settlement.name} 自動投資發展！經濟等級升至 ${'⭐'.repeat(settlement.economyLevel)}（消耗 🪙${cost}）。`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Return the city planning settings for a settlement, creating defaults if absent.
+   * @param {string} key
+   * @returns {{ autoTax: boolean, autoFestival: boolean, autoInvest: boolean, minSatisfaction: number }}
+   */
+  _getCityPlan(key) {
+    if (!this._cityPlans.has(key)) {
+      this._cityPlans.set(key, { autoTax: false, autoFestival: false, autoInvest: false, minSatisfaction: -30 });
+    }
+    return this._cityPlans.get(key);
   }
 
   /**
@@ -3778,131 +3919,169 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
-  // Government building screen (王宮 / 村長家)
+  // Government building screen (王宮 / 村長家) – multi-department hub
   // -------------------------------------------------------------------------
 
   /**
    * @param {import('../systems/BuildingSystem.js').Building} building
    * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {string} [tab]  Override the active department tab.
    */
-  _renderGovBuilding(building, settlement) {
+  _renderGovBuilding(building, settlement, tab) {
     const content = document.getElementById('location-content');
     if (!content) return;
 
     const isOwnedByPlayer = this.isPlayerSettlement(settlement);
-    const key = this._settlementKey(settlement);
 
-    // Use effective ruler (player-assigned or original)
-    const ruler  = this._getEffectiveRuler(settlement);
-    const traits = ruler?.traits?.filter(t => t !== '統治者') ?? [];
-    const isAssigned = isOwnedByPlayer && key && !!this._getAssignedRulerUnit(key);
-    const satisfaction = isOwnedByPlayer
-      ? (this._satisfactionMap.get(key) ?? -50)
-      : null;
-
-    // Satisfaction label / colour
-    let satLabel = '', satColor = '#9e9e9e';
-    if (satisfaction !== null) {
-      if (satisfaction >= 0)        { satLabel = '穩定';   satColor = '#66bb6a'; }
-      else if (satisfaction >= -30) { satLabel = '不滿';   satColor = '#ffa726'; }
-      else if (satisfaction >= -60) { satLabel = '憤慨';   satColor = '#ef6c00'; }
-      else                          { satLabel = '激憤';   satColor = '#e53935'; }
+    // For non-player settlements just render the simple foreign view (no tabs)
+    if (!isOwnedByPlayer) {
+      this._renderGovBuildingForeign(building, settlement);
+      return;
     }
 
-    // Tax yield: economyLevel × 20 + floor(population / 100),
-    // scaled by satisfaction, then reduced by garrison maintenance cost.
-    // Ruler bonus: +20% if the effective ruler has 一絲不苟.
-    let taxYield = 0;
-    let taxHTML  = '';
-    if (isOwnedByPlayer) {
-      const baseTax  = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
-      // Satisfaction factor: -100 → 10 %, 0 → 100 % (capped at 100 %)
-      const factor          = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
-      const afterSat        = Math.round(baseTax * factor);
-      // Ruler trait bonus (一絲不苟 → +20%)
-      const taxBonusMult    = 1.0 + getTaxBonus(ruler);
-      const afterRuler      = Math.round(afterSat * taxBonusMult);
-      // Garrison penalty: every active soldier you maintain reduces tax income.
-      const playerUnits     = this.army.getSquads()
-        .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
-      const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
-      taxYield              = Math.max(1, afterRuler - garrisonPenalty);
+    if (tab) this._cityHallTab = tab;
 
-      const rulerBonusHTML = taxBonusMult > 1.0
-        ? `<div class="gov-stat-row-small">
-             <span class="gov-stat-label">領導者加成（一絲不苟）</span>
-             <span class="gov-stat-val" style="color:#66bb6a">×${taxBonusMult.toFixed(2)}</span>
-           </div>`
-        : '';
+    const tabs = [
+      { id: 'gov',          icon: '📋', label: '政務廳' },
+      { id: 'construction', icon: '🏗️', label: '建設部' },
+      { id: 'planning',     icon: '⚙️', label: '城市規劃' },
+    ];
 
-      const penaltyHTML = garrisonPenalty > 0
-        ? `<div class="gov-stat-row-small">
-             <span class="gov-stat-label">駐軍維持（${playerUnits} 人）</span>
-             <span class="gov-stat-val" style="color:#ef6c00">-🪙${garrisonPenalty}</span>
-           </div>`
-        : '';
-
-      // Demand resource display
-      const demandRes = this._getSettlementDemand(key, settlement);
-      const demandMet = this._isSettlementDemandMet(key, settlement);
-      const demandColor = demandMet ? '#66bb6a' : '#ef6c00';
-      const demandNote  = demandMet ? '✅ 已供應' : '⚠ 未供應 – 滿意度無法自動恢復';
-
-      // Festival cooldown check
-      const currentDay     = this.diplomacySystem?._currentDay ?? 0;
-      const cooldownExpiry = this._festivalCooldowns.get(key) ?? 0;
-      const festivalReady  = currentDay >= cooldownExpiry;
-      const daysLeft       = cooldownExpiry - currentDay;
-
-      // Invest cost
-      const investCost     = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
-      const maxEco         = (settlement.economyLevel ?? 1) >= 5;
-
-      taxHTML = `
-        <div class="gov-tax-section">
-          <div class="gov-tax-title">📋 地區管理</div>
-          <div class="gov-stat-row-small">
-            <span class="gov-stat-label">民心滿意度</span>
-            <span class="gov-sat-val" style="color:${satColor}">${satLabel}（${satisfaction >= 0 ? '+' : ''}${satisfaction}）</span>
-          </div>
-          ${rulerBonusHTML}
-          ${penaltyHTML}
-          <div class="gov-stat-row-small">
-            <span class="gov-stat-label">預期稅收</span>
-            <span class="gov-stat-val">🪙${taxYield}</span>
-          </div>
-          <div class="gov-stat-row-small">
-            <span class="gov-stat-label">需求資源</span>
-            <span class="gov-stat-val" style="color:${demandColor}">${demandRes}（${demandNote}）</span>
-          </div>
-          <button class="btn-buy gov-tax-btn" id="btn-collect-tax">🏦 徵收稅款</button>
-        </div>
-        <div class="gov-civic-section">
-          <div class="gov-civic-title">🏙 市政活動</div>
-          <button class="btn-buy gov-festival-btn${festivalReady ? '' : ' disabled'}"
-                  id="btn-festival"
-                  ${festivalReady ? '' : 'disabled title="冷卻中"'}>
-            🎉 舉辦節慶<span class="gov-civic-cost">-🪙${FESTIVAL_COST}</span>
-            ${!festivalReady ? `<span class="gov-civic-cd">（${daysLeft} 天後可用）</span>` : ''}
-          </button>
-          <button class="btn-buy gov-invest-btn${maxEco ? ' disabled' : ''}"
-                  id="btn-invest"
-                  ${maxEco ? 'disabled title="已達最高等級"' : ''}>
-            💰 投資發展<span class="gov-civic-cost">-🪙${maxEco ? '—' : investCost}</span>
-            ${maxEco ? '<span class="gov-civic-cd">（已達最高）</span>' : ''}
-          </button>
-          <button class="btn-buy gov-trade-route-btn" id="btn-manage-trade">
-            🛤 管理貿易路線
-          </button>
-        </div>`;
-    }
-
-    // Build trait badge HTML for the ruler
-    const traitBadgesHTML = renderTraitBadgesHTML(ruler?.traits ?? [], PERSONALITY_COLORS);
+    const tabsHTML = tabs.map(t => `
+      <button class="ch-tab-btn${this._cityHallTab === t.id ? ' active' : ''}" data-chtab="${t.id}">
+        ${t.icon} ${t.label}
+      </button>`).join('');
 
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">${building.icon} ${building.name}</div>
+      <div class="ch-tabs">${tabsHTML}</div>
+      <div id="ch-tab-content"></div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    content.querySelectorAll('.ch-tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        this._cityHallTab = btn.dataset.chtab;
+        this._renderGovBuilding(building, settlement);
+      });
+    });
+
+    switch (this._cityHallTab) {
+      case 'gov':          this._renderGovTabContent(building, settlement); break;
+      case 'construction': this._renderConstructionPanel(building, settlement, true); break;
+      case 'planning':     this._renderCityPlanningTab(building, settlement); break;
+    }
+  }
+
+  /**
+   * Render the simple gov screen for a foreign (non-player-owned) settlement.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderGovBuildingForeign(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+    const ruler = this._getEffectiveRuler(settlement);
+    const traits = ruler?.traits?.filter(t => t !== '統治者') ?? [];
+    const traitBadgesHTML = renderTraitBadgesHTML(ruler?.traits ?? [], PERSONALITY_COLORS);
+    content.innerHTML = `
+      ${this._facilityBackHTML(settlement)}
+      <div class="fac-title">${building.icon} ${building.name}</div>
+      <div class="gov-ruler-section">
+        <div class="gov-ruler-icon">👑</div>
+        <div class="gov-ruler-info">
+          <div class="gov-ruler-name">${ruler?.name ?? '不詳'}</div>
+          <div class="gov-ruler-role">${ruler?.role ?? ''}</div>
+          ${traits.length ? `<div class="gov-ruler-traits">${traitBadgesHTML}</div>` : ''}
+        </div>
+      </div>
+      <div class="gov-stats-row">
+        <div class="gov-stat"><span class="gov-stat-label">人口</span><span class="gov-stat-val">${settlement.population.toLocaleString()}</span></div>
+        <div class="gov-stat"><span class="gov-stat-label">經濟</span><span class="gov-stat-val">${'⭐'.repeat(settlement.economyLevel ?? 1)}</span></div>
+        <div class="gov-stat"><span class="gov-stat-label">資源</span><span class="gov-stat-val">${(settlement.resources ?? []).join('、') || '無'}</span></div>
+      </div>
+      <div id="gov-foreign-diplo"></div>
+      <div class="gov-ruler-speech"><em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em></div>
+    `;
+    this._attachFacilityBack(settlement);
+    this._renderForeignDiplomacy(building, settlement);
+  }
+
+  /**
+   * Render the 政務廳 department content into #ch-tab-content.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderGovTabContent(building, settlement) {
+    const panel = document.getElementById('ch-tab-content');
+    if (!panel) return;
+
+    const key          = this._settlementKey(settlement);
+    const ruler        = this._getEffectiveRuler(settlement);
+    const traits       = ruler?.traits?.filter(t => t !== '統治者') ?? [];
+    const isAssigned   = key && !!this._getAssignedRulerUnit(key);
+    const satisfaction = this._satisfactionMap.get(key) ?? -50;
+
+    // Satisfaction label / colour
+    let satLabel = '', satColor = '#9e9e9e';
+    if (satisfaction >= 0)        { satLabel = '穩定';   satColor = '#66bb6a'; }
+    else if (satisfaction >= -30) { satLabel = '不滿';   satColor = '#ffa726'; }
+    else if (satisfaction >= -60) { satLabel = '憤慨';   satColor = '#ef6c00'; }
+    else                          { satLabel = '激憤';   satColor = '#e53935'; }
+
+    const baseTax        = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
+    const factor         = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
+    const taxBonusMult   = 1.0 + getTaxBonus(ruler);
+    const playerUnits    = this.army.getSquads()
+      .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
+    const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
+    const taxYield        = Math.max(1, Math.round(baseTax * factor * taxBonusMult) - garrisonPenalty);
+
+    const traitBadgesHTML = renderTraitBadgesHTML(ruler?.traits ?? [], PERSONALITY_COLORS);
+
+    // Regional treasury
+    const treasury = this._regionalTreasury.get(key) ?? 0;
+    const treasuryHTML = `
+      <div class="gov-treasury-section">
+        <div class="gov-tax-title">🏦 地區金庫</div>
+        <div class="gov-stat-row-small">
+          <span class="gov-stat-label">庫存金幣</span>
+          <span class="gov-stat-val" style="color:${treasury > 0 ? '#ffd54f' : '#9e9e9e'}">🪙${treasury}</span>
+        </div>
+        <button class="btn-buy gov-tax-btn${treasury <= 0 ? ' disabled' : ''}" id="btn-collect-treasury"
+          ${treasury <= 0 ? 'disabled' : ''}>
+          💰 提取金庫存款（🪙${treasury}）
+        </button>
+      </div>`;
+
+    const rulerBonusHTML = taxBonusMult > 1.0
+      ? `<div class="gov-stat-row-small">
+           <span class="gov-stat-label">領導者加成（一絲不苟）</span>
+           <span class="gov-stat-val" style="color:#66bb6a">×${taxBonusMult.toFixed(2)}</span>
+         </div>`
+      : '';
+    const penaltyHTML = garrisonPenalty > 0
+      ? `<div class="gov-stat-row-small">
+           <span class="gov-stat-label">駐軍維持（${playerUnits} 人）</span>
+           <span class="gov-stat-val" style="color:#ef6c00">-🪙${garrisonPenalty}</span>
+         </div>`
+      : '';
+
+    const demandRes  = this._getSettlementDemand(key, settlement);
+    const demandMet  = this._isSettlementDemandMet(key, settlement);
+    const demandColor = demandMet ? '#66bb6a' : '#ef6c00';
+    const demandNote  = demandMet ? '✅ 已供應' : '⚠ 未供應 – 滿意度無法自動恢復';
+
+    const currentDay     = this.diplomacySystem?._currentDay ?? 0;
+    const cooldownExpiry = this._festivalCooldowns.get(key) ?? 0;
+    const festivalReady  = currentDay >= cooldownExpiry;
+    const daysLeft       = cooldownExpiry - currentDay;
+    const investCost     = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
+    const maxEco         = (settlement.economyLevel ?? 1) >= 5;
+
+    panel.innerHTML = `
       <div class="gov-ruler-section">
         <div class="gov-ruler-icon">👑</div>
         <div class="gov-ruler-info">
@@ -3910,82 +4089,169 @@ export class GameUI {
           <div class="gov-ruler-role">${ruler?.role ?? ''}</div>
           ${traits.length ? `<div class="gov-ruler-traits">${traitBadgesHTML}</div>` : ''}
         </div>
-        ${isOwnedByPlayer ? `<button class="btn-buy gov-replace-ruler-btn" id="btn-replace-ruler">👥 替換統治者</button>` : ''}
+        <button class="btn-buy gov-replace-ruler-btn" id="btn-replace-ruler">👥 替換統治者</button>
       </div>
       <div class="gov-stats-row">
         <div class="gov-stat"><span class="gov-stat-label">人口</span><span class="gov-stat-val">${settlement.population.toLocaleString()}</span></div>
         <div class="gov-stat"><span class="gov-stat-label">經濟</span><span class="gov-stat-val">${'⭐'.repeat(settlement.economyLevel ?? 1)}</span></div>
         <div class="gov-stat"><span class="gov-stat-label">資源</span><span class="gov-stat-val">${(settlement.resources ?? []).join('、') || '無'}</span></div>
       </div>
-      ${taxHTML}
-      ${isOwnedByPlayer ? `
-        <button class="btn-buy gov-letter-btn" id="btn-send-letter">📨 派送信件</button>
-        <button class="btn-buy gov-construction-btn" id="btn-open-construction">🏗️ 建設選項</button>
-      ` : `<div id="gov-foreign-diplo"></div>`}
-      <div class="gov-ruler-speech">
-        <em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em>
+      ${treasuryHTML}
+      <div class="gov-tax-section">
+        <div class="gov-tax-title">📋 地區管理</div>
+        <div class="gov-stat-row-small">
+          <span class="gov-stat-label">民心滿意度</span>
+          <span class="gov-sat-val" style="color:${satColor}">${satLabel}（${satisfaction >= 0 ? '+' : ''}${satisfaction}）</span>
+        </div>
+        ${rulerBonusHTML}
+        ${penaltyHTML}
+        <div class="gov-stat-row-small">
+          <span class="gov-stat-label">預期稅收</span>
+          <span class="gov-stat-val">🪙${taxYield}</span>
+        </div>
+        <div class="gov-stat-row-small">
+          <span class="gov-stat-label">需求資源</span>
+          <span class="gov-stat-val" style="color:${demandColor}">${demandRes}（${demandNote}）</span>
+        </div>
+        <button class="btn-buy gov-tax-btn" id="btn-collect-tax">🏦 手動徵收稅款（存入金庫）</button>
       </div>
+      <div class="gov-civic-section">
+        <div class="gov-civic-title">🏙 市政活動</div>
+        <button class="btn-buy gov-festival-btn${festivalReady ? '' : ' disabled'}"
+                id="btn-festival"
+                ${festivalReady ? '' : 'disabled title="冷卻中"'}>
+          🎉 舉辦節慶<span class="gov-civic-cost">-🪙${FESTIVAL_COST}</span>
+          ${!festivalReady ? `<span class="gov-civic-cd">（${daysLeft} 天後可用）</span>` : ''}
+        </button>
+        <button class="btn-buy gov-invest-btn${maxEco ? ' disabled' : ''}"
+                id="btn-invest"
+                ${maxEco ? 'disabled title="已達最高等級"' : ''}>
+          💰 投資發展<span class="gov-civic-cost">-🪙${maxEco ? '—' : investCost}</span>
+          ${maxEco ? '<span class="gov-civic-cd">（已達最高）</span>' : ''}
+        </button>
+        <button class="btn-buy gov-trade-route-btn" id="btn-manage-trade">
+          🛤 管理貿易路線
+        </button>
+      </div>
+      <button class="btn-buy gov-letter-btn" id="btn-send-letter">📨 派送信件</button>
+      <div class="gov-ruler-speech"><em>「${_GOV_GREETING[building.type] ?? '歡迎來訪。'}」</em></div>
     `;
 
-    this._attachFacilityBack(settlement);
+    // Wire up buttons
+    document.getElementById('btn-replace-ruler')?.addEventListener('click', () => {
+      this._openReplaceRulerModal(building, settlement);
+    });
 
-    // Replace-ruler button
-    if (isOwnedByPlayer) {
-      document.getElementById('btn-replace-ruler')?.addEventListener('click', () => {
-        this._openReplaceRulerModal(building, settlement);
-      });
-    }
+    document.getElementById('btn-collect-treasury')?.addEventListener('click', () => {
+      const amount = this._regionalTreasury.get(key) ?? 0;
+      if (amount <= 0) { this._toast('金庫目前為空。'); return; }
+      this._addGold(amount);
+      this._regionalTreasury.set(key, 0);
+      this._addInboxMessage('💰', `已從 ${settlement.name} 金庫提取 🪙${amount}。`);
+      this._refreshGoldDisplay();
+      this._renderGovTabContent(building, settlement);
+    });
 
-    if (isOwnedByPlayer) {
-      const currentDay = this.diplomacySystem?._currentDay ?? 0;
+    document.getElementById('btn-collect-tax')?.addEventListener('click', () => {
+      const newSat = Math.max(-100, (this._satisfactionMap.get(key) ?? -50) - 10);
+      this._satisfactionMap.set(key, newSat);
+      // Store tax in regional treasury instead of directly in inventory
+      const cur = this._regionalTreasury.get(key) ?? 0;
+      this._regionalTreasury.set(key, cur + taxYield);
+      this._addInboxMessage('🏦', `已在 ${settlement.name} 徵收稅款 🪙${taxYield}，存入地區金庫。民心 ${newSat >= 0 ? '+' : ''}${newSat}`);
+      this._renderGovTabContent(building, settlement);
+    });
 
-      document.getElementById('btn-collect-tax')?.addEventListener('click', () => {
-        const newSat = Math.max(-100, (this._satisfactionMap.get(key) ?? -50) - 10);
-        this._satisfactionMap.set(key, newSat);
-        this._addGold(taxYield);
-        this._addInboxMessage('🏦', `已徵收 ${settlement.name} 稅款 +${taxYield} 🪙，民心 ${newSat >= 0 ? '+' : ''}${newSat}`);
-        // Re-render to reflect updated satisfaction
-        this._renderGovBuilding(building, settlement);
-      });
+    document.getElementById('btn-festival')?.addEventListener('click', () => {
+      const gold = this._getGold();
+      if (gold < FESTIVAL_COST) { this._toast('💸 金幣不足！'); return; }
+      this._spendGold(FESTIVAL_COST);
+      const prevSat = this._satisfactionMap.get(key) ?? -50;
+      const newSat  = Math.min(100, prevSat + FESTIVAL_SATISFACTION_BOOST);
+      this._satisfactionMap.set(key, newSat);
+      this._festivalCooldowns.set(key, currentDay + FESTIVAL_COOLDOWN_DAYS);
+      this._addInboxMessage('🎉', `${settlement.name} 舉辦了節慶！民心 ${prevSat >= 0 ? '+' : ''}${prevSat} → ${newSat >= 0 ? '+' : ''}${newSat}（消耗 ${FESTIVAL_COST} 🪙）`);
+      this._refreshGoldDisplay();
+      this._renderGovTabContent(building, settlement);
+    });
 
-      document.getElementById('btn-festival')?.addEventListener('click', () => {
-        const gold = this._getGold();
-        if (gold < FESTIVAL_COST) { this._toast('💸 金幣不足！'); return; }
-        this._spendGold(FESTIVAL_COST);
-        const prevSat = this._satisfactionMap.get(key) ?? -50;
-        const newSat  = Math.min(100, prevSat + FESTIVAL_SATISFACTION_BOOST);
-        this._satisfactionMap.set(key, newSat);
-        this._festivalCooldowns.set(key, currentDay + FESTIVAL_COOLDOWN_DAYS);
-        this._addInboxMessage('🎉', `${settlement.name} 舉辦了節慶！民心 ${prevSat >= 0 ? '+' : ''}${prevSat} → ${newSat >= 0 ? '+' : ''}${newSat}（消耗 ${FESTIVAL_COST} 🪙）`);
-        this._refreshGoldDisplay();
-        this._renderGovBuilding(building, settlement);
-      });
+    document.getElementById('btn-invest')?.addEventListener('click', () => {
+      const cost = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
+      const gold = this._getGold();
+      if (gold < cost) { this._toast('💸 金幣不足！'); return; }
+      if ((settlement.economyLevel ?? 1) >= 5) { this._toast('⭐ 已達最高經濟等級！'); return; }
+      this._spendGold(cost);
+      settlement.economyLevel = Math.min(5, (settlement.economyLevel ?? 1) + 1);
+      this._addInboxMessage('💰', `${settlement.name} 投資發展完成！經濟等級提升至 ${'⭐'.repeat(settlement.economyLevel)}（消耗 ${cost} 🪙）`);
+      this._refreshGoldDisplay();
+      this._renderGovTabContent(building, settlement);
+    });
 
-      document.getElementById('btn-invest')?.addEventListener('click', () => {
-        const cost = INVEST_BASE_COST * (settlement.economyLevel ?? 1);
-        const gold = this._getGold();
-        if (gold < cost) { this._toast('💸 金幣不足！'); return; }
-        if ((settlement.economyLevel ?? 1) >= 5) { this._toast('⭐ 已達最高經濟等級！'); return; }
-        this._spendGold(cost);
-        settlement.economyLevel = Math.min(5, (settlement.economyLevel ?? 1) + 1);
-        this._addInboxMessage('💰', `${settlement.name} 投資發展完成！經濟等級提升至 ${'⭐'.repeat(settlement.economyLevel)}（消耗 ${cost} 🪙）`);
-        this._refreshGoldDisplay();
-        this._renderGovBuilding(building, settlement);
-      });
+    document.getElementById('btn-manage-trade')?.addEventListener('click', () => {
+      this._renderTradeRoutePanel(building, settlement);
+    });
 
-      document.getElementById('btn-manage-trade')?.addEventListener('click', () => {
-        this._renderTradeRoutePanel(building, settlement);
-      });
+    document.getElementById('btn-send-letter')?.addEventListener('click', () => {
+      this._renderSendLetter(settlement);
+    });
+  }
 
-      document.getElementById('btn-send-letter')?.addEventListener('click', () => {
-        this._renderSendLetter(settlement);
-      });
-      document.getElementById('btn-open-construction')?.addEventListener('click', () => {
-        this._renderConstructionPanel(building, settlement);
-      });
-    } else {
-      this._renderForeignDiplomacy(building, settlement);
-    }
+  // -------------------------------------------------------------------------
+  // City Planning tab
+  // -------------------------------------------------------------------------
+
+  /**
+   * Render the 城市規劃 tab content into #ch-tab-content.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderCityPlanningTab(building, settlement) {
+    const panel = document.getElementById('ch-tab-content');
+    if (!panel) return;
+
+    const key  = this._settlementKey(settlement);
+    const plan = this._getCityPlan(key);
+
+    const checkHTML = (id, label, checked, desc) => `
+      <label class="cp-toggle-row">
+        <input type="checkbox" class="cp-toggle" id="${id}" ${checked ? 'checked' : ''}>
+        <span class="cp-toggle-label">${label}</span>
+        <span class="cp-toggle-desc">${desc}</span>
+      </label>`;
+
+    panel.innerHTML = `
+      <div class="cp-section-title">🗓 自動城市管理</div>
+      <div class="cp-note">以下功能在每日結算時自動執行，收入存入地區金庫，費用從玩家持有金幣扣除。</div>
+      ${checkHTML('cp-auto-tax',      '自動徵稅',   plan.autoTax,      '每日自動對本地區徵稅，稅款存入地區金庫。')}
+      ${checkHTML('cp-auto-festival', '自動節慶',   plan.autoFestival, `當民心低於下方閾值時，自動舉辦節慶（消耗 🪙${FESTIVAL_COST}）。`)}
+      ${checkHTML('cp-auto-invest',   '自動投資',   plan.autoInvest,   `當民心達閾值以上時，自動投資發展（單次觸發，完成後需重新啟用）。`)}
+
+      <div class="cp-section-title" style="margin-top:12px">⚡ 最低民心閾值</div>
+      <div class="cp-note">自動徵稅與自動投資只在民心高於此值時執行；自動節慶在民心低於此值時觸發。</div>
+      <div class="cp-slider-row">
+        <span class="cp-slider-label">閾值：<span id="cp-minsatval">${plan.minSatisfaction}</span></span>
+        <input type="range" id="cp-minsat" class="cp-slider" min="-100" max="100" step="5" value="${plan.minSatisfaction}">
+      </div>
+      <div class="cp-info-row">
+        <span style="color:#9e9e9e">目前民心：<strong style="color:#fff">${this._satisfactionMap.get(key) ?? -50}</strong></span>
+      </div>
+      <button class="btn-buy cp-save-btn" id="btn-save-plan" style="margin-top:10px">💾 儲存規劃</button>
+    `;
+
+    document.getElementById('cp-minsat')?.addEventListener('input', (e) => {
+      const el = document.getElementById('cp-minsatval');
+      if (el) el.textContent = e.target.value;
+    });
+
+    document.getElementById('btn-save-plan')?.addEventListener('click', () => {
+      plan.autoTax      = !!(document.getElementById('cp-auto-tax')?.checked);
+      plan.autoFestival = !!(document.getElementById('cp-auto-festival')?.checked);
+      plan.autoInvest   = !!(document.getElementById('cp-auto-invest')?.checked);
+      plan.minSatisfaction = Number(document.getElementById('cp-minsat')?.value ?? -30);
+      this._cityPlans.set(key, plan);
+      this._toast('✅ 城市規劃已儲存！');
+      this._renderCityPlanningTab(building, settlement);
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -5227,10 +5493,12 @@ export class GameUI {
    * Render the main construction panel with three tabs (建築 / 道路 / 港口).
    * @param {import('../systems/BuildingSystem.js').Building} building  Government building
    * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {boolean} [inCityHall]  When true, render inside #ch-tab-content instead of full screen.
    */
-  _renderConstructionPanel(building, settlement) {
-    const content = document.getElementById('location-content');
-    if (!content) return;
+  _renderConstructionPanel(building, settlement, inCityHall = false) {
+    // When embedded in city hall, render into #ch-tab-content
+    const target = inCityHall ? document.getElementById('ch-tab-content') : document.getElementById('location-content');
+    if (!target) return;
 
     const { coastal } = this._isCoastalSettlement(settlement);
     const tabs = ['建築', '道路', ...(coastal ? ['港口'] : [])];
@@ -5242,24 +5510,33 @@ export class GameUI {
       <button class="constr-tab-btn${this._constructionTab === t ? ' active' : ''}" data-ctab="${t}">${t}</button>
     `).join('');
 
-    content.innerHTML = `
-      ${this._facilityBackHTML(settlement)}
-      <div class="fac-title">🏗️ 建設選項</div>
-      ${this._goldBarHTML()}
-      <div class="constr-tabs">${tabsHTML}</div>
-      <div id="constr-tab-content"></div>
-    `;
+    if (inCityHall) {
+      target.innerHTML = `
+        ${this._goldBarHTML()}
+        <div class="constr-tabs">${tabsHTML}</div>
+        <div id="constr-tab-content"></div>
+      `;
+    } else {
+      const content = document.getElementById('location-content');
+      if (!content) return;
+      content.innerHTML = `
+        ${this._facilityBackHTML(settlement)}
+        <div class="fac-title">🏗️ 建設選項</div>
+        ${this._goldBarHTML()}
+        <div class="constr-tabs">${tabsHTML}</div>
+        <div id="constr-tab-content"></div>
+      `;
+      // Back to the government building (not the facilities list)
+      document.getElementById('btn-fac-back')?.addEventListener('click', () => {
+        this._constructionTab = '建築';
+        this._renderGovBuilding(building, settlement);
+      });
+    }
 
-    // Back to the government building (not the facilities list)
-    document.getElementById('btn-fac-back')?.addEventListener('click', () => {
-      this._constructionTab = '建築';
-      this._renderGovBuilding(building, settlement);
-    });
-
-    content.querySelectorAll('.constr-tab-btn').forEach(btn => {
+    target.querySelectorAll('.constr-tab-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         this._constructionTab = btn.dataset.ctab;
-        this._renderConstructionPanel(building, settlement);
+        this._renderConstructionPanel(building, settlement, inCityHall);
       });
     });
 
@@ -5310,8 +5587,18 @@ export class GameUI {
       ? '<span style="color:#ef9a9a">⚠ 未指派工人，建造暫停</span>'
       : `可同時建造 ${activeWorkers} 棟`;
 
-    // Already-built buildings
-    const builtNames = (settlement.buildings ?? []).map(b => b.name);
+    // Already-built buildings (with demolish option for non-government buildings)
+    const builtBuildingsHTML = (settlement.buildings ?? []).map((b, idx) => {
+      const isGovBldg = b.type === BLDG_PALACE || b.type === BLDG_CHIEF_HOUSE;
+      // Use recorded build cost; fall back to 0 for seed-generated buildings that weren't player-built.
+      const cost      = _BUILDING_COSTS[b.type] ?? 0;
+      const refund    = Math.floor(cost * DEMOLISH_REFUND_RATIO);
+      const refundLabel = refund > 0 ? `退還 🪙${refund}` : '無退款（非玩家建造）';
+      return `<div class="constr-built-row">
+        <span class="constr-built-tag">✅ ${b.name}</span>
+        ${!isGovBldg ? `<button class="btn-buy constr-demolish-btn" data-bldg-idx="${idx}" data-refund="${refund}" title="拆除 · ${refundLabel}">🪚 拆除</button>` : ''}
+      </div>`;
+    }).join('') || '';
 
     // In-progress buildings
     const queueHTML = state.buildingQueue.length > 0
@@ -5354,9 +5641,7 @@ export class GameUI {
       <div class="cw-slots">${workerSlotsHTML}</div>
       <button class="btn-buy cw-assign-btn" id="btn-assign-build-workers">👷 指派工人</button>
       <div class="constr-section-title">建築位置：${usedSlots} / ${maxSlots}</div>
-      <div class="constr-built-list">
-        ${builtNames.map(n => `<span class="constr-built-tag">✅ ${n}</span>`).join('')}
-      </div>
+      <div class="constr-built-list">${builtBuildingsHTML}</div>
       <div class="constr-section-title">建造中</div>
       <div class="constr-queue">${queueHTML}</div>
       ${freeSlots > 0 ? '<div class="constr-section-title">可新增建築</div>' : ''}
@@ -5377,6 +5662,21 @@ export class GameUI {
     document.getElementById('btn-assign-build-workers')?.addEventListener('click', () => {
       this._openAssignWorkerPanel('building', key, 3, govBuilding, settlement,
         () => this._renderConstructionPanel(govBuilding, settlement));
+    });
+
+    // Demolish building buttons
+    panel.querySelectorAll('.constr-demolish-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx    = Number(btn.dataset.bldgIdx);
+        const refund = Number(btn.dataset.refund);
+        const bldg   = settlement.buildings?.[idx];
+        if (!bldg) return;
+        if (!confirm(`確定要拆除「${bldg.name}」嗎？退還 🪙${refund} 金幣。`)) return;
+        settlement.buildings.splice(idx, 1);
+        if (refund > 0) this._addGold(refund);
+        this._addInboxMessage('🪚', `${settlement.name} 拆除了「${bldg.name}」，退還 🪙${refund}。`);
+        this._renderBuildingConstructionTab(govBuilding, settlement);
+      });
     });
 
     panel.querySelectorAll('.coc-build-btn').forEach(btn => {
@@ -6790,6 +7090,8 @@ export class GameUI {
       assignedRulers:       [...this._assignedRulers.entries()],
       tradeRouteWorkers:    [...this._tradeRouteWorkers.entries()],
       buildingWorkers:      [...this._buildingWorkers.entries()],
+      regionalTreasury:     Object.fromEntries(this._regionalTreasury),
+      cityPlans:            [...this._cityPlans.entries()],
     };
   }
 
@@ -6868,6 +7170,16 @@ export class GameUI {
     if (Array.isArray(state.buildingWorkers)) {
       this._buildingWorkers = new Map(
         state.buildingWorkers.filter(([k, v]) => typeof k === 'string' && Array.isArray(v)),
+      );
+    }
+    if (state.regionalTreasury && typeof state.regionalTreasury === 'object') {
+      this._regionalTreasury = new Map(
+        Object.entries(state.regionalTreasury).map(([k, v]) => [k, Number(v)]),
+      );
+    }
+    if (Array.isArray(state.cityPlans)) {
+      this._cityPlans = new Map(
+        state.cityPlans.filter(([k, v]) => typeof k === 'string' && v && typeof v === 'object'),
       );
     }
   }

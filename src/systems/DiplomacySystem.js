@@ -11,10 +11,21 @@
  *   - Average economy level     (both wealthy → slight positive)
  *   - Shared / complementary resources (overlap → competition; different → cooperative)
  *   - Ruler personality         (arrogant/warlike → negative; gentle → positive)
+ *
+ * NPC AI decision tree (evaluated per nation each cycle, highest priority first):
+ *   1. Crisis   – peace initiative / emergency recruit / seek ally
+ *   2. Military – attack weakest hostile settlement
+ *   3. Diplomatic – NAP/MPP proposals, trade-route requests, personality events
+ *   4. Economic – build missing buildings when gold allows
+ *
+ * Heavy evaluation is offloaded to a Web Worker (npc-ai.worker.js) to keep the
+ * main thread free.  The worker computes decisions asynchronously; the main
+ * thread applies them on the next phase that matches each decision type.
  */
 
 import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, TERRAIN } from '../world/constants.js';
-import { BuildingSystem, BLDG_TAVERN } from './BuildingSystem.js';
+import { Building, BuildingSystem, BLDG_TAVERN,
+         BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_INN } from './BuildingSystem.js';
 import { buildPath } from '../world/NpcPathfinder.js';
 import { getSpeedBonus, getUnitMoveSpeed } from './CharacterSystem.js';
 
@@ -52,11 +63,46 @@ export const GARRISON_TAX_PENALTY_PER_UNIT = 2;
 /** NPC gold cap. */
 const NPC_GOLD_CAP = 3000;
 
+// ---------------------------------------------------------------------------
+// NPC building construction
+// ---------------------------------------------------------------------------
+
+/** Gold cost for an NPC nation to construct each building type. */
+const NPC_BUILD_COSTS = {
+  [BLDG_INN]:        80,
+  [BLDG_GENERAL]:   100,
+  [BLDG_TAVERN]:    150,
+  [BLDG_BLACKSMITH]: 200,
+  [BLDG_MAGE]:      250,
+};
+
+/** Minimum gold required before a meticulous NPC considers building construction. */
+const METICULOUS_BUILD_THRESHOLD = 80;
+
+/** Minimum gold required before any NPC considers building construction. */
+const DEFAULT_BUILD_THRESHOLD = 120;
+
+/** Default build priority order (Tavern → General → Blacksmith → Inn → Mage). */
+const DEFAULT_BUILD_ORDER = Object.freeze([BLDG_TAVERN, BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_INN, BLDG_MAGE]);
+
+// ---------------------------------------------------------------------------
+// NPC trade routes
+// ---------------------------------------------------------------------------
+
+/** Daily gold income earned by each participant in an active NPC–player trade route. */
+export const TRADE_ROUTE_DAILY_INCOME = 8;
+
+/** Daily gold income for each nation in an NPC–NPC trade route. */
+const NPC_NPC_TRADE_ROUTE_INCOME = 5;
+
 /** World pixels per second for NPC army marches on open terrain. */
 const NPC_MARCH_SPEED_PX = 240;
 
 /** World pixels per second for peace messengers. */
 const MISSIVE_SPEED_PX = 180;
+
+/** Default messenger movement speed for missive dispatch. */
+const DEFAULT_MESSENGER_MOVE_SPEED = 5;
 
 /** Speed multiplier on FOREST tiles (mirrors Player.js FOREST_SPEED_MULT). */
 const MARCH_FOREST_SPEED_MULT = 0.4;
@@ -346,9 +392,45 @@ export class DiplomacySystem {
      */
     this._playerConquestStreak = 0;
 
+    /**
+     * Active trade routes between two parties.
+     * Key: "A:B" where A < B (player = -1).
+     * Value: { nationA, nationB, dailyIncome, startDay }
+     * @type {Map<string, {nationA: number, nationB: number, dailyIncome: number, startDay: number}>}
+     */
+    this._activeTradeRoutes = new Map();
+
+    /**
+     * Accumulated pending gold for the player from active NPC trade routes.
+     * Collected each morning alongside regular tax income.
+     * @type {number}
+     */
+    this._playerTradeIncome = 0;
+
+    /**
+     * Queue of action decisions computed by the Web Worker.
+     * Consumed during phase transitions (war phase, diplomacy phase, build phase).
+     * @type {Array<import('./npc-ai.worker.js').NpcDecision>}
+     */
+    this._pendingWorkerDecisions = [];
+
+    /**
+     * Map backing _pendingWorkerDecisions, keyed by nationId, for O(1) merges.
+     * Always kept in sync with _pendingWorkerDecisions.
+     * @type {Map<number, object>}
+     */
+    this._pendingWorkerDecisionsMap = new Map();
+
+    /**
+     * The NPC AI Web Worker instance.  null when Web Workers are unsupported.
+     * @type {Worker|null}
+     */
+    this._aiWorker = null;
+
     this._build(mapData);
     this._initSovereignty();
     this._initNpcState();
+    this._initWorker();
   }
 
   // -------------------------------------------------------------------------
@@ -790,6 +872,198 @@ export class DiplomacySystem {
   }
 
   // -------------------------------------------------------------------------
+  // Web Worker – async decision computation
+  // -------------------------------------------------------------------------
+
+  /**
+   * Create and wire up the NPC AI Web Worker.
+   * Falls back gracefully when Web Workers are not supported.
+   */
+  _initWorker() {
+    if (typeof Worker === 'undefined') return; // SSR / unsupported environment
+    try {
+      this._aiWorker = new Worker(
+        new URL('./npc-ai.worker.js', import.meta.url),
+        { type: 'classic' },
+      );
+      this._aiWorker.onmessage = (e) => {
+        const { decisions, error } = e.data ?? {};
+        if (error) {
+          console.warn('[NpcAI] Worker error:', error);
+          return;
+        }
+        if (Array.isArray(decisions)) {
+          // Merge new decisions into the backing Map (O(1) per decision) then
+          // rebuild the array from it so _pendingWorkerDecisions stays consistent.
+          decisions.forEach(d => this._pendingWorkerDecisionsMap.set(d.nationId, d));
+          this._pendingWorkerDecisions = [...this._pendingWorkerDecisionsMap.values()];
+        }
+      };
+      this._aiWorker.onerror = (e) => {
+        console.warn('[NpcAI] Worker uncaught error:', e.message);
+      };
+    } catch {
+      this._aiWorker = null;
+    }
+  }
+
+  /**
+   * Serialise the current game state into a snapshot for the Web Worker.
+   * Only includes data the worker needs; avoids transferring large objects.
+   * @returns {object}  A plain, structured-clone-safe object.
+   */
+  _buildWorkerSnapshot() {
+    const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+
+    // Serialise settlement data (minimal fields).
+    const settlements = [];
+    castleSettlements.forEach((s, idx) => {
+      settlements.push({
+        idx,
+        type:                'castle',
+        nationId:            s.nationId,
+        controllingNationId: s.controllingNationId,
+        economyLevel:        s.economyLevel,
+        resources:           s.resources,
+        rulerTraits:         s.ruler?.traits ?? [],
+        buildingTypes:       s.buildings.map(b => b.type),
+      });
+    });
+    villageSettlements.forEach((s, idx) => {
+      settlements.push({
+        idx,
+        type:                'village',
+        nationId:            s.nationId,
+        controllingNationId: s.controllingNationId,
+        economyLevel:        s.economyLevel,
+        resources:           s.resources,
+        rulerTraits:         s.ruler?.traits ?? [],
+        buildingTypes:       s.buildings.map(b => b.type),
+      });
+    });
+
+    // Garrison totals (sum of all units across all squads).
+    const garrisonSizes = [];
+    this._npcArmies.forEach((squads, key) => {
+      garrisonSizes.push([key, squads.reduce((sum, sq) => sum + sq.length, 0)]);
+    });
+
+    return {
+      nations:               nations.map((n, id) => n ? { id, name: n.name } : null),
+      settlements,
+      npcRelations:          [...this._npcRelations.entries()],
+      playerRelations:       [...this._playerRelations.entries()],
+      npcGold:               [...this._npcGold.entries()],
+      garrisonSizes,
+      warPairs:              [...this._warPairs],
+      nonAggressionPacts:    [...this._nonAggressionPacts],
+      mutualProtectionPacts: [...this._mutualProtectionPacts],
+      surrenderIndices:      [...this._surrenderIndex.entries()],
+      currentDay:            this._currentDay,
+      pendingMarchNationIds: this._pendingMarches.map(m => m.attackerNationId),
+      pendingMissiveNationIds: this._pendingMissives.map(m => m.senderNationId),
+      activeTradeRouteKeys:  [...this._activeTradeRoutes.keys()],
+    };
+  }
+
+  /**
+   * Send the current state snapshot to the worker for asynchronous computation.
+   * If the worker is unavailable this is a no-op (decisions remain empty and the
+   * synchronous fallback paths in each phase method will run instead).
+   */
+  _scheduleWorkerUpdate() {
+    if (!this._aiWorker) return;
+    try {
+      this._aiWorker.postMessage({ type: 'compute', state: this._buildWorkerSnapshot() });
+    } catch (err) {
+      console.warn('[NpcAI] Failed to post snapshot to worker:', err);
+    }
+  }
+
+  /**
+   * Drain and return all pending worker decisions of a specific type.
+   * Removes the consumed decisions from the queue.
+   * @param {string} type  Decision type string (e.g. 'attack', 'build').
+   * @returns {Array<object>}
+   */
+  _drainWorkerDecisions(type) {
+    const matched   = this._pendingWorkerDecisions.filter(d => d.type === type);
+    this._pendingWorkerDecisions = this._pendingWorkerDecisions.filter(d => d.type !== type);
+    // Keep the backing Map in sync.
+    if (this._pendingWorkerDecisionsMap) {
+      matched.forEach(d => this._pendingWorkerDecisionsMap.delete(d.nationId));
+    }
+    return matched;
+  }
+
+  // -------------------------------------------------------------------------
+  // Trade routes – public API
+  // -------------------------------------------------------------------------
+
+  /**
+   * Establish an active trade route between two parties.
+   * Call this when both sides have agreed (player accepted, or NPC-NPC auto-accepted).
+   *
+   * @param {number} idA     Nation id (use -1 for player).
+   * @param {number} idB     Nation id.
+   * @param {number} [dailyIncome]  Override default daily income.
+   * @returns {string}  The route key (for persistence).
+   */
+  openTradeRoute(idA, idB, dailyIncome) {
+    const a   = Math.min(idA, idB);
+    const b   = Math.max(idA, idB);
+    const key = `${a}:${b}`;
+    const income = dailyIncome
+      ?? ((idA === _PLAYER_NATION_ID || idB === _PLAYER_NATION_ID)
+        ? TRADE_ROUTE_DAILY_INCOME
+        : NPC_NPC_TRADE_ROUTE_INCOME);
+    this._activeTradeRoutes.set(key, { nationA: a, nationB: b, dailyIncome: income, startDay: this._currentDay });
+    return key;
+  }
+
+  /**
+   * Close a trade route between two parties.
+   * @param {number} idA
+   * @param {number} idB
+   */
+  closeTradeRoute(idA, idB) {
+    const a = Math.min(idA, idB);
+    const b = Math.max(idA, idB);
+    this._activeTradeRoutes.delete(`${a}:${b}`);
+  }
+
+  /**
+   * Return true when an active trade route exists between the two parties.
+   * @param {number} idA
+   * @param {number} idB
+   * @returns {boolean}
+   */
+  hasTradeRoute(idA, idB) {
+    const a = Math.min(idA, idB);
+    const b = Math.max(idA, idB);
+    return this._activeTradeRoutes.has(`${a}:${b}`);
+  }
+
+  /**
+   * Return a snapshot of all active trade routes for UI display.
+   * @returns {Array<{nationA: number, nationB: number, dailyIncome: number, startDay: number}>}
+   */
+  getActiveTradeRoutes() {
+    return [...this._activeTradeRoutes.values()];
+  }
+
+  /**
+   * Drain and return the player's accumulated trade-route gold since the last call.
+   * Should be called by GameUI when collecting morning taxes.
+   * @returns {number}
+   */
+  collectPlayerTradeIncome() {
+    const amount = this._playerTradeIncome;
+    this._playerTradeIncome = 0;
+    return amount;
+  }
+
+  // -------------------------------------------------------------------------
   // NPC AI – phase-based actions
   // -------------------------------------------------------------------------
 
@@ -806,10 +1080,15 @@ export class DiplomacySystem {
     const messages = [];
     if (phase === '清晨') {
       this._npcTaxPhase(messages);
+      this._npcTradeRouteIncomePhase(messages);
+      // Schedule worker computation so decisions are ready for the daytime phase.
+      this._scheduleWorkerUpdate();
     } else if (phase === '白天') {
       this._npcWarPhase(messages);
     } else if (phase === '黃昏') {
       this._npcRecruitPhase(tavernState, messages);
+      this._npcBuildPhase(messages);
+      this._npcSpontaneousDiplomacyPhase(messages);
     }
     return messages;
   }
@@ -850,14 +1129,52 @@ export class DiplomacySystem {
   }
 
   /**
+   * Morning sub-phase: distribute daily income from active trade routes.
+   * NPC-NPC routes add gold to both treasuries; NPC-player routes accumulate
+   * in _playerTradeIncome (collected via collectPlayerTradeIncome()).
+   * @param {{ message: string }[]} messages
+   */
+  _npcTradeRouteIncomePhase(messages) {
+    this._activeTradeRoutes.forEach((route) => {
+      const { nationA, nationB, dailyIncome } = route;
+      const isPlayerRoute = nationA === _PLAYER_NATION_ID || nationB === _PLAYER_NATION_ID;
+      if (isPlayerRoute) {
+        // Accumulate for the player; NPC also earns its share.
+        this._playerTradeIncome += dailyIncome;
+        const npcId = nationA === _PLAYER_NATION_ID ? nationB : nationA;
+        if (npcId >= 0) {
+          const cur = this._npcGold.get(npcId) ?? 0;
+          this._npcGold.set(npcId, Math.min(NPC_GOLD_CAP, cur + dailyIncome));
+        }
+      } else {
+        // NPC-NPC: both nations earn.
+        [nationA, nationB].forEach(nId => {
+          if (nId >= 0) {
+            const cur = this._npcGold.get(nId) ?? 0;
+            this._npcGold.set(nId, Math.min(NPC_GOLD_CAP, cur + dailyIncome));
+          }
+        });
+      }
+    });
+  }
+
+  /**
    * Daytime phase: NPC nations assess enemies and dispatch marching armies toward
    * target settlements.  Combat is resolved later when the army arrives
    * (see updateMarches).  Each nation may have at most one march in progress at
    * a time.
+   *
+   * When the Web Worker has computed attack decisions, they are used to choose
+   * targets; otherwise the inline evaluation runs as a synchronous fallback.
    * @param {{ message: string }[]} messages
    */
   _npcWarPhase(messages) {
     const { nations, castleSettlements, villageSettlements } = this.nationSystem;
+
+    // Consume worker-computed attack decisions (if available) indexed by nationId.
+    const workerAttacks = new Map(
+      this._drainWorkerDecisions('attack').map(d => [d.nationId, d]),
+    );
 
     castleSettlements.forEach((s, id) => {
       if (!s || s.controllingNationId !== id) return; // nation must hold its home castle
@@ -870,7 +1187,12 @@ export class DiplomacySystem {
       if (this._pendingMarches.some(m => m.attackerNationId === id)) return;
 
       const personality = this._rulerPersonality(s);
-      const threshold   = WAR_THRESHOLD[personality] ?? 55;
+      const rulerTraits = s.ruler?.traits ?? [];
+      // 勇猛 lowers the threshold; 策略家 raises it.
+      const baseThreshold = WAR_THRESHOLD[personality] ?? 55;
+      const threshold = baseThreshold
+        + (rulerTraits.includes('勇猛')   ? -10 : 0)
+        + (rulerTraits.includes('策略家') ?  10 : 0);
 
       // Attacker's two garrison squads at the home castle.
       const atkKey    = `castle:${id}`;
@@ -879,42 +1201,62 @@ export class DiplomacySystem {
       const squad2    = atkArmies[1] ?? [];
       if (squad1.length === 0 && squad2.length === 0) return; // no troops to dispatch
 
-      // ── Find the best target settlement across all hostile nations ──────────
-      let bestTarget  = null;
-      let bestWeakness = threshold;
+      // ── Determine attack target ──────────────────────────────────────────────
+      // Use worker-computed target when available; fall back to inline evaluation.
+      let bestTarget = null;
 
-      nations.forEach((_, tid) => {
-        if (tid === id) return;
-        const rel = this.getRelation(id, tid);
-        if (rel > -20) return; // must be hostile
+      const workerDecision = workerAttacks.get(id);
+      if (workerDecision) {
+        // Worker identified a target — resolve it to actual settlement objects.
+        const tType = workerDecision.targetType;
+        const tIdx  = workerDecision.targetIdx;
+        const tNationId = workerDecision.targetNationId;
+        const ts = tType === 'castle'
+          ? castleSettlements[tIdx]
+          : villageSettlements[tIdx];
+        if (ts && ts.controllingNationId === tNationId) {
+          const defStr = this._settlementGarrisonStrength(tType, tIdx);
+          bestTarget = { nationId: tNationId, settlement: ts, type: tType, idx: tIdx, defStr };
+        }
+      }
 
-        // Respect non-aggression pacts: skip this target if a NAP is active.
-        if (this.hasNonAggressionPact(id, tid)) return;
+      // Inline fallback (also runs when worker gave no valid target).
+      if (!bestTarget) {
+        let bestWeakness = threshold;
 
-        // Evaluate each castle controlled by the target nation.
-        castleSettlements.forEach((ts, tidx) => {
-          if (!ts || ts.controllingNationId !== tid) return;
-          const defStr   = this._settlementGarrisonStrength('castle', tidx);
-          const eco      = ts.economyLevel;
-          const weakness = Math.max(0, (1 - defStr / 30) * 60) + eco * 4;
-          if (weakness > bestWeakness) {
-            bestWeakness = weakness;
-            bestTarget = { nationId: tid, settlement: ts, type: 'castle', idx: tidx, defStr };
-          }
+        nations.forEach((_, tid) => {
+          if (tid === id) return;
+          const rel = this.getRelation(id, tid);
+          if (rel > -20) return; // must be hostile
+
+          // Respect non-aggression pacts: skip this target if a NAP is active.
+          if (this.hasNonAggressionPact(id, tid)) return;
+
+          // Evaluate each castle controlled by the target nation.
+          castleSettlements.forEach((ts, tidx) => {
+            if (!ts || ts.controllingNationId !== tid) return;
+            const defStr   = this._settlementGarrisonStrength('castle', tidx);
+            const eco      = ts.economyLevel;
+            const weakness = Math.max(0, (1 - defStr / 30) * 60) + eco * 4;
+            if (weakness > bestWeakness) {
+              bestWeakness = weakness;
+              bestTarget = { nationId: tid, settlement: ts, type: 'castle', idx: tidx, defStr };
+            }
+          });
+
+          // Evaluate each village controlled by the target nation.
+          villageSettlements.forEach((ts, tidx) => {
+            if (!ts || ts.controllingNationId !== tid) return;
+            const defStr   = this._settlementGarrisonStrength('village', tidx);
+            const eco      = ts.economyLevel;
+            const weakness = Math.max(0, (1 - defStr / 10) * 50) + eco * 3;
+            if (weakness > bestWeakness) {
+              bestWeakness = weakness;
+              bestTarget = { nationId: tid, settlement: ts, type: 'village', idx: tidx, defStr };
+            }
+          });
         });
-
-        // Evaluate each village controlled by the target nation.
-        villageSettlements.forEach((ts, tidx) => {
-          if (!ts || ts.controllingNationId !== tid) return;
-          const defStr   = this._settlementGarrisonStrength('village', tidx);
-          const eco      = ts.economyLevel;
-          const weakness = Math.max(0, (1 - defStr / 10) * 50) + eco * 3;
-          if (weakness > bestWeakness) {
-            bestWeakness = weakness;
-            bestTarget = { nationId: tid, settlement: ts, type: 'village', idx: tidx, defStr };
-          }
-        });
-      });
+      }
 
       if (!bestTarget) return;
 
@@ -1224,6 +1566,162 @@ export class DiplomacySystem {
 
     castleSettlements.forEach((s, idx) => tryRecruit(s, 'castle', idx));
     villageSettlements.forEach((s, idx) => tryRecruit(s, 'village', idx));
+  }
+
+  /**
+   * Dusk sub-phase: NPC nations construct new buildings in their home castle when
+   * they have enough gold and a building slot is missing.
+   *
+   * Uses worker-computed 'build' decisions if available; otherwise evaluates inline.
+   * @param {{ message: string }[]} messages
+   */
+  _npcBuildPhase(messages) {
+    const { nations, castleSettlements } = this.nationSystem;
+
+    // Collect worker-computed build decisions indexed by nationId.
+    const workerBuilds = new Map(
+      this._drainWorkerDecisions('build').map(d => [d.nationId, d]),
+    );
+
+    castleSettlements.forEach((s, id) => {
+      if (!s || s.controllingNationId !== id) return;
+
+      // Stagger by nation id.
+      if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
+
+      const nationId    = id;
+      const nationName  = nations[nationId]?.name ?? s.name;
+      const rulerTraits = s.ruler?.traits ?? [];
+      const gold        = this._npcGold.get(nationId) ?? 0;
+
+      // 一絲不苟 (Meticulous) lowers the gold threshold before building.
+      const goldThreshold = rulerTraits.includes('一絲不苟')
+        ? METICULOUS_BUILD_THRESHOLD
+        : DEFAULT_BUILD_THRESHOLD;
+      if (gold < goldThreshold) return;
+
+      let bType = null;
+      let bCost  = 0;
+
+      // Use worker decision when available.
+      const wd = workerBuilds.get(nationId);
+      if (wd && wd.settlementKey === `castle:${id}`) {
+        const cost = NPC_BUILD_COSTS[wd.buildingType] ?? 150;
+        if (gold >= cost && !s.buildings.some(b => b.type === wd.buildingType)) {
+          bType = wd.buildingType;
+          bCost  = cost;
+        }
+      }
+
+      // Inline fallback: build prioritised order without duplicates.
+      if (!bType) {
+        const prioritySet = new Set();
+        if (rulerTraits.includes('銅牆鐵壁')) { prioritySet.add(BLDG_INN); prioritySet.add(BLDG_BLACKSMITH); }
+        if (rulerTraits.includes('一絲不苟'))  { prioritySet.add(BLDG_TAVERN); prioritySet.add(BLDG_GENERAL); }
+        for (const t of DEFAULT_BUILD_ORDER) prioritySet.add(t);
+
+        for (const t of prioritySet) {
+          const cost = NPC_BUILD_COSTS[t] ?? 150;
+          if (gold >= cost && !s.buildings.some(b => b.type === t)) {
+            bType = t;
+            bCost  = cost;
+            break;
+          }
+        }
+      }
+
+      if (!bType) return;
+
+      // Construct the building.
+      this._npcGold.set(nationId, gold - bCost);
+      s.buildings.push(new Building(bType, 1.0));
+
+      messages.push({
+        message: `🏗 ${nationName} 在 ${s.name} 新建了「${s.buildings[s.buildings.length - 1].name}」（耗資 🪙${bCost}）`,
+      });
+    });
+  }
+
+  /**
+   * Dusk sub-phase: NPC nations spontaneously propose Non-Aggression Pacts,
+   * Mutual Protection Pacts, and trade route requests based on worker decisions
+   * or inline evaluation.
+   * @param {{ message: string }[]} messages
+   */
+  _npcSpontaneousDiplomacyPhase(messages) {
+    const { nations, castleSettlements } = this.nationSystem;
+
+    // Consume all diplomacy-type decisions from the worker.
+    const napDecisions   = this._drainWorkerDecisions('nap_proposal');
+    const mppDecisions   = this._drainWorkerDecisions('mpp_proposal');
+    const tradeDecisions = this._drainWorkerDecisions('trade_request');
+
+    // ── NPC-NPC NAP proposals ───────────────────────────────────────────────
+    napDecisions.forEach(d => {
+      const { nationId, targetNationId } = d;
+      if (nationId < 0 || targetNationId < 0) return;
+      if (this.hasNonAggressionPact(nationId, targetNationId)) return;
+      if (this.isAtWar(nationId, targetNationId)) return;
+
+      // Target evaluates the proposal based on its own relations.
+      const tPersonality = this._rulerPersonality(castleSettlements[targetNationId]);
+      const rel          = this.getRelation(nationId, targetNationId);
+      let acceptChance   = 0.50 + rel / 200;
+      if (tPersonality === '溫和')   acceptChance += 0.20;
+      if (tPersonality === '謹慎') acceptChance += 0.10;
+      if (tPersonality === '好戰')  acceptChance -= 0.25;
+      if (tPersonality === '傲慢') acceptChance -= 0.15;
+
+      if (Math.random() < Math.max(0, Math.min(0.95, acceptChance))) {
+        this.signNonAggressionPact(nationId, targetNationId);
+        const nameA = nations[nationId]?.name       ?? '一國';
+        const nameB = nations[targetNationId]?.name ?? '另一國';
+        messages.push({ message: `🤝 ${nameA} 與 ${nameB} 簽署了互不侵犯條約！` });
+        this._addMemoryEntry(nationId,       `與 ${nameB} 締結互不侵犯條約`, 10);
+        this._addMemoryEntry(targetNationId, `與 ${nameA} 締結互不侵犯條約`, 10);
+      }
+    });
+
+    // ── NPC-NPC MPP proposals ───────────────────────────────────────────────
+    mppDecisions.forEach(d => {
+      const { nationId, targetNationId } = d;
+      if (nationId < 0 || targetNationId < 0) return;
+      if (this.hasMutualProtectionPact(nationId, targetNationId)) return;
+      if (this.isAtWar(nationId, targetNationId)) return;
+
+      const tPersonality = this._rulerPersonality(castleSettlements[targetNationId]);
+      const rel          = this.getRelation(nationId, targetNationId);
+      let acceptChance   = 0.40 + rel / 200;
+      if (tPersonality === '溫和')   acceptChance += 0.25;
+      if (tPersonality === '謹慎') acceptChance += 0.15;
+      if (tPersonality === '好戰')  acceptChance -= 0.20;
+      if (tPersonality === '傲慢') acceptChance -= 0.10;
+
+      if (Math.random() < Math.max(0, Math.min(0.90, acceptChance))) {
+        this.signMutualProtectionPact(nationId, targetNationId);
+        const nameA = nations[nationId]?.name       ?? '一國';
+        const nameB = nations[targetNationId]?.name ?? '另一國';
+        messages.push({ message: `🛡 ${nameA} 與 ${nameB} 締結了互保條約！` });
+        this._addMemoryEntry(nationId,       `與 ${nameB} 締結互保條約`, 20);
+        this._addMemoryEntry(targetNationId, `與 ${nameA} 締結互保條約`, 20);
+      }
+    });
+
+    // ── NPC trade-route requests to player ──────────────────────────────────
+    tradeDecisions.forEach(d => {
+      const { nationId } = d;
+      if (nationId < 0) return;
+      if (this.hasTradeRoute(nationId, _PLAYER_NATION_ID)) return;
+      // Check: player needs at least one settlement for the missive to reach.
+      const s = castleSettlements[nationId];
+      if (!s || s.controllingNationId !== nationId) return;
+      const fromPx = _marchCastlePx(this._mapData.castles[nationId]);
+      if (!fromPx) return;
+      // Missive will be delivered to the player's nearest settlement.
+      this.sendTradeRouteMissive({ senderNationId: nationId, fromPx });
+      const nationName = nations[nationId]?.name ?? '一國';
+      messages.push({ message: `📨 ${nationName} 派使者前來商討貿易路線……` });
+    });
   }
 
   /**
@@ -1878,6 +2376,34 @@ export class DiplomacySystem {
   }
 
   /**
+   * Dispatch a trade-route request missive from an NPC nation to the player.
+   * When the missive arrives, the player will be prompted to accept or decline.
+   *
+   * @param {{ senderNationId: number, fromSettlement?: object|null, fromPx?: object|null, messengerMoveSpeed?: number }} opts
+   * @returns {boolean}  true if the missive was successfully queued.
+   */
+  sendTradeRouteMissive({ senderNationId, fromSettlement = null, fromPx: explicitFromPx = null, messengerMoveSpeed = DEFAULT_MESSENGER_MOVE_SPEED }) {
+    const fromPx = explicitFromPx ?? (fromSettlement ? this._getSettlementPx(fromSettlement) : null);
+    if (!fromPx) return false;
+    const toPx = this._findNearestPlayerSettlement(fromPx);
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'trade_request',
+      senderNationId,
+      receiverNationId: _PLAYER_NATION_ID,
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+      messengerMoveSpeed,
+    });
+    return true;
+  }
+
+  /**
    * Evaluate whether an NPC nation would accept a peace offer.
    * @param {number} nationId  Nation evaluating the offer.
    * @param {object} terms     Treaty terms.
@@ -2117,6 +2643,12 @@ export class DiplomacySystem {
       return { type: 'player_war_declared', missive, directDelta };
     }
 
+    // ── Trade-route request ──────────────────────────────────────────────────
+    if (type === 'trade_request') {
+      // Surface to the player (GameUI decides whether to accept/reject via UI).
+      return { type: 'npc_trade_request', missive };
+    }
+
     // ── Peace treaty ────────────────────────────────────────────────────────
     const terms = missive.terms ?? {};
 
@@ -2260,6 +2792,8 @@ export class DiplomacySystem {
     if (this._playerConquestStreak > 0) {
       this._playerConquestStreak--;
     }
+    // Re-compute surrender indices and schedule a fresh worker pass for next cycle.
+    this._scheduleWorkerUpdate();
     return this._processNpcDailyEvents();
   }
 
@@ -2282,9 +2816,13 @@ export class DiplomacySystem {
       // day offset so that all nations do not fire simultaneously on every day.
       if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
 
-      const p          = this._rulerPersonality(s);
-      const roll       = Math.random();
-      const nationName = nations[id]?.name ?? s.name;
+      const p            = this._rulerPersonality(s);
+      const rulerTraits  = s.ruler?.traits ?? [];
+      const roll         = Math.random();
+      const nationName   = nations[id]?.name ?? s.name;
+
+      // 善交際 (Diplomat) trait increases the probability of positive interactions.
+      const diplomatBonus = rulerTraits.includes('善交際') ? 0.08 : 0.0;
 
       if (p === PERSONALITY_ARROGANT && roll < 0.3) {
         // Arrogant ruler condemns the player
@@ -2296,18 +2834,22 @@ export class DiplomacySystem {
           delta,
           message: `📢 ${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
         });
-      } else if (p === PERSONALITY_WARLIKE && roll < 0.2) {
-        // Warlike ruler threatens the player
-        const delta = -(Math.floor(Math.random() * 8) + 5); // -5 … -12
-        this.modifyPlayerRelation(id, delta);
-        this._addMemoryEntry(id, `我方統治者向玩家發出戰爭威脅，關係 ${delta}`, delta);
-        events.push({
-          nationId: id,
-          delta,
-          message: `⚠ ${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
-        });
-      } else if (p === PERSONALITY_GENTLE && roll < 0.15) {
-        // Gentle ruler sends goodwill
+      } else if (p === PERSONALITY_WARLIKE) {
+        // Warlike ruler threatens the player.
+        // 一絲不苟 (Meticulous) slightly dampens aggression (prefers economy first).
+        const warChance = rulerTraits.includes('一絲不苟') ? 0.12 : 0.20;
+        if (roll < warChance) {
+          const delta = -(Math.floor(Math.random() * 8) + 5); // -5 … -12
+          this.modifyPlayerRelation(id, delta);
+          this._addMemoryEntry(id, `我方統治者向玩家發出戰爭威脅，關係 ${delta}`, delta);
+          events.push({
+            nationId: id,
+            delta,
+            message: `⚠ ${s.ruler.name}（${s.ruler.role}）對你發出戰爭威脅，與 ${nationName} 的關係惡化 ${delta}。`,
+          });
+        }
+      } else if (p === PERSONALITY_GENTLE && roll < 0.15 + diplomatBonus) {
+        // Gentle ruler sends goodwill; 善交際 increases the chance.
         const delta = Math.floor(Math.random() * 6) + 3; // +3 … +8
         this.modifyPlayerRelation(id, delta);
         this._addMemoryEntry(id, `我方統治者主動向玩家釋出善意，關係 +${delta}`, delta);
@@ -2315,6 +2857,16 @@ export class DiplomacySystem {
           nationId: id,
           delta,
           message: `🕊 ${s.ruler.name}（${s.ruler.role}）主動釋出善意，與 ${nationName} 的關係改善 +${delta}。`,
+        });
+      } else if (rulerTraits.includes('善交際') && roll < 0.10 + diplomatBonus) {
+        // 善交際 rulers proactively build good relations even without a gentle personality.
+        const delta = Math.floor(Math.random() * 4) + 2; // +2 … +5
+        this.modifyPlayerRelation(id, delta);
+        this._addMemoryEntry(id, `善交際統治者主動親善，關係 +${delta}`, delta);
+        events.push({
+          nationId: id,
+          delta,
+          message: `🤝 ${s.ruler.name}（${s.ruler.role}）以外交手腕增進了與你的關係 +${delta}。`,
         });
       }
 
@@ -2519,7 +3071,7 @@ export class DiplomacySystem {
   // Persistence
   // -------------------------------------------------------------------------
 
-  /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][], warPairs: string[], nonAggressionPacts: string[], mutualProtectionPacts: string[] }} */
+  /** @returns {object} Serialisable game state snapshot. */
   getState() {
     return {
       playerRelations:       [...this._playerRelations.entries()],
@@ -2533,12 +3085,13 @@ export class DiplomacySystem {
       nonAggressionPacts:    [...this._nonAggressionPacts],
       mutualProtectionPacts: [...this._mutualProtectionPacts],
       playerConquestStreak:  this._playerConquestStreak,
+      activeTradeRoutes:     [...this._activeTradeRoutes.entries()].map(([key, v]) => ({ key, ...v })),
     };
   }
 
   /**
    * Restore from a saved snapshot.
-   * @param {{ playerRelations?: [number, number][], npcRelations?: [string, number][], nationMemory?: [number, object[]][], currentDay?: number, surrenderIndex?: [number, number][], npcGold?: [number, number][], npcArmies?: [string, object[][][]][], warPairs?: string[], nonAggressionPacts?: string[], mutualProtectionPacts?: string[] }|null} state
+   * @param {object|null} state
    */
   loadState(state) {
     if (!state) return;
@@ -2604,6 +3157,19 @@ export class DiplomacySystem {
     }
     if (typeof state.playerConquestStreak === 'number') {
       this._playerConquestStreak = Math.max(0, Math.floor(state.playerConquestStreak));
+    }
+    // Restore active trade routes.
+    if (Array.isArray(state.activeTradeRoutes)) {
+      state.activeTradeRoutes.forEach(r => {
+        if (r && typeof r.key === 'string') {
+          this._activeTradeRoutes.set(r.key, {
+            nationA:     Number(r.nationA),
+            nationB:     Number(r.nationB),
+            dailyIncome: Number(r.dailyIncome) || TRADE_ROUTE_DAILY_INCOME,
+            startDay:    Number(r.startDay)    || this._currentDay,
+          });
+        }
+      });
     }
   }
 }
