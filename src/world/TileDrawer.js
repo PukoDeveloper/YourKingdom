@@ -450,31 +450,90 @@ export function drawMineBuilding(g, px, py) {
 /**
  * Draw a wooden bridge overlay at world-pixel position (px, py).
  * Sits on top of a WATER tile to indicate a passable crossing.
+ *
+ * The bridge visual adapts to which orthogonal neighbours are also water:
+ *   bit 0 (1)  = North neighbour is water → draw north arm
+ *   bit 1 (2)  = East  neighbour is water → draw east arm
+ *   bit 2 (4)  = South neighbour is water → draw south arm
+ *   bit 3 (8)  = West  neighbour is water → draw west arm
+ *
+ * Examples:
+ *   0b0101 (5)  – straight N-S bridge
+ *   0b1010 (10) – straight E-W bridge
+ *   0b0110 (6)  – corner (E + S) bridge
+ *   0b0111 (7)  – T-junction open to W
+ *   0b1111 (15) – cross / 4-way bridge
+ *
  * @param {import('pixi.js').Graphics} g
- * @param {number} px  World-pixel X (top-left of tile)
- * @param {number} py  World-pixel Y (top-left of tile)
+ * @param {number} px           World-pixel X (top-left of tile)
+ * @param {number} py           World-pixel Y (top-left of tile)
+ * @param {number} [neighborMask=0b1010]  4-bit water-neighbour mask (default: E-W straight)
  */
-export function drawBridgeBuilding(g, px, py) {
-  // --- Bridge deck (horizontal planks covering the water) ---
-  // Main deck surface
-  g.rect(px, py + 16, T, 16).fill(0x8B6914);
+export function drawBridgeBuilding(g, px, py, neighborMask = 0b1010) {
+  const mask = neighborMask !== 0 ? neighborMask : 0b1010;
 
-  // Plank lines (vertical grain)
-  for (let bx = 4; bx < T; bx += 8) {
-    g.rect(px + bx, py + 16, 2, 16).fill(0x6B4E0B);
+  // Each tile is divided into thirds: ARM_OFF | ARM_W | ARM_OFF
+  //   ARM_OFF = 16 px  (left/top arm extent)
+  //   ARM_W   = 16 px  (centre junction)
+  //   (right/bottom arm extent also = ARM_OFF)
+  const ARM_OFF = Math.round(T / 3);     // 16
+  const ARM_W   = T - ARM_OFF * 2;       // 16
+
+  const WOOD  = 0x8B6914;
+  const GRAIN = 0x6B4E0B;
+  const RAIL  = 0x5D4037;
+
+  const hasN = (mask & 1) !== 0;
+  const hasE = (mask & 2) !== 0;
+  const hasS = (mask & 4) !== 0;
+  const hasW = (mask & 8) !== 0;
+
+  // ── Centre junction ──────────────────────────────────────────────────────
+  g.rect(px + ARM_OFF, py + ARM_OFF, ARM_W, ARM_W).fill(WOOD);
+
+  // ── North arm ────────────────────────────────────────────────────────────
+  if (hasN) {
+    g.rect(px + ARM_OFF, py, ARM_W, ARM_OFF).fill(WOOD);
+    // Horizontal plank lines
+    for (let d = 4; d < ARM_OFF; d += 8) {
+      g.rect(px + ARM_OFF, py + d, ARM_W, 2).fill(GRAIN);
+    }
+    // Side railing beams
+    g.rect(px + ARM_OFF - 2, py, 2, ARM_OFF).fill(RAIL);
+    g.rect(px + ARM_OFF + ARM_W, py, 2, ARM_OFF).fill(RAIL);
   }
 
-  // --- Horizontal railing top beam ---
-  g.rect(px, py + 14, T, 3).fill(0x5D4037);
-  // --- Horizontal railing bottom beam ---
-  g.rect(px, py + 33, T, 3).fill(0x5D4037);
-
-  // --- Railing posts (vertical) ---
-  for (let rx = 4; rx < T; rx += 12) {
-    g.rect(px + rx, py + 10, 3, 26).fill(0x5D4037);
+  // ── South arm ────────────────────────────────────────────────────────────
+  if (hasS) {
+    const sy = py + ARM_OFF + ARM_W;
+    g.rect(px + ARM_OFF, sy, ARM_W, ARM_OFF).fill(WOOD);
+    for (let d = 4; d < ARM_OFF; d += 8) {
+      g.rect(px + ARM_OFF, sy + d, ARM_W, 2).fill(GRAIN);
+    }
+    g.rect(px + ARM_OFF - 2, sy, 2, ARM_OFF).fill(RAIL);
+    g.rect(px + ARM_OFF + ARM_W, sy, 2, ARM_OFF).fill(RAIL);
   }
 
-  // --- Rope/cable highlight on railings ---
-  g.moveTo(px, py + 15).lineTo(px + T, py + 15)
-    .stroke({ color: 0xA1887F, width: 1, alpha: 0.7 });
+  // ── East arm ─────────────────────────────────────────────────────────────
+  if (hasE) {
+    const ex = px + ARM_OFF + ARM_W;
+    g.rect(ex, py + ARM_OFF, ARM_OFF, ARM_W).fill(WOOD);
+    // Vertical plank lines
+    for (let d = 4; d < ARM_OFF; d += 8) {
+      g.rect(ex + d, py + ARM_OFF, 2, ARM_W).fill(GRAIN);
+    }
+    // Side railing beams
+    g.rect(ex, py + ARM_OFF - 2, ARM_OFF, 2).fill(RAIL);
+    g.rect(ex, py + ARM_OFF + ARM_W, ARM_OFF, 2).fill(RAIL);
+  }
+
+  // ── West arm ─────────────────────────────────────────────────────────────
+  if (hasW) {
+    g.rect(px, py + ARM_OFF, ARM_OFF, ARM_W).fill(WOOD);
+    for (let d = 4; d < ARM_OFF; d += 8) {
+      g.rect(px + d, py + ARM_OFF, 2, ARM_W).fill(GRAIN);
+    }
+    g.rect(px, py + ARM_OFF - 2, ARM_OFF, 2).fill(RAIL);
+    g.rect(px, py + ARM_OFF + ARM_W, ARM_OFF, 2).fill(RAIL);
+  }
 }
