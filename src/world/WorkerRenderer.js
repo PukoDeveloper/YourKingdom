@@ -14,12 +14,14 @@ const TOKEN_RADIUS = 7;
  * 'road'     = sandy tan (road crew)
  * 'demolish' = slate gray (demolition crew)
  * 'trade'    = teal (trade caravan)
+ * 'resource' = amber orange (lumber camp / mine worker)
  */
 const TYPE_COLOR = {
   building: 0x8D6E63, // warm brown
   road:     0xBCAAA4, // sandy tan
   demolish: 0x90A4AE, // slate blue-gray
   trade:    0x26C6DA, // teal – trade caravan
+  resource: 0xFFA726, // amber orange – resource worker
 };
 
 const DEFAULT_COLOR = 0xA0A0A0;
@@ -157,6 +159,11 @@ export class WorkerRenderer {
       const r = TOKEN_RADIUS * 0.45;
       g.moveTo(0, -r).lineTo(r, 0).lineTo(0, r).lineTo(-r, 0).closePath()
         .fill(0xFFFFFF);
+    } else if (worker.type === 'resource') {
+      // ── Sack / coin symbol: filled circle with dot ────────────────────────
+      const r = TOKEN_RADIUS * 0.38;
+      g.circle(0, 0, r).fill(0xFFFFFF);
+      g.circle(0, 0, r * 0.45).fill(color);
     }
 
     return g;

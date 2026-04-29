@@ -175,6 +175,43 @@ const CONSTR_BUILDING_DAYS = 10;
 /** Port construction gold cost. */
 const CONSTR_PORT_COST = 200;
 
+// ---------------------------------------------------------------------------
+// Map building constants
+// ---------------------------------------------------------------------------
+
+/** Gold cost to build a lumber camp on a FOREST tile. */
+const MAP_BLDG_LUMBER_CAMP_COST = 50;
+
+/** Gold cost to build a mine on a MOUNTAIN tile. */
+const MAP_BLDG_MINE_COST = 80;
+
+/** Gold cost to build a bridge on a WATER tile. */
+const MAP_BLDG_BRIDGE_COST = 60;
+
+/** Gold delivered per lumber camp worker arrival. */
+const MAP_BLDG_LUMBER_GOLD = 5;
+
+/** Gold delivered per mine worker arrival. */
+const MAP_BLDG_MINE_GOLD = 8;
+
+/**
+ * Number of working phases (白天/黃昏) between worker spawns.
+ * 2 phases = ~1 in-game day.
+ */
+const MAP_BLDG_SPAWN_INTERVAL = 2;
+
+/** Maximum Manhattan tile distance from building to city for workers to spawn. */
+const MAP_BLDG_WORKER_REACH = 10;
+
+/** A* traversal cost when crossing a bridge tile (treated as slightly costly land). */
+const ROAD_PATH_COST_BRIDGE = 1.5;
+
+/** Gold cost per road tile when the tile has a bridge. */
+const ROAD_GOLD_PER_TILE_BRIDGE = 40;
+
+/** Work-hours per road tile when the tile has a bridge. */
+const ROAD_HOURS_PER_TILE_BRIDGE = 4.0;
+
 /** Gold cost per tile to build a road (fallback for unknown terrain). */
 const CONSTR_ROAD_COST_PER_TILE = 20;
 
@@ -614,6 +651,31 @@ export class GameUI {
     /** Active city-hall department tab: 'gov' | 'construction' | 'planning' */
     this._cityHallTab = 'gov';
 
+    /**
+     * Player-placed map buildings (lumber camps, mines, bridges).
+     * @type {{ id: number, type: 'lumberCamp'|'mine'|'bridge', tx: number, ty: number, phaseTick: number }[]}
+     */
+    this._mapBuildings = [];
+
+    /** Auto-increment ID for map buildings. */
+    this._mapBuildingIdSeq = 0;
+
+    /**
+     * Active map building workers walking toward a player city.
+     * @type {{ id: string, buildingId: number, type: 'lumberCamp'|'mine', tx: number, ty: number, targetKey: string, gold: number }[]}
+     */
+    this._mapBuildingWorkers = [];
+
+    /** Currently detected buildable terrain tile under the player (or null). */
+    this._nearbyBuildableTile = null;
+
+    /**
+     * Callback invoked when a bridge is built or removed.
+     * The game uses this to re-evaluate road pathfinding previews.
+     * @type {(() => void)|null}
+     */
+    this.onBridgeBuilt = null;
+
     if (savedState) {
       this.loadState(savedState);
     } else {
@@ -820,6 +882,20 @@ export class GameUI {
     `;
     document.body.appendChild(minimap);
 
+    // Map building overlay (shown when player presses the map-build button on terrain)
+    const mapBuildOverlay = document.createElement('div');
+    mapBuildOverlay.id = 'map-build-overlay';
+    mapBuildOverlay.innerHTML = `
+      <div id="map-build-box">
+        <div id="map-build-header">
+          <span id="map-build-title">🌍 建造</span>
+          <button id="map-build-close">✕</button>
+        </div>
+        <div id="map-build-body"></div>
+      </div>
+    `;
+    document.body.appendChild(mapBuildOverlay);
+
     // NOTE: Battle preview overlay and battle scene overlay are declared in index.html
     // (static HTML) so they are always available when _attachListeners() runs.
   }
@@ -847,6 +923,23 @@ export class GameUI {
     // Attack-facility button
     document.getElementById('attack-facility-btn').addEventListener('click', () => {
       if (this._nearbySettlement) this._openBattlePreview(this._nearbySettlement);
+    });
+
+    // Map build button
+    document.getElementById('map-build-btn')?.addEventListener('click', () => {
+      if (!this._nearbyBuildableTile) return;
+      const { tx, ty, terrainType } = this._nearbyBuildableTile;
+      this._openMapBuildPanel(tx, ty, terrainType);
+    });
+
+    // Close map-build overlay via backdrop or close button
+    document.getElementById('map-build-overlay')?.addEventListener('click', (e) => {
+      if (e.target.id === 'map-build-overlay') {
+        document.getElementById('map-build-overlay').classList.remove('visible');
+      }
+    });
+    document.getElementById('map-build-close')?.addEventListener('click', () => {
+      document.getElementById('map-build-overlay')?.classList.remove('visible');
     });
 
     // Battle preview overlay – close via backdrop or close button
@@ -3114,6 +3207,9 @@ export class GameUI {
           }
         }
       }
+
+      // Tick map building workers (lumber camps and mines)
+      this._tickMapBuildingWorkers();
     }
   }
 
@@ -3455,12 +3551,16 @@ export class GameUI {
     const prev = this._nearbySettlement;
     this._nearbySettlement = settlement ?? (terrainType === 'port' ? { type: 'port', name: '港口' } : null);
 
-    const visible = this._nearbySettlement !== null;
-    wrap.classList.toggle('visible', visible);
+    // The wrap is visible when either a settlement is nearby OR the map-build button is shown.
+    const settlementVisible = this._nearbySettlement !== null;
+    const buildVisible      = this._nearbyBuildableTile !== null;
+    wrap.classList.toggle('visible', settlementVisible || buildVisible);
 
-    if (visible) {
+    const enterBtn = document.getElementById('enter-facility-btn');
+    if (enterBtn) enterBtn.style.display = settlementVisible ? '' : 'none';
+
+    if (settlementVisible) {
       const name = this._nearbySettlement.name ?? '設施';
-      const enterBtn = document.getElementById('enter-facility-btn');
       if (enterBtn) enterBtn.textContent = `🚪 進入 ${name}`;
 
       // Show attack button only for castle/village settlements that the player does NOT own
@@ -3471,6 +3571,9 @@ export class GameUI {
           && s.controllingNationId !== PLAYER_NATION_ID;
         attackBtn.classList.toggle('visible', isAttackable);
       }
+    } else {
+      const attackBtn = document.getElementById('attack-facility-btn');
+      if (attackBtn) attackBtn.classList.remove('visible');
     }
 
     // Hide the enter button if the player walked away while the screen is open
@@ -5849,10 +5952,253 @@ export class GameUI {
     return set;
   }
 
+  // -------------------------------------------------------------------------
+  // Map buildings – helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Return a Set of `"tx,ty"` strings for every bridge tile.
+   * Used by `_computeRoadPath` to treat bridges as passable land.
+   * @returns {Set<string>}
+   */
+  getBridgeTileSet() {
+    const set = new Set();
+    for (const b of this._mapBuildings) {
+      if (b.type === 'bridge') set.add(`${b.tx},${b.ty}`);
+    }
+    return set;
+  }
+
+  /**
+   * Show or hide the map-build HUD button based on the terrain tile the player
+   * is currently standing on.  Call with (null, null, null) to hide.
+   *
+   * @param {number|null} tx  Tile X
+   * @param {number|null} ty  Tile Y
+   * @param {number|null} terrainType  TERRAIN enum value
+   */
+  setNearbyBuildableTerrain(tx, ty, terrainType) {
+    const btn  = document.getElementById('map-build-btn');
+    const wrap = document.getElementById('facility-action-wrap');
+    if (!btn) return;
+
+    const MAP_BUILD_LABELS = {
+      [TERRAIN.FOREST]:   '🪵 建造伐木場',
+      [TERRAIN.MOUNTAIN]: '⛏️ 建造採礦場',
+      [TERRAIN.WATER]:    '🌉 建造橋樑',
+    };
+
+    const label = terrainType != null ? MAP_BUILD_LABELS[terrainType] : null;
+    if (!label || tx == null) {
+      this._nearbyBuildableTile = null;
+      btn.classList.remove('visible');
+      // Update wrap visibility to settlement-only
+      if (wrap) wrap.classList.toggle('visible', this._nearbySettlement !== null);
+      return;
+    }
+
+    // Don't show if a building already exists on this tile
+    const exists = this._mapBuildings.some(b => b.tx === tx && b.ty === ty);
+    if (exists) {
+      this._nearbyBuildableTile = null;
+      btn.classList.remove('visible');
+      if (wrap) wrap.classList.toggle('visible', this._nearbySettlement !== null);
+      return;
+    }
+
+    this._nearbyBuildableTile = { tx, ty, terrainType };
+    btn.textContent = label;
+    btn.classList.add('visible');
+    // Ensure the wrap is visible
+    if (wrap) wrap.classList.add('visible');
+  }
+
+  /**
+   * Open the map-build dialog for the given tile and terrain type.
+   * @param {number} tx  Tile X
+   * @param {number} ty  Tile Y
+   * @param {number} terrainType  TERRAIN enum value
+   */
+  _openMapBuildPanel(tx, ty, terrainType) {
+    const overlay = document.getElementById('map-build-overlay');
+    if (!overlay) return;
+
+    const BLDG_INFO = {
+      [TERRAIN.FOREST]:   {
+        type: 'lumberCamp',
+        icon: '🪵',
+        name: '伐木場',
+        cost: MAP_BLDG_LUMBER_CAMP_COST,
+        goldPerWorker: MAP_BLDG_LUMBER_GOLD,
+        desc: '在森林中建造伐木場。每隔一天自動派遣工人，將木材收益送往距離 10 格以內最近的玩家城市，抵達後存入城市金庫。',
+      },
+      [TERRAIN.MOUNTAIN]: {
+        type: 'mine',
+        icon: '⛏️',
+        name: '採礦場',
+        cost: MAP_BLDG_MINE_COST,
+        goldPerWorker: MAP_BLDG_MINE_GOLD,
+        desc: '在山地中建造採礦場。每隔一天自動派遣工人，將礦石收益送往距離 10 格以內最近的玩家城市，抵達後存入城市金庫。',
+      },
+      [TERRAIN.WATER]:    {
+        type: 'bridge',
+        icon: '🌉',
+        name: '橋樑',
+        cost: MAP_BLDG_BRIDGE_COST,
+        goldPerWorker: 0,
+        desc: '在河流上建造橋樑。建成後，道路規劃可通過此格，視為陸地。',
+      },
+    };
+
+    const info = BLDG_INFO[terrainType];
+    if (!info) return;
+
+    const gold = this._getGold();
+    const canAfford = gold >= info.cost;
+
+    document.getElementById('map-build-title').textContent = `${info.icon} 建造${info.name}`;
+    document.getElementById('map-build-body').innerHTML = `
+      <div class="mb-desc">${info.desc}</div>
+      <div class="mb-cost">建造費用：🪙${info.cost}　持有：🪙${gold}</div>
+      ${info.goldPerWorker > 0
+        ? `<div class="mb-income">每次送達：🪙${info.goldPerWorker}</div>`
+        : ''}
+      <div class="mb-actions">
+        <button class="btn-buy mb-confirm-btn" id="btn-map-build-confirm" ${canAfford ? '' : 'disabled'}>
+          ${canAfford ? `✅ 建造（🪙${info.cost}）` : '💸 金幣不足'}
+        </button>
+        <button class="mb-cancel-btn" id="btn-map-build-cancel">取消</button>
+      </div>
+    `;
+
+    overlay.classList.add('visible');
+
+    // Replace buttons with clones to avoid accumulating duplicate listeners
+    // from repeated opens of the same overlay.
+    const confirmBtn = document.getElementById('btn-map-build-confirm');
+    const cancelBtn  = document.getElementById('btn-map-build-cancel');
+    if (confirmBtn) {
+      const newConfirm = confirmBtn.cloneNode(true);
+      confirmBtn.replaceWith(newConfirm);
+      newConfirm.addEventListener('click', () => {
+        if (this._getGold() < info.cost) { this._toast('💸 金幣不足！'); return; }
+        this._spendGold(info.cost);
+        const id = ++this._mapBuildingIdSeq;
+        this._mapBuildings.push({ id, type: info.type, tx, ty, phaseTick: 0 });
+        this._addInboxMessage(info.icon, `已在地圖 (${tx}, ${ty}) 建造${info.name}！`);
+        if (info.type === 'bridge' && this.onBridgeBuilt) this.onBridgeBuilt();
+        overlay.classList.remove('visible');
+        // Pass null coordinates to properly hide the button (tile is now occupied)
+        this.setNearbyBuildableTerrain(null, null, null);
+      });
+    }
+    if (cancelBtn) {
+      const newCancel = cancelBtn.cloneNode(true);
+      cancelBtn.replaceWith(newCancel);
+      newCancel.addEventListener('click', () => {
+        overlay.classList.remove('visible');
+      });
+    }
+  }
+
+  /**
+   * Tick map building workers: spawn new workers from active buildings and
+   * advance existing workers one tile toward their destination city.
+   * Called from `onPhaseChanged` during working phases (白天/黃昏).
+   */
+  _tickMapBuildingWorkers() {
+    // ── Advance spawn tick and spawn workers ──────────────────────────────────
+    for (const bldg of this._mapBuildings) {
+      if (bldg.type === 'bridge') continue; // bridges don't spawn workers
+      bldg.phaseTick = (bldg.phaseTick ?? 0) + 1;
+      if (bldg.phaseTick >= MAP_BLDG_SPAWN_INTERVAL) {
+        bldg.phaseTick = 0;
+        this._spawnMapBuildingWorker(bldg);
+      }
+    }
+
+    // ── Move workers one step toward their target ────────────────────────────
+    const arrived = [];
+    for (const w of this._mapBuildingWorkers) {
+      const targetSett = this._getSettlementByKey(w.targetKey);
+      if (!targetSett) { arrived.push(w); continue; }
+
+      const center = this._getSettlementCenter(targetSett);
+      const dx = center.tx - w.tx;
+      const dy = center.ty - w.ty;
+
+      if (dx === 0 && dy === 0) {
+        arrived.push(w);
+      } else if (Math.abs(dx) >= Math.abs(dy)) {
+        w.tx += Math.sign(dx);
+      } else {
+        w.ty += Math.sign(dy);
+      }
+    }
+
+    // ── Deliver gold for arrived workers ─────────────────────────────────────
+    for (const w of arrived) {
+      const idx = this._mapBuildingWorkers.indexOf(w);
+      if (idx >= 0) this._mapBuildingWorkers.splice(idx, 1);
+      if (!w.targetKey) continue;
+
+      const cur = this._regionalTreasury.get(w.targetKey) ?? 0;
+      this._regionalTreasury.set(w.targetKey, cur + w.gold);
+
+      const sett = this._getSettlementByKey(w.targetKey);
+      const bldgLabel = w.type === 'lumberCamp' ? '伐木場' : '採礦場';
+      if (sett) {
+        this._addInboxMessage('💰', `${bldgLabel}工人抵達 ${sett.name}，帶來 🪙${w.gold}，已存入城市金庫。`);
+      }
+    }
+  }
+
+  /**
+   * Spawn a resource worker from a map building toward the nearest player-owned
+   * settlement within `MAP_BLDG_WORKER_REACH` Manhattan tiles.
+   * @param {{ id: number, type: string, tx: number, ty: number }} bldg
+   */
+  _spawnMapBuildingWorker(bldg) {
+    if (!this.nationSystem) return;
+
+    let bestKey  = null;
+    let bestDist = Infinity;
+
+    const checkList = (arr, prefix) => {
+      arr.forEach((s, i) => {
+        if (s.controllingNationId !== PLAYER_NATION_ID) return;
+        const center = this._getSettlementCenter(s);
+        const dist   = Math.abs(center.tx - bldg.tx) + Math.abs(center.ty - bldg.ty);
+        if (dist <= MAP_BLDG_WORKER_REACH && dist < bestDist) {
+          bestDist = dist;
+          bestKey  = `${prefix}:${i}`;
+        }
+      });
+    };
+
+    checkList(this.nationSystem.castleSettlements, 'castle');
+    checkList(this.nationSystem.villageSettlements, 'village');
+
+    if (!bestKey) return; // no reachable player city – skip
+
+    const gold = bldg.type === 'lumberCamp' ? MAP_BLDG_LUMBER_GOLD : MAP_BLDG_MINE_GOLD;
+    this._mapBuildingWorkers.push({
+      id:         `mbw:${++this._mapBuildingIdSeq}`,
+      buildingId: bldg.id,
+      type:       bldg.type,
+      tx:         bldg.tx,
+      ty:         bldg.ty,
+      targetKey:  bestKey,
+      gold,
+    });
+  }
+
   /**
    * Compute the actual A* road path between two settlements (4-directional,
    * avoids WATER and MOUNTAIN).  Returns the tile path plus terrain-based
    * gold cost and work-hour totals.
+   *
+   * Bridge tiles (from `_mapBuildings`) are treated as passable land.
    *
    * @param {import('../systems/NationSystem.js').Settlement} fromSett
    * @param {import('../systems/NationSystem.js').Settlement} toSett
@@ -5868,9 +6214,10 @@ export class GameUI {
       return { path: null, blockedByRiver: false, totalCost: 0, totalHours: 0 };
     }
 
-    const tiles = this._mapData.tiles;
-    const from  = this._getSettlementCenter(fromSett);
-    const to    = this._getSettlementCenter(toSett);
+    const tiles      = this._mapData.tiles;
+    const from       = this._getSettlementCenter(fromSett);
+    const to         = this._getSettlementCenter(toSett);
+    const bridgeTiles = this.getBridgeTileSet();
 
     // Snap coordinates to the nearest non-impassable tile.
     const snap = (tx0, ty0) => {
@@ -5881,7 +6228,7 @@ export class GameUI {
             const x = tx0 + dx, y = ty0 + dy;
             if (x < 0 || y < 0 || x >= MAP_WIDTH || y >= MAP_HEIGHT) continue;
             const t = tiles[y * MAP_WIDTH + x];
-            if (t !== TERRAIN.WATER && t !== TERRAIN.MOUNTAIN) return [x, y];
+            if (t !== TERRAIN.MOUNTAIN && (t !== TERRAIN.WATER || bridgeTiles.has(`${x},${y}`))) return [x, y];
           }
         }
       }
@@ -5960,9 +6307,11 @@ export class GameUI {
         if (nx < 0 || ny < 0 || nx >= MAP_WIDTH || ny >= MAP_HEIGHT) continue;
 
         const t = tiles[ny * MAP_WIDTH + nx];
-        if (t === TERRAIN.WATER || t === TERRAIN.MOUNTAIN) continue;
+        if (t === TERRAIN.MOUNTAIN) continue;
+        if (t === TERRAIN.WATER && !bridgeTiles.has(`${nx},${ny}`)) continue;
 
-        const moveCost = ROAD_PATH_COST[t] ?? 1.0;
+        const isBridge = t === TERRAIN.WATER && bridgeTiles.has(`${nx},${ny}`);
+        const moveCost = isBridge ? ROAD_PATH_COST_BRIDGE : (ROAD_PATH_COST[t] ?? 1.0);
         const nk  = KEY(nx, ny);
         const ng  = gCost[ck] + moveCost;
         if (ng < gCost[nk]) {
@@ -5990,8 +6339,9 @@ export class GameUI {
       const tx = k % MAP_WIDTH;
       const ty = (k / MAP_WIDTH) | 0;
       const t  = tiles[ty * MAP_WIDTH + tx];
-      totalCost  += ROAD_GOLD_PER_TILE[t]          ?? CONSTR_ROAD_COST_PER_TILE;
-      totalHours += ROAD_HOURS_PER_TILE_TERRAIN[t] ?? CONSTR_ROAD_HOURS_PER_TILE;
+      const isBridge = t === TERRAIN.WATER && bridgeTiles.has(`${tx},${ty}`);
+      totalCost  += isBridge ? ROAD_GOLD_PER_TILE_BRIDGE  : (ROAD_GOLD_PER_TILE[t]          ?? CONSTR_ROAD_COST_PER_TILE);
+      totalHours += isBridge ? ROAD_HOURS_PER_TILE_BRIDGE : (ROAD_HOURS_PER_TILE_TERRAIN[t] ?? CONSTR_ROAD_HOURS_PER_TILE);
       return { tx, ty };
     });
 
@@ -6086,6 +6436,16 @@ export class GameUI {
           unitId:    repUnit?.id ?? null,
         });
       }
+    }
+
+    // ── Map building resource workers (lumber camp / mine) ───────────────────
+    for (const w of this._mapBuildingWorkers) {
+      workers.push({
+        id:     w.id,
+        type:   'resource',
+        worldX: (w.tx + 0.5) * TILE_SIZE,
+        worldY: (w.ty + 0.5) * TILE_SIZE,
+      });
     }
 
     return workers;
@@ -7713,6 +8073,28 @@ export class GameUI {
       });
     }
 
+    // Serialise per-settlement mutable state (economyLevel, population, buildings).
+    // NationSystem is rebuilt deterministically from seed, so only mutations need saving.
+    const settlementState = [];
+    if (this.nationSystem) {
+      this.nationSystem.castleSettlements.forEach((s, i) => {
+        settlementState.push({
+          key:          `castle:${i}`,
+          economyLevel: s.economyLevel,
+          population:   s.population,
+          buildings:    (s.buildings ?? []).map(b => ({ type: b.type, priceMult: b.priceMult ?? 1 })),
+        });
+      });
+      this.nationSystem.villageSettlements.forEach((s, i) => {
+        settlementState.push({
+          key:          `village:${i}`,
+          economyLevel: s.economyLevel,
+          population:   s.population,
+          buildings:    (s.buildings ?? []).map(b => ({ type: b.type, priceMult: b.priceMult ?? 1 })),
+        });
+      });
+    }
+
     return {
       inventory:            this.inventory.getState(),
       army:                 this.army.getState(),
@@ -7723,6 +8105,7 @@ export class GameUI {
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
       constructionState,
+      settlementState,
       tradeRoutes:          [...this._tradeRoutes.entries()].map(([k, v]) => {
         // Strip computed/cached fields that should not be persisted.
         const { _path, _pathDists, _pathLen, ...rest } = v;
@@ -7734,6 +8117,9 @@ export class GameUI {
       buildingWorkers:      [...this._buildingWorkers.entries()],
       regionalTreasury:     Object.fromEntries(this._regionalTreasury),
       cityPlans:            [...this._cityPlans.entries()],
+      mapBuildings:         this._mapBuildings.map(b => ({ ...b })),
+      mapBuildingWorkers:   this._mapBuildingWorkers.map(w => ({ ...w })),
+      mapBuildingIdSeq:     this._mapBuildingIdSeq,
     };
   }
 
@@ -7834,6 +8220,39 @@ export class GameUI {
       this._cityPlans = new Map(
         state.cityPlans.filter(([k, v]) => typeof k === 'string' && v && typeof v === 'object'),
       );
+    }
+    if (Array.isArray(state.mapBuildings)) {
+      this._mapBuildings = state.mapBuildings.filter(
+        b => b && typeof b.type === 'string' && typeof b.tx === 'number' && typeof b.ty === 'number',
+      );
+    }
+    if (Array.isArray(state.mapBuildingWorkers)) {
+      this._mapBuildingWorkers = state.mapBuildingWorkers.filter(
+        w => w && typeof w.type === 'string' && typeof w.tx === 'number' && typeof w.ty === 'number',
+      );
+    }
+    if (typeof state.mapBuildingIdSeq === 'number') {
+      this._mapBuildingIdSeq = state.mapBuildingIdSeq;
+    }
+    // Restore mutable settlement state (economyLevel, population, buildings).
+    // Must run after nationSystem is already populated (it is passed to the constructor).
+    if (Array.isArray(state.settlementState) && this.nationSystem) {
+      for (const ss of state.settlementState) {
+        if (!ss || typeof ss.key !== 'string') continue;
+        const sett = this._getSettlementByKey(ss.key);
+        if (!sett) continue;
+        if (typeof ss.economyLevel === 'number') {
+          sett.economyLevel = Math.max(1, Math.min(5, ss.economyLevel));
+        }
+        if (typeof ss.population === 'number') {
+          sett.population = Math.max(0, ss.population);
+        }
+        if (Array.isArray(ss.buildings)) {
+          sett.buildings = ss.buildings
+            .filter(b => b && typeof b.type === 'string')
+            .map(b => new Building(b.type, typeof b.priceMult === 'number' ? b.priceMult : 1));
+        }
+      }
     }
   }
 
