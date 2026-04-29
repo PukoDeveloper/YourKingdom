@@ -434,6 +434,9 @@ export class GameUI {
     this._minimapPanX = 0;
     this._minimapPanY = 0;
 
+    /** Guide overlay page index: -1 = nav/index page, 0..N-1 = chapter index. */
+    this._guidePageIndex = -1;
+
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
 
@@ -732,6 +735,9 @@ export class GameUI {
     // Map item
     this.inventory.addItem({ name: '地圖', type: 'map', icon: '🗺️', quantity: 1,
       stackable: false, description: '記錄王國全域地形的羊皮紙地圖，可查看整片大陸。' });
+    // Guide item
+    this.inventory.addItem({ name: '開國指南', type: 'guide', icon: '📖', quantity: 1,
+      stackable: false, description: '新手必讀的王國建設指南，涵蓋移動操控、背包管理、隊伍建設、城池攻略等完整教程。' });
 
     // Squad 0 – already has the hero; add three more members
     this.army.acquireUnit({ name: '趙一', role: '劍士',   traits: ['重步兵'],           stats: { attack: 8,  defense: 6  } }, 0);
@@ -880,7 +886,25 @@ export class GameUI {
     `;
     document.body.appendChild(minimap);
 
-    // Map building overlay (shown when player presses the map-build button on terrain)
+    // Guide overlay (opened by the 開國指南 guide item)
+    const guide = document.createElement('div');
+    guide.id = 'ui-guide-overlay';
+    guide.innerHTML = `
+      <div id="ui-guide-box">
+        <div id="ui-guide-header">
+          <span id="ui-guide-back" role="button" tabindex="0">← 目錄</span>
+          <span id="ui-guide-title">📖 開國指南</span>
+          <button id="ui-guide-close">✕</button>
+        </div>
+        <div id="ui-guide-body"></div>
+        <div id="ui-guide-footer">
+          <button class="guide-nav-btn" id="ui-guide-prev">← 上一章</button>
+          <span id="ui-guide-page-label"></span>
+          <button class="guide-nav-btn" id="ui-guide-next">下一章 →</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(guide);
     const mapBuildOverlay = document.createElement('div');
     mapBuildOverlay.id = 'map-build-overlay';
     mapBuildOverlay.innerHTML = `
@@ -1035,6 +1059,28 @@ export class GameUI {
       e.preventDefault();
       this._minimapZoomBy(e.deltaY < 0 ? +1 : -1);
     }, { passive: false });
+
+    // Guide overlay – close via backdrop or close button; nav via back/prev/next
+    document.getElementById('ui-guide-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'ui-guide-overlay') this._closeGuide();
+    });
+    document.getElementById('ui-guide-close').addEventListener('click', () => this._closeGuide());
+    const guideBack = document.getElementById('ui-guide-back');
+    guideBack.addEventListener('click', () => this._renderGuide(-1));
+    guideBack.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this._renderGuide(-1); } });
+    document.getElementById('ui-guide-prev').addEventListener('click', () => this._renderGuide(this._guidePageIndex - 1));
+    document.getElementById('ui-guide-next').addEventListener('click', () => this._renderGuide(this._guidePageIndex + 1));
+    // Chapter card clicks delegated on the persistent body element
+    const guideBody = document.getElementById('ui-guide-body');
+    guideBody.addEventListener('click', (e) => {
+      const card = e.target.closest('.guide-chapter-card');
+      if (card) this._renderGuide(Number(card.dataset.chapter));
+    });
+    guideBody.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const card = e.target.closest('.guide-chapter-card');
+      if (card) { e.preventDefault(); this._renderGuide(Number(card.dataset.chapter)); }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1108,6 +1154,7 @@ export class GameUI {
       { id: 'loot',      label: '資源' },
       { id: 'trophy',    label: '戰利品' },
       { id: 'map',       label: '地圖' },
+      { id: 'guide',     label: '指南' },
       { id: 'other',     label: '其他' },
     ];
   }
@@ -1127,7 +1174,7 @@ export class GameUI {
     return {
       weapon: '武器', helmet: '頭盔', chest: '胸甲', legs: '護腿', boots: '靴子',
       accessory: '飾品', food: '糧食', potion: '藥水', utility: '實用',
-      loot: '資源', consumable: '消耗', trophy: '戰利品', map: '地圖',
+      loot: '資源', consumable: '消耗', trophy: '戰利品', map: '地圖', guide: '指南',
     };
   }
 
@@ -1135,7 +1182,7 @@ export class GameUI {
   static get _KNOWN_TYPES() {
     return new Set([
       ...GameUI._EQUIP_TYPES,
-      'accessory', 'food', 'potion', 'consumable', 'utility', 'loot', 'trophy', 'map',
+      'accessory', 'food', 'potion', 'consumable', 'utility', 'loot', 'trophy', 'map', 'guide',
     ]);
   }
 
@@ -1233,7 +1280,8 @@ export class GameUI {
   _openItemDetail(item) {
     const LABEL   = GameUI._TYPE_LABEL;
     const isMap   = item.type === 'map';
-    const usable  = !isMap && ['consumable', 'potion', 'utility'].includes(item.type);
+    const isGuide = item.type === 'guide';
+    const usable  = !isMap && !isGuide && ['consumable', 'potion', 'utility'].includes(item.type);
     const statsKeys = item.stats ? Object.keys(item.stats) : [];
     const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
 
@@ -1266,6 +1314,7 @@ export class GameUI {
       ${statsHTML}
       <div class="id-actions">
         ${isMap   ? `<button class="btn-item-use" data-id="${item.id}">🗺️ 查看地圖</button>` : ''}
+        ${isGuide ? `<button class="btn-item-use" data-id="${item.id}">📖 開啟指南</button>` : ''}
         ${usable  ? `<button class="btn-item-use" data-id="${item.id}">▶ 使用</button>` : ''}
         <button class="btn-item-discard" data-id="${item.id}">🗑 丟棄</button>
       </div>
@@ -1278,6 +1327,11 @@ export class GameUI {
       if (isMap) {
         this._closeItemDetail();
         this._openMinimap();
+        return;
+      }
+      if (isGuide) {
+        this._closeItemDetail();
+        this._openGuide();
         return;
       }
       const desc = this.inventory.useItem(item.id);
@@ -1579,8 +1633,205 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
-  // Settings panel
+  // Guide overlay (開國指南)
   // -------------------------------------------------------------------------
+
+  /** Tutorial chapter definitions. */
+  static get _GUIDE_CHAPTERS() {
+    return [
+      {
+        icon: '🚶',
+        name: '基礎操作',
+        summary: '移動與鏡頭控制',
+        content: `
+          <div class="guide-section">
+            <div class="guide-section-heading">角色移動</div>
+            <p>使用 <span class="guide-key">W</span><span class="guide-key">A</span><span class="guide-key">S</span><span class="guide-key">D</span> 或方向鍵在地圖上移動角色。</p>
+            <p>在行動裝置上，可使用畫面左下角的虛擬搖桿控制移動方向。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">鏡頭控制</div>
+            <p>滑鼠滾輪可縮放鏡頭。畫面右下角顯示當前地形類型。</p>
+            <p>鏡頭會自動跟隨主角，讓你隨時掌握周圍環境。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">地形標示</div>
+            <p>左下角的地形標籤會顯示你目前所在的地形（草原、森林、沙灘、山地等），不同地形對移動速度有所影響。</p>
+          </div>
+          <div class="guide-tip">💡 靠近城堡或村落時，畫面會出現「進入設施」或「進攻」按鈕。</div>
+        `,
+      },
+      {
+        icon: '🎒',
+        name: '背包管理',
+        summary: '物品分類與使用',
+        content: `
+          <div class="guide-section">
+            <div class="guide-section-heading">開啟背包</div>
+            <p>點選畫面右上角的 🎒 按鈕即可開啟背包。物品依類型分為多個分頁：裝備、飾品、糧食、藥水、實用、資源、戰利品、地圖、指南。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">查看與使用物品</div>
+            <p>點選物品列表中的任一項目，可查看其詳細說明與屬性。</p>
+            <p>藥水、糧食等消耗品可點選「使用」按鈕來觸發效果。地圖可開啟全域地圖檢視。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">丟棄物品</div>
+            <p>在物品詳情頁點選「🗑 丟棄」按鈕，可將物品從背包中移除。</p>
+          </div>
+          <div class="guide-tip">💡 同名、同類的物品會自動疊加，節省背包空間。</div>
+        `,
+      },
+      {
+        icon: '⚔️',
+        name: '隊伍管理',
+        summary: '小隊編制與成員',
+        content: `
+          <div class="guide-section">
+            <div class="guide-section-heading">隊伍面板</div>
+            <p>點選 ⚔️ 按鈕可開啟隊伍面板，查看目前所有小隊的成員狀況。</p>
+            <p>你可以管理多支小隊，每支小隊有固定的人員上限。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">隊長制度</div>
+            <p>擁有「隊長」特性的成員可擔任小隊隊長，提升整支小隊的士氣與戰力。</p>
+            <p>派遣擁有策略、重步兵等特性的武將，可獲得額外的戰鬥加成。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">成員詳情</div>
+            <p>點選成員卡片可查看其角色、攻擊、防禦、特性等詳細資訊，並可選擇移除或調換至其他小隊。</p>
+          </div>
+          <div class="guide-tip">💡 在酒館中可招募新的成員加入你的隊伍。</div>
+        `,
+      },
+      {
+        icon: '🏰',
+        name: '建設王國',
+        summary: '攻城略地與建造',
+        content: `
+          <div class="guide-section">
+            <div class="guide-section-heading">攻佔定居點</div>
+            <p>靠近城堡或村落後，點選「⚔ 進攻」按鈕開啟戰前部署，勝利後即可佔領該定居點。</p>
+            <p>佔領定居點後，可在 🏰 王國面板中查看領土資訊及資源收益。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">地圖建造</div>
+            <p>在可建造地形（草原、丘陵等）旁邊，畫面會出現「建造」按鈕。點選後可選擇建造農場、伐木場、礦場等資源設施。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">王國類型</div>
+            <p>初始為「騎士團」，攻佔定居點後可在外觀面板升格為王國、公國、帝國等更強大的政體。</p>
+          </div>
+          <div class="guide-tip">💡 駐守軍隊雖能提升定居點安全，但會降低稅收效率。</div>
+        `,
+      },
+      {
+        icon: '🤝',
+        name: '外交系統',
+        summary: '勢力關係與貿易',
+        content: `
+          <div class="guide-section">
+            <div class="guide-section-heading">勢力關係</div>
+            <p>點選 🏰 按鈕開啟王國面板，可查看與各勢力的外交關係。關係分為：友好、中立、緊張、敵對等等級。</p>
+            <p>不同個性的統治者（傲慢、好戰、溫和、狡猾、謹慎）對外交行動反應各異。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">貿易路線</div>
+            <p>與友好勢力建立貿易路線，每天可獲得固定的金幣收入，是穩定財政的重要手段。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">外交行動</div>
+            <p>在各勢力卡片中可執行送禮、宣戰、求和等外交行動。選擇合適的時機，以最小代價實現擴張目標。</p>
+          </div>
+          <div class="guide-tip">💡 定期查看「關係網」可掌握各勢力之間的動態，從中漁利。</div>
+        `,
+      },
+      {
+        icon: '⚔️',
+        name: '戰鬥指南',
+        summary: '部署、交戰與撤退',
+        content: `
+          <div class="guide-section">
+            <div class="guide-section-heading">戰前部署</div>
+            <p>點選「進攻」後開啟戰前部署面板，勾選要出戰的小隊，確認後進入戰鬥。</p>
+            <p>選擇隊長強、人數多的小隊可大幅提升勝率。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">戰鬥指令</div>
+            <p><strong>⚔ 進攻</strong>：主動出擊，攻擊力加成但防禦降低。<br>
+            <strong>🛡 防守</strong>：加強防禦，適合消耗敵方兵力。<br>
+            <strong>🏃 後退</strong>：嘗試撤退，保存有生力量。</p>
+          </div>
+          <div class="guide-section">
+            <div class="guide-section-heading">勝負判定</div>
+            <p>一方 HP 歸零或選擇後退則戰鬥結束。勝利後可佔領定居點並獲得戰利品；失敗則需重整旗鼓再戰。</p>
+          </div>
+          <div class="guide-tip">💡 攻城前先派「偵察鷹」道具偵察，可事先了解敵方兵力配置。</div>
+        `,
+      },
+    ];
+  }
+
+  _openGuide() {
+    this._renderGuide(-1);
+    document.getElementById('ui-guide-overlay').classList.add('visible');
+  }
+
+  _closeGuide() {
+    document.getElementById('ui-guide-overlay').classList.remove('visible');
+  }
+
+  /**
+   * Render the guide overlay for a given page index.
+   * @param {number} pageIndex  -1 = nav/index page; 0..N-1 = chapter
+   */
+  _renderGuide(pageIndex) {
+    const chapters = GameUI._GUIDE_CHAPTERS;
+    // Clamp to valid range: -1 (nav) or 0..N-1 (chapter)
+    const clamped = Math.max(-1, Math.min(chapters.length - 1, pageIndex));
+    this._guidePageIndex = clamped;
+
+    const isNav = clamped < 0;
+    const backEl   = document.getElementById('ui-guide-back');
+    const titleEl  = document.getElementById('ui-guide-title');
+    const bodyEl   = document.getElementById('ui-guide-body');
+    const footerEl = document.getElementById('ui-guide-footer');
+    const prevBtn  = document.getElementById('ui-guide-prev');
+    const nextBtn  = document.getElementById('ui-guide-next');
+    const pageLabel = document.getElementById('ui-guide-page-label');
+
+    if (isNav) {
+      backEl.style.display = 'none';
+      titleEl.textContent = '📖 開國指南';
+      footerEl.classList.remove('visible');
+
+      bodyEl.innerHTML = `
+        <p class="guide-intro">歡迎來到《你的王國》！本指南將帶你快速掌握遊戲的核心系統，點選下方章節開始閱讀。</p>
+        <div class="guide-chapter-grid">
+          ${chapters.map((ch, i) => `
+            <div class="guide-chapter-card" data-chapter="${i}" role="button" tabindex="0">
+              <span class="guide-chapter-icon">${ch.icon}</span>
+              <span class="guide-chapter-name">${ch.name}</span>
+              <span class="guide-chapter-summary">${ch.summary}</span>
+            </div>`).join('')}
+        </div>
+      `;
+
+    } else {
+      const ch = chapters[clamped];
+      backEl.style.display = '';
+      titleEl.textContent = `${ch.icon} ${ch.name}`;
+      footerEl.classList.add('visible');
+
+      prevBtn.disabled = clamped === 0;
+      nextBtn.disabled = clamped === chapters.length - 1;
+      pageLabel.textContent = `${clamped + 1} / ${chapters.length}`;
+
+      bodyEl.innerHTML = ch.content;
+    }
+
+    bodyEl.scrollTop = 0;
+  }
 
   _renderSettings() {
     const content = document.getElementById('ui-panel-content');
