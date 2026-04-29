@@ -99,6 +99,20 @@ const _GOV_GREETING = {
   chief_house: '哎呀，稀客稀客！快請進，我讓內人沏茶。近來村裡一切都好，有勞掛念。',
 };
 
+/**
+ * Escape a string for safe use inside an HTML attribute value.
+ * @param {string} s
+ * @returns {string}
+ */
+function _escapeAttr(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 /** Player nation ID constant (mirrors NationSystem value). */
 const _PLAYER_NATION_ID_UI = -1;
 
@@ -1313,7 +1327,7 @@ export class GameUI {
       <div class="ap-section">
         <div class="ap-section-title">角色名稱</div>
         <input type="text" id="ap-name-input" class="kp-name-input"
-               value="${playerName.replace(/"/g, '&quot;')}" maxlength="16" placeholder="輸入角色名稱…">
+               value="${_escapeAttr(playerName)}" maxlength="16" placeholder="輸入角色名稱…">
       </div>
       <div class="ap-section">
         <div class="ap-section-title">體型</div>

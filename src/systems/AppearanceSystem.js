@@ -336,8 +336,8 @@ export function charAppearanceFromIndices({ bodyColorIdx, headgearIdx, armorColo
   const hi  = Math.max(0, Math.min(headgearIdx,   CHAR_HEADGEAR_TYPES.length   - 1));
   const ai  = Math.max(0, Math.min(armorColorIdx, CHAR_ARMOR_COLORS.length     - 1));
   const mi  = Math.max(0, Math.min(markColorIdx,  CHAR_MARK_COLORS.length      - 1));
-  const bsi = Math.max(0, Math.min(bodyShapeIdx ?? 0,  CHAR_BODY_SHAPES.length      - 1));
-  const fai = Math.max(0, Math.min(faceAccIdx  ?? 0,  CHAR_FACE_ACCESSORIES.length - 1));
+  const bsi = Math.max(0, Math.min(bodyShapeIdx,  CHAR_BODY_SHAPES.length      - 1));
+  const fai = Math.max(0, Math.min(faceAccIdx,    CHAR_FACE_ACCESSORIES.length - 1));
   return {
     bodyColorIdx:  bi,  bodyColor:  CHAR_BODY_COLORS[bi],  bodyColorCSS:  CHAR_BODY_COLORS_CSS[bi],
     headgearIdx:   hi,  headgear:   CHAR_HEADGEAR_TYPES[hi],
