@@ -5995,14 +5995,22 @@ export class GameUI {
   }
 
   /**
-   * Show or hide the map-build HUD button based on the terrain tile the player
-   * is currently standing on.  Call with (null, null, null) to hide.
-   *
-   * @param {number|null} tx  Tile X
-   * @param {number|null} ty  Tile Y
-   * @param {number|null} terrainType  TERRAIN enum value
+   * Returns true if any player-placed building of `bldgType` exists within
+   * `distance` Chebyshev tiles of (tx, ty).
+   * @param {number} tx
+   * @param {number} ty
+   * @param {string} bldgType
+   * @param {number} [distance=3]
+   * @returns {boolean}
    */
-  setNearbyBuildableTerrain(tx, ty, terrainType) {
+  _hasNearbyBuilding(tx, ty, bldgType, distance = 3) {
+    return this._mapBuildings.some(
+      b => b.type === bldgType &&
+           Math.max(Math.abs(b.tx - tx), Math.abs(b.ty - ty)) <= distance,
+    );
+  }
+
+  /**
     const btn     = document.getElementById('map-build-btn');
     const infoBtn = document.getElementById('map-bldg-info-btn');
     const wrap    = document.getElementById('facility-action-wrap');
@@ -6014,6 +6022,11 @@ export class GameUI {
       [TERRAIN.WATER]:    '🌉 建造橋樑',
     };
 
+    const MAP_BLDG_TYPE_FOR_TERRAIN = {
+      [TERRAIN.FOREST]:   'lumberCamp',
+      [TERRAIN.MOUNTAIN]: 'mine',
+    };
+
     const label = terrainType != null ? MAP_BUILD_LABELS[terrainType] : null;
 
     // Hide info button by default; will be shown when existing building detected.
@@ -6022,6 +6035,7 @@ export class GameUI {
 
     if (!label || tx == null) {
       this._nearbyBuildableTile = null;
+      btn.disabled = false;
       btn.classList.remove('visible');
       // Update wrap visibility to settlement-only
       if (wrap) wrap.classList.toggle('visible', this._nearbySettlement !== null);
@@ -6033,14 +6047,22 @@ export class GameUI {
     if (existing) {
       this._nearbyBuildableTile = null;
       this._nearbyMapBuilding   = existing;
+      btn.disabled = false;
       btn.classList.remove('visible');
       if (infoBtn) infoBtn.classList.add('visible');
       if (wrap) wrap.classList.add('visible');
       return;
     }
 
+    // Check if a same-type building is within 3 tiles.
+    const bldgTypeCheck = MAP_BLDG_TYPE_FOR_TERRAIN[terrainType];
+    const tooClose = bldgTypeCheck != null && this._hasNearbyBuilding(tx, ty, bldgTypeCheck);
+
     this._nearbyBuildableTile = { tx, ty, terrainType };
-    btn.textContent = label;
+    btn.textContent = tooClose
+      ? (terrainType === TERRAIN.FOREST ? '🪵 附近已有伐木場' : '⛏️ 附近已有採礦場')
+      : label;
+    btn.disabled = tooClose;
     btn.classList.add('visible');
     // Ensure the wrap is visible
     if (wrap) wrap.classList.add('visible');
@@ -6063,7 +6085,7 @@ export class GameUI {
         name: '伐木場',
         cost: MAP_BLDG_LUMBER_CAMP_COST,
         goldPerWorker: MAP_BLDG_LUMBER_GOLD,
-        desc: '在森林中建造伐木場。每隔一天自動派遣工人，將木材收益送往距離 10 格以內最近的玩家城市，抵達後存入城市金庫。',
+        desc: '在森林中建造伐木場。每隔一天自動派出一顆資源點，將木材收益送往距離 10 格以內最近的玩家城市，抵達後存入城市金庫。三格內不可重複建造。',
       },
       [TERRAIN.MOUNTAIN]: {
         type: 'mine',
@@ -6071,7 +6093,7 @@ export class GameUI {
         name: '採礦場',
         cost: MAP_BLDG_MINE_COST,
         goldPerWorker: MAP_BLDG_MINE_GOLD,
-        desc: '在山地中建造採礦場。每隔一天自動派遣工人，將礦石收益送往距離 10 格以內最近的玩家城市，抵達後存入城市金庫。',
+        desc: '在山地中建造採礦場。每隔一天自動派出一顆資源點，將礦石收益送往距離 10 格以內最近的玩家城市，抵達後存入城市金庫。三格內不可重複建造。',
       },
       [TERRAIN.WATER]:    {
         type: 'bridge',
@@ -6088,17 +6110,20 @@ export class GameUI {
 
     const gold = this._getGold();
     const canAfford = gold >= info.cost;
+    const tooClose  = info.type !== 'bridge' && this._hasNearbyBuilding(tx, ty, info.type);
+    const canBuild  = canAfford && !tooClose;
 
     document.getElementById('map-build-title').textContent = `${info.icon} 建造${info.name}`;
     document.getElementById('map-build-body').innerHTML = `
       <div class="mb-desc">${info.desc}</div>
+      ${tooClose ? `<div class="mb-warn">⚠️ 三格內已有同類建築，無法建造。</div>` : ''}
       <div class="mb-cost">建造費用：🪙${info.cost}　持有：🪙${gold}</div>
       ${info.goldPerWorker > 0
         ? `<div class="mb-income">每次送達：🪙${info.goldPerWorker}</div>`
         : ''}
       <div class="mb-actions">
-        <button class="btn-buy mb-confirm-btn" id="btn-map-build-confirm" ${canAfford ? '' : 'disabled'}>
-          ${canAfford ? `✅ 建造（🪙${info.cost}）` : '💸 金幣不足'}
+        <button class="btn-buy mb-confirm-btn" id="btn-map-build-confirm" ${canBuild ? '' : 'disabled'}>
+          ${tooClose ? '🚫 距離太近' : canAfford ? `✅ 建造（🪙${info.cost}）` : '💸 金幣不足'}
         </button>
         <button class="mb-cancel-btn" id="btn-map-build-cancel">取消</button>
       </div>
@@ -6181,23 +6206,11 @@ export class GameUI {
       }
     }
 
-    // Worker status
-    const activeWorkers = this._mapBuildingWorkers.filter(w => w.buildingId === bldg.id);
-    let workerStatusHTML = '<span style="color:#9e9e9e">無工人在途</span>';
-    if (activeWorkers.length > 0) {
-      const parts = activeWorkers.map(w => {
-        let phaseLabel;
-        if (w.phase === 'return') {
-          phaseLabel = '返回中 🔙';
-        } else if (w.phase === 'outbound') {
-          phaseLabel = '外出送貨中 🚶';
-        } else {
-          phaseLabel = '待命中';
-        }
-        return `<span>${phaseLabel}</span>`;
-      });
-      workerStatusHTML = parts.join('　');
-    }
+    // Dot status
+    const activeDots = this._mapBuildingWorkers.filter(w => w.buildingId === bldg.id);
+    const workerStatusHTML = activeDots.length > 0
+      ? '<span>資源點送貨中 🔴</span>'
+      : '<span style="color:#9e9e9e">等待派送中</span>';
 
     document.getElementById('map-build-title').textContent = `${meta.icon} ${meta.name} 資訊`;
     document.getElementById('map-build-body').innerHTML = `
@@ -6227,9 +6240,12 @@ export class GameUI {
     }
   }
   _tickMapBuildingWorkers() {
-    // ── Advance spawn tick and spawn workers ──────────────────────────────────
+    // ── Advance spawn tick and spawn dots ─────────────────────────────────────
     for (const bldg of this._mapBuildings) {
-      if (bldg.type === 'bridge') continue; // bridges don't spawn workers
+      if (bldg.type === 'bridge') continue; // bridges don't spawn dots
+      // Only one dot per building at a time.
+      const hasDot = this._mapBuildingWorkers.some(w => w.buildingId === bldg.id);
+      if (hasDot) continue;
       bldg.phaseTick = (bldg.phaseTick ?? 0) + 1;
       if (bldg.phaseTick >= MAP_BLDG_SPAWN_INTERVAL) {
         bldg.phaseTick = 0;
@@ -6237,81 +6253,45 @@ export class GameUI {
       }
     }
 
-    // ── Move workers one step toward their target ────────────────────────────
-    const outboundArrived = [];
-    const returnArrived   = [];
+    // ── Move dots one step toward their target ────────────────────────────────
+    const arrived = [];
 
     for (const w of this._mapBuildingWorkers) {
-      if (w.phase === 'return') {
-        // Heading back to the building tile.
-        const dx = w.homeTx - w.tx;
-        const dy = w.homeTy - w.ty;
-        if (dx === 0 && dy === 0) {
-          returnArrived.push(w);
-        } else if (Math.abs(dx) >= Math.abs(dy)) {
-          w.tx += Math.sign(dx);
-        } else {
-          w.ty += Math.sign(dy);
-        }
-      } else if (w.phase === 'outbound') {
-        // Outbound: heading to target city.
-        const targetSett = this._getSettlementByKey(w.targetKey);
-        if (!targetSett) { outboundArrived.push(w); continue; }
+      const targetSett = this._getSettlementByKey(w.targetKey);
+      if (!targetSett) { arrived.push(w); continue; }
 
-        const center = this._getSettlementCenter(targetSett);
-        const dx = center.tx - w.tx;
-        const dy = center.ty - w.ty;
+      const center = this._getSettlementCenter(targetSett);
+      const dx = center.tx - w.tx;
+      const dy = center.ty - w.ty;
 
-        if (dx === 0 && dy === 0) {
-          outboundArrived.push(w);
-        } else if (Math.abs(dx) >= Math.abs(dy)) {
-          w.tx += Math.sign(dx);
-        } else {
-          w.ty += Math.sign(dy);
-        }
+      if (dx === 0 && dy === 0) {
+        arrived.push(w);
+      } else if (Math.abs(dx) >= Math.abs(dy)) {
+        w.tx += Math.sign(dx);
       } else {
-        // Unknown phase – treat as arrived so the worker is cleaned up.
-        outboundArrived.push(w);
+        w.ty += Math.sign(dy);
       }
     }
 
-    // ── Deliver gold for outbound-arrived workers; start return trip ─────────
-    for (const w of outboundArrived) {
-      if (!w.targetKey) {
-        // No valid city – remove without delivery.
-        const idx = this._mapBuildingWorkers.indexOf(w);
-        if (idx >= 0) this._mapBuildingWorkers.splice(idx, 1);
-        continue;
+    // ── Deliver gold for arrived dots and remove them ─────────────────────────
+    for (const w of arrived) {
+      if (w.targetKey) {
+        const cur = this._regionalTreasury.get(w.targetKey) ?? 0;
+        this._regionalTreasury.set(w.targetKey, cur + w.gold);
+
+        const sett = this._getSettlementByKey(w.targetKey);
+        const bldgLabel = w.type === 'lumberCamp' ? '伐木場' : '採礦場';
+        if (sett) {
+          this._addInboxMessage('💰', `${bldgLabel}資源點抵達 ${sett.name}，獲得 🪙${w.gold}，已存入城市金庫。`);
+        }
       }
-
-      const cur = this._regionalTreasury.get(w.targetKey) ?? 0;
-      this._regionalTreasury.set(w.targetKey, cur + w.gold);
-
-      const sett = this._getSettlementByKey(w.targetKey);
-      const bldgLabel = w.type === 'lumberCamp' ? '伐木場' : '採礦場';
-      if (sett) {
-        this._addInboxMessage('💰', `${bldgLabel}工人抵達 ${sett.name}，帶來 🪙${w.gold}，已存入城市金庫，正返回工地。`);
-      }
-
-      // Switch to return phase – walk back from the city centre toward home.
-      const settObj   = this._getSettlementByKey(w.targetKey);
-      const center    = settObj ? this._getSettlementCenter(settObj) : null;
-      if (center) {
-        w.tx = center.tx;
-        w.ty = center.ty;
-      }
-      w.phase = 'return';
-    }
-
-    // ── Remove workers that completed their return trip ───────────────────────
-    for (const w of returnArrived) {
       const idx = this._mapBuildingWorkers.indexOf(w);
       if (idx >= 0) this._mapBuildingWorkers.splice(idx, 1);
     }
   }
 
   /**
-   * Spawn a resource worker from a map building toward the nearest player-owned
+   * Spawn a resource dot from a map building toward the nearest player-owned
    * settlement within `MAP_BLDG_WORKER_REACH` Manhattan tiles.
    * @param {{ id: number, type: string, tx: number, ty: number }} bldg
    */
@@ -6345,11 +6325,8 @@ export class GameUI {
       type:       bldg.type,
       tx:         bldg.tx,
       ty:         bldg.ty,
-      homeTx:     bldg.tx,
-      homeTy:     bldg.ty,
       targetKey:  bestKey,
       gold,
-      phase:      'outbound',
     });
   }
 
@@ -7957,7 +7934,7 @@ export class GameUI {
     document.getElementById('battle-enemy-hp-bar').style.width  = `${enemyPct}%`;
     document.getElementById('battle-player-hp-bar').style.width = `${playerPct}%`;
     document.getElementById('battle-scene-vs').textContent =
-      `敵 ${enemy.hp}/${enemy.maxHp}  ⚔  我 ${player.hp}/${player.maxHp}`;
+      `敵 ${Math.round(enemy.hp)}/${enemy.maxHp}  ⚔  我 ${Math.round(player.hp)}/${player.maxHp}`;
 
     // Enemy unit row – build DOM structure once, then only toggle btl-fallen classes
     const enemyRowEl  = document.getElementById('battle-enemy-row');
@@ -8125,7 +8102,7 @@ export class GameUI {
       const totalAliveMaxHp = aliveMembers.reduce((sum, m) => sum + m.stats.maxHp, 0);
       aliveMembers.forEach(m => {
         const share = (m.stats.maxHp / totalAliveMaxHp) * enemyDmg;
-        m.stats.hp = Math.max(0, m.stats.hp - share);
+        m.stats.hp = Math.max(0, Math.round(m.stats.hp - share));
       });
     }
     // Sync aggregate HP from individual unit totals.
@@ -8391,10 +8368,10 @@ export class GameUI {
         .filter(w => w && typeof w.type === 'string' && typeof w.tx === 'number' && typeof w.ty === 'number')
         .map(w => ({
           ...w,
-          // Provide defaults for new fields added in the round-trip update.
-          phase:  w.phase  ?? 'outbound',
-          homeTx: w.homeTx ?? w.tx,
-          homeTy: w.homeTy ?? w.ty,
+          // Drop legacy return-phase fields; keep only what the new dot system needs.
+          phase:  undefined,
+          homeTx: undefined,
+          homeTy: undefined,
         }));
     }
     if (typeof state.mapBuildingIdSeq === 'number') {

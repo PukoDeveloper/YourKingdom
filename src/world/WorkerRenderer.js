@@ -113,6 +113,13 @@ export class WorkerRenderer {
   _buildToken(worker) {
     const g = new Graphics();
 
+    // ── Resource dot – tiny plain circle, no shadow ──────────────────────────
+    if (worker.type === 'resource') {
+      const color = TYPE_COLOR.resource;
+      g.circle(0, 0, 3).fill(color).stroke({ color: 0xFFFFFF, width: 1, alpha: 0.9 });
+      return g;
+    }
+
     // ── Drop shadow ──────────────────────────────────────────────────────────
     g.ellipse(0, TOKEN_RADIUS * 0.6, TOKEN_RADIUS + 2, 3)
       .fill({ color: 0x000000, alpha: 0.20 });

@@ -2364,6 +2364,13 @@
         display: none;
       }
       #map-build-btn.visible { display: block; }
+      #map-build-btn:disabled {
+        background: rgba(97,97,97,0.18);
+        border-color: rgba(158,158,158,0.4);
+        color: #9e9e9e;
+        cursor: not-allowed;
+        opacity: 0.75;
+      }
       #map-build-btn:active {
         background: rgba(46,125,50,0.45);
         transform: scale(0.96);
@@ -2455,6 +2462,15 @@
         font-size: 13px;
         color: #a5d6a7;
         margin-bottom: 12px;
+      }
+      #map-build-body .mb-warn {
+        font-size: 13px;
+        color: #ef9a9a;
+        background: rgba(183,28,28,0.15);
+        border: 1px solid rgba(229,57,53,0.35);
+        border-radius: 6px;
+        padding: 6px 10px;
+        margin-bottom: 8px;
       }
       #map-build-body .mb-actions {
         display: flex;
