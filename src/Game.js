@@ -3,6 +3,8 @@ import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
 import { NpcArmyRenderer }  from './world/NpcArmyRenderer.js';
+import { MissiveRenderer }  from './world/MissiveRenderer.js';
+import { WorkerRenderer }   from './world/WorkerRenderer.js';
 import { Player }           from './entities/Player.js';
 import { Camera }           from './Camera.js';
 import { InputManager }     from './controls/InputManager.js';
@@ -103,6 +105,14 @@ export class Game {
     // NPC army marching tokens (above structures, below the player)
     this._npcArmyRenderer = new NpcArmyRenderer(this._nationSystem);
     this._world.addChild(this._npcArmyRenderer.container);
+
+    // Missive (messenger) tokens – same layer as army tokens
+    this._missiveRenderer = new MissiveRenderer();
+    this._world.addChild(this._missiveRenderer.container);
+
+    // Construction worker tokens – same layer as other unit tokens
+    this._workerRenderer = new WorkerRenderer();
+    this._world.addChild(this._workerRenderer.container);
 
     // Player
     this._setLoadingStatus('召喚玩家...');
@@ -304,6 +314,13 @@ export class Game {
           this._gameUI.refreshNationsPanel();
         }
       });
+      // Sync messenger tokens with updated positions.
+      this._missiveRenderer.sync(this._diplomacySystem.getPendingMissives());
+    }
+
+    // Construction worker tokens.
+    if (this._gameUI && this._workerRenderer) {
+      this._workerRenderer.sync(this._gameUI.getConstructionWorkers());
     }
 
     // HUD: terrain name (+ nation when inside a settlement)

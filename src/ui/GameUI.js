@@ -2968,6 +2968,81 @@ export class GameUI {
   }
 
   /**
+   * Return worker objects for all in-progress construction tasks so that
+   * `WorkerRenderer` can draw moving tokens on the world map.
+   *
+   * Each worker object:
+   * ```
+   * {
+   *   id:    string,   // unique identifier (stable within a session)
+   *   type:  'road' | 'demolish' | 'building',
+   *   worldX: number,  // current world-pixel X
+   *   worldY: number,  // current world-pixel Y
+   * }
+   * ```
+   *
+   * Road workers walk from the FROM settlement toward the TO settlement,
+   * reaching the target when hoursLeft reaches zero.
+   * Building workers stay at the settlement centre.
+   *
+   * @returns {Array<{ id: string, type: string, worldX: number, worldY: number }>}
+   */
+  getConstructionWorkers() {
+    const workers  = [];
+    const processed = new Set();
+
+    for (const [key, state] of this._constructionState) {
+      // ── Building workers ────────────────────────────────────────────────────
+      const settlement = this._getSettlementByKey(key);
+      if (settlement && state.buildingQueue.length > 0) {
+        const center = this._getSettlementCenter(settlement);
+        state.buildingQueue.forEach((item, i) => {
+          workers.push({
+            id:     `building:${key}:${i}`,
+            type:   'building',
+            worldX: (center.tx + 0.5) * TILE_SIZE,
+            worldY: (center.ty + 0.5) * TILE_SIZE,
+          });
+        });
+      }
+
+      // ── Road workers ────────────────────────────────────────────────────────
+      for (const [rk, road] of state.roads) {
+        if (processed.has(rk)) continue;   // mirror entry – skip
+        processed.add(rk);
+
+        const [fromKey, toKey] = rk.split('↔');
+        const fromSett = this._getSettlementByKey(fromKey);
+        const toSett   = this._getSettlementByKey(toKey);
+        if (!fromSett || !toSett) continue;
+
+        const fromCenter = this._getSettlementCenter(fromSett);
+        const toCenter   = this._getSettlementCenter(toSett);
+
+        const hoursPerTile = road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE;
+        const totalHours   = road.tilesTotal * hoursPerTile;
+        const progress     = totalHours > 0
+          ? Math.max(0, Math.min(1, 1 - road.hoursLeft / totalHours))
+          : 0;
+
+        const fromX = (fromCenter.tx + 0.5) * TILE_SIZE;
+        const fromY = (fromCenter.ty + 0.5) * TILE_SIZE;
+        const toX   = (toCenter.tx + 0.5) * TILE_SIZE;
+        const toY   = (toCenter.ty + 0.5) * TILE_SIZE;
+
+        workers.push({
+          id:     `road:${rk}`,
+          type:   road.isDemo ? 'demolish' : 'road',
+          worldX: fromX + (toX - fromX) * progress,
+          worldY: fromY + (toY - fromY) * progress,
+        });
+      }
+    }
+
+    return workers;
+  }
+
+  /**
    * Canonical road key for a pair of settlement keys (always smaller key first).
    * @param {string} keyA
    * @param {string} keyB
