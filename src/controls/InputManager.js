@@ -12,11 +12,14 @@ export class InputManager {
     this._joystickY = 0;
 
     this._onKeyDown = (e) => {
+      // Don't intercept keys typed into an input or textarea element
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       this._keys[e.code] = true;
       // Prevent arrow keys from scrolling the page
       if (e.code.startsWith('Arrow')) e.preventDefault();
     };
     this._onKeyUp = (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       this._keys[e.code] = false;
     };
 

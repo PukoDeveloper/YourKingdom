@@ -34,7 +34,11 @@ export class Game {
       autoDensity:     true,
     });
 
-    document.getElementById('game-container').appendChild(this.app.canvas);
+    const canvas = this.app.canvas;
+    document.getElementById('game-container').appendChild(canvas);
+    // Prevent the canvas from stealing focus from UI input elements on mobile.
+    canvas.setAttribute('tabindex', '-1');
+    canvas.style.outline = 'none';
 
     // -----------------------------------------------------------------------
     // Scene graph
