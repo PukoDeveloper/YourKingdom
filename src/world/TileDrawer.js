@@ -109,6 +109,7 @@ export function drawTile(g, localX, localY, terrain) {
       break;
 
     // ------------------------------------------------------------------
+    default:
       g.rect(x, y, T, T).fill(0x1565C0);
   }
 }
