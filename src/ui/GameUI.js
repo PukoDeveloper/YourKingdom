@@ -185,6 +185,12 @@ const CONSTR_ROAD_HOURS_PER_TILE = 3;
 const CONSTR_ROAD_DEMO_HOURS_PER_TILE = 0.5;
 
 /**
+ * Maximum tile radius to search when snapping a settlement centre to the
+ * nearest non-impassable tile (used in _computeRoadPath).
+ */
+const ROAD_SNAP_RADIUS = 8;
+
+/**
  * A* pathfinding traversal cost per terrain type.
  * Lower = preferred route.  WATER and MOUNTAIN are impassable (Infinity).
  */
@@ -5868,7 +5874,7 @@ export class GameUI {
 
     // Snap coordinates to the nearest non-impassable tile.
     const snap = (tx0, ty0) => {
-      for (let r = 0; r <= 8; r++) {
+      for (let r = 0; r <= ROAD_SNAP_RADIUS; r++) {
         for (let dy = -r; dy <= r; dy++) {
           for (let dx = -r; dx <= r; dx++) {
             if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;

@@ -10,7 +10,8 @@ const SPEED              = 200;  // world pixels per second
 const RADIUS             = 12;   // player body radius in world pixels
 const FOREST_SPEED_MULT  = 0.4;  // speed multiplier when inside forest
 const HILL_SPEED_MULT    = 0.65; // speed multiplier when traversing hills
-const ROAD_SPEED_MULT    = 1.25; // speed multiplier bonus when walking on a built road
+const ROAD_SPEED_MULT    = 1.25; // raw multiplier applied to terrain speed when on a road tile
+const ROAD_SPEED_CAP     = 1.2;  // maximum speed multiplier on any road tile (roads are "略快", not super-highways)
 
 /** Default player name used when no saved name is present. */
 const DEFAULT_PLAYER_NAME = '主角';
@@ -119,12 +120,11 @@ export class Player {
         const tx = Math.floor(this.x / TILE_SIZE);
         const ty = Math.floor(this.y / TILE_SIZE);
         if (roadTileSet.has(`${tx},${ty}`)) {
-          // Road: 25 % faster than base terrain speed, capped at 1.2 (roads are
-          // "略快" on grass, hills, and forest – not super-highways).
+          // Road bonus: terrain speed × ROAD_SPEED_MULT, capped at ROAD_SPEED_CAP.
           const base = terrain === TERRAIN.FOREST ? FOREST_SPEED_MULT
                      : terrain === TERRAIN.HILL   ? HILL_SPEED_MULT
                      : 1.0;
-          speedMult = Math.min(1.2, base * ROAD_SPEED_MULT);
+          speedMult = Math.min(ROAD_SPEED_CAP, base * ROAD_SPEED_MULT);
         } else {
           if (terrain === TERRAIN.FOREST) speedMult = FOREST_SPEED_MULT;
           else if (terrain === TERRAIN.HILL) speedMult = HILL_SPEED_MULT;
