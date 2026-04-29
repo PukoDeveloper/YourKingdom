@@ -6183,7 +6183,7 @@ export class GameUI {
 
     const gold = bldg.type === 'lumberCamp' ? MAP_BLDG_LUMBER_GOLD : MAP_BLDG_MINE_GOLD;
     this._mapBuildingWorkers.push({
-      id:         `mbw:${bldg.id}:${Date.now()}`,
+      id:         `mbw:${++this._mapBuildingIdSeq}`,
       buildingId: bldg.id,
       type:       bldg.type,
       tx:         bldg.tx,
