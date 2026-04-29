@@ -6073,21 +6073,32 @@ export class GameUI {
 
     overlay.classList.add('visible');
 
-    document.getElementById('btn-map-build-confirm')?.addEventListener('click', () => {
-      if (this._getGold() < info.cost) { this._toast('💸 金幣不足！'); return; }
-      this._spendGold(info.cost);
-      const id = ++this._mapBuildingIdSeq;
-      this._mapBuildings.push({ id, type: info.type, tx, ty, phaseTick: 0 });
-      this._addInboxMessage(info.icon, `已在地圖 (${tx}, ${ty}) 建造${info.name}！`);
-      if (info.type === 'bridge' && this.onBridgeBuilt) this.onBridgeBuilt();
-      overlay.classList.remove('visible');
-      // Hide the build button since the tile is now occupied
-      this.setNearbyBuildableTerrain(tx, ty, terrainType);
-    });
-
-    document.getElementById('btn-map-build-cancel')?.addEventListener('click', () => {
-      overlay.classList.remove('visible');
-    });
+    // Replace buttons with clones to avoid accumulating duplicate listeners
+    // from repeated opens of the same overlay.
+    const confirmBtn = document.getElementById('btn-map-build-confirm');
+    const cancelBtn  = document.getElementById('btn-map-build-cancel');
+    if (confirmBtn) {
+      const newConfirm = confirmBtn.cloneNode(true);
+      confirmBtn.replaceWith(newConfirm);
+      newConfirm.addEventListener('click', () => {
+        if (this._getGold() < info.cost) { this._toast('💸 金幣不足！'); return; }
+        this._spendGold(info.cost);
+        const id = ++this._mapBuildingIdSeq;
+        this._mapBuildings.push({ id, type: info.type, tx, ty, phaseTick: 0 });
+        this._addInboxMessage(info.icon, `已在地圖 (${tx}, ${ty}) 建造${info.name}！`);
+        if (info.type === 'bridge' && this.onBridgeBuilt) this.onBridgeBuilt();
+        overlay.classList.remove('visible');
+        // Pass null coordinates to properly hide the button (tile is now occupied)
+        this.setNearbyBuildableTerrain(null, null, null);
+      });
+    }
+    if (cancelBtn) {
+      const newCancel = cancelBtn.cloneNode(true);
+      cancelBtn.replaceWith(newCancel);
+      newCancel.addEventListener('click', () => {
+        overlay.classList.remove('visible');
+      });
+    }
   }
 
   /**
