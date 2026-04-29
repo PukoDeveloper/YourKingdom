@@ -3072,8 +3072,204 @@
       }
 
       /* =====================================================================
-         Foreign city-hall diplomacy panel
+         Civic actions section (festival, invest, trade management)
          ===================================================================== */
+      .gov-civic-section {
+        margin-top: 14px;
+        padding: 12px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 10px;
+      }
+      .gov-civic-title {
+        color: rgba(226,201,126,0.85);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        margin-bottom: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .gov-festival-btn,
+      .gov-invest-btn,
+      .gov-trade-route-btn {
+        width: 100%;
+        margin-bottom: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 12px;
+        border-radius: 9px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.15s;
+        touch-action: manipulation;
+      }
+      .gov-festival-btn {
+        background: rgba(233,30,99,0.1);
+        border: 1px solid rgba(233,30,99,0.4);
+        color: #f48fb1;
+      }
+      .gov-festival-btn:hover:not(.disabled):not(:disabled) { background: rgba(233,30,99,0.2); }
+      .gov-invest-btn {
+        background: rgba(129,199,132,0.1);
+        border: 1px solid rgba(129,199,132,0.4);
+        color: #a5d6a7;
+      }
+      .gov-invest-btn:hover:not(.disabled):not(:disabled) { background: rgba(129,199,132,0.2); }
+      .gov-trade-route-btn {
+        background: rgba(100,181,246,0.1);
+        border: 1px solid rgba(100,181,246,0.4);
+        color: #90caf9;
+        margin-bottom: 0;
+      }
+      .gov-trade-route-btn:hover { background: rgba(100,181,246,0.2); }
+      .gov-festival-btn.disabled,
+      .gov-invest-btn.disabled {
+        opacity: 0.4;
+        cursor: default;
+        pointer-events: none;
+      }
+      .gov-civic-cost {
+        font-size: 11px;
+        font-weight: 400;
+        opacity: 0.8;
+      }
+      .gov-civic-cd {
+        font-size: 11px;
+        font-weight: 400;
+        opacity: 0.65;
+      }
+
+      /* =====================================================================
+         Trade route management panel
+         ===================================================================== */
+      .tr-section-title {
+        color: rgba(255,255,255,0.5);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin: 12px 0 6px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .tr-route-list,
+      .tr-candidates {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .tr-empty {
+        color: rgba(255,255,255,0.3);
+        font-size: 12px;
+        padding: 6px 4px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .tr-route-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+      }
+      .tr-route-dest { flex: 1; color: #eee; font-weight: 600; }
+      .tr-route-goods { color: rgba(255,255,255,0.45); font-size: 11px; flex-shrink: 0; }
+      .tr-route-gold  { color: #a5d6a7; flex-shrink: 0; font-size: 12px; }
+      .tr-route-del {
+        background: rgba(229,57,53,0.12);
+        border: 1px solid rgba(229,57,53,0.35);
+        border-radius: 6px;
+        color: #ef9a9a;
+        font-size: 12px;
+        padding: 2px 7px;
+        cursor: pointer;
+        flex-shrink: 0;
+        touch-action: manipulation;
+      }
+      .tr-route-del:hover { background: rgba(229,57,53,0.25); }
+      .tr-cand-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .tr-cand-row.tr-cand-locked { opacity: 0.55; }
+      .tr-cand-type {
+        font-size: 11px;
+        font-weight: 700;
+        flex-shrink: 0;
+        min-width: 28px;
+        text-align: center;
+      }
+      .tr-cand-info { flex: 1; min-width: 0; }
+      .tr-cand-name {
+        color: #eee;
+        font-size: 12px;
+        font-weight: 600;
+        display: block;
+      }
+      .tr-cand-detail {
+        color: rgba(255,255,255,0.4);
+        font-size: 11px;
+        display: block;
+      }
+      .tr-cand-reason {
+        color: #ef9a9a;
+        font-size: 11px;
+        display: block;
+      }
+      .tr-cand-btn {
+        flex-shrink: 0;
+        padding: 5px 10px;
+        border-radius: 7px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        touch-action: manipulation;
+        background: rgba(129,199,132,0.15);
+        border: 1px solid rgba(129,199,132,0.45);
+        color: #81c784;
+        transition: background 0.15s;
+      }
+      .tr-cand-btn:hover:not(.disabled):not(:disabled) { background: rgba(129,199,132,0.28); }
+      .tr-cand-btn.connected {
+        background: rgba(100,181,246,0.1);
+        border-color: rgba(100,181,246,0.35);
+        color: #90caf9;
+        cursor: default;
+      }
+      .tr-cand-btn.disabled,
+      .tr-cand-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+
+      /* Demand resource row in settlement detail overlay */
+      .sd-demand-val { font-size: 13px; }
+      .sd-demand-val.unmet { color: #ef6c00; }
+      .sd-demand-val.met   { color: #66bb6a; }
+      .sd-neutral-reason {
+        color: #ef9a9a;
+        font-size: 11px;
+        margin-top: 5px;
+        padding: 0 2px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .btn-sd-trade.disabled {
+        opacity: 0.4;
+        cursor: default;
+        pointer-events: none;
+      }
       .gov-foreign-diplo-section {
         background: rgba(255,255,255,0.04);
         border: 1px solid rgba(100,181,246,0.2);
