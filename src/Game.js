@@ -111,13 +111,15 @@ export class Game {
     this._mapBuildingRenderer = new MapBuildingRenderer();
     this._world.addChild(this._mapBuildingRenderer.container);
 
+    // Blue build-preview overlay (shown when a buildable tile is detected nearby).
+    this._buildPreviewGraphics = new Graphics();
+    this._world.addChild(this._buildPreviewGraphics);
+
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
     // getPlayerNation is evaluated lazily so _gameUI exists by the time it is called.
     const getPlayerNation = () => this._gameUI?.getPlayerNation() ?? { color: '#e2c97e', flagApp: null };
-    // getBuiltPorts is evaluated lazily so _gameUI exists by the time it is called.
-    const getBuiltPorts = () => this._gameUI?.getBuiltPortTiles() ?? [];
-    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getPlayerNation, getBuiltPorts);
+    this._structureRenderer = new StructureRenderer(this._mapData, this._nationSystem, getPlayerNation);
     this._world.addChild(this._structureRenderer.container);
     this._reportLoading(90);
     await this._yieldFrame();
@@ -244,9 +246,6 @@ export class Game {
 
     // Rebuild map structures whenever the player changes their kingdom flag or name.
     this._gameUI.onPlayerKingdomChanged = () => this._structureRenderer.rebuild();
-
-    // Rebuild map structures whenever the player builds a new port.
-    this._gameUI.onPortBuilt = () => this._structureRenderer.rebuild();
 
     // Rebuild road overlay whenever a road is completed or demolished.
     this._gameUI.onRoadBuilt = () => {
@@ -401,10 +400,8 @@ export class Game {
         this._hudTileY = tileY;
         this._hudHit   = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
 
-        const isPort = t === TERRAIN.PORT_GROUND;
         this._gameUI.setNearbySettlement(
           this._hudHit ? this._hudHit.settlement : null,
-          isPort ? 'port' : null,
         );
 
         let nearbyBuildTile = null;
@@ -419,7 +416,11 @@ export class Game {
             );
             for (const [dx, dy] of sortedOffsets) {
               const adjT = this._mapData.getTerrain(tileX + dx, tileY + dy);
-              if (adjT === TERRAIN.MOUNTAIN || adjT === TERRAIN.WATER) {
+              if (adjT === TERRAIN.MOUNTAIN) {
+                nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
+                break;
+              }
+              if (adjT === TERRAIN.WATER && this._isBridgeableTile(tileX + dx, tileY + dy)) {
                 nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: adjT };
                 break;
               }
@@ -431,6 +432,7 @@ export class Game {
         } else {
           this._gameUI.setNearbyBuildableTerrain(null, null, null);
         }
+        this._updateBuildPreview(nearbyBuildTile);
       }
 
       const hit = this._hudHit;
@@ -452,17 +454,6 @@ export class Game {
           `<span class="hud-region-line">${regionLine}</span>`;
       } else {
         this._terrainLabel.textContent = label;
-      }
-
-      // Grant sea access when the player stands on or adjacent to a player-built port water tile.
-      // (The port marker is on a water tile; the player can only stand on the adjacent land tile.)
-      const playerTile = { tx: tileX, ty: tileY };
-      const builtPorts = this._gameUI.getBuiltPortTiles();
-      const onBuiltPort = builtPorts.some(p =>
-        Math.abs(p.tx - playerTile.tx) + Math.abs(p.ty - playerTile.ty) <= 1,
-      );
-      if (onBuiltPort && !this._player.atSea) {
-        this._player.canEmbark = true;
       }
     }
 
@@ -520,6 +511,39 @@ export class Game {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns true if (tx, ty) is a bridgeable water tile – i.e. both opposite
+   * sides in at least one axis (N+S or E+W) are non-water terrain.
+   * This ensures the bridge connects land to land, not river to river.
+   */
+  _isBridgeableTile(tx, ty) {
+    if (!this._mapData) return false;
+    const isLand = (x, y) => {
+      const t = this._mapData.getTerrain(x, y);
+      return t !== TERRAIN.WATER;
+    };
+    const nsLand = isLand(tx, ty - 1) && isLand(tx, ty + 1);
+    const ewLand = isLand(tx - 1, ty) && isLand(tx + 1, ty);
+    return nsLand || ewLand;
+  }
+
+  /**
+   * Draw or clear the blue placement-preview box on the world.
+   * @param {{ tx: number, ty: number }|null} tile
+   */
+  _updateBuildPreview(tile) {
+    if (!this._buildPreviewGraphics) return;
+    this._buildPreviewGraphics.clear();
+    if (!tile) return;
+    const px = tile.tx * TILE_SIZE;
+    const py = tile.ty * TILE_SIZE;
+    const s  = TILE_SIZE;
+    this._buildPreviewGraphics
+      .rect(px + 2, py + 2, s - 4, s - 4)
+      .fill({ color: 0x2196F3, alpha: 0.22 })
+      .stroke({ color: 0x64B5F6, alpha: 0.9, width: 2 });
+  }
 
   _reportLoading(percent) {
     const bar = document.getElementById('loading-bar');

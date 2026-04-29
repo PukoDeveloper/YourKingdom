@@ -172,9 +172,6 @@ const CONSTR_MAX_BUILDINGS = { castle: 6, village: 4 };
 /** Days required to construct a new building. */
 const CONSTR_BUILDING_DAYS = 10;
 
-/** Port construction gold cost. */
-const CONSTR_PORT_COST = 200;
-
 // ---------------------------------------------------------------------------
 // Map building constants
 // ---------------------------------------------------------------------------
@@ -423,7 +420,7 @@ export class GameUI {
     /** Active appearance panel tab: 'character' | 'kingdom' */
     this._appearanceTab = 'character';
 
-    /** Active construction sub-tab: '建築' | '道路' | '港口' */
+    /** Active construction sub-tab: '建築' | '道路' */
     this._constructionTab = '建築';
 
     /** Currently active minimap layer: 'terrain' | 'territory' */
@@ -541,13 +538,6 @@ export class GameUI {
     this.onPlayerKingdomChanged = null;
 
     /**
-     * Callback invoked when the player builds a port.
-     * The game uses this to rebuild map structures so the port marker is drawn.
-     * @type {(() => void)|null}
-     */
-    this.onPortBuilt = null;
-
-    /**
      * Callback invoked whenever a road is completed or demolished.
      * The game uses this to rebuild the road overlay on the world map.
      * @type {(() => void)|null}
@@ -560,9 +550,7 @@ export class GameUI {
      * Value: {
      *   buildingQueue: [{ type: string, name: string, icon: string, daysLeft: number }],
      *   roads:         Map<roadKey, { targetKey, targetName, tilesTotal, totalHours, hoursLeft, isDemo, path }>,
-     *   builtRoads:    Map<roadKey, { tiles: {tx,ty}[] }>,
-     *   hasPort:       boolean,
-     *   portTile:      { tx: number, ty: number }|null
+     *   builtRoads:    Map<roadKey, { tiles: {tx,ty}[] }>
      * }
      * @type {Map<string, object>}
      */
@@ -885,7 +873,6 @@ export class GameUI {
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#546E7A"></span>山地</div>
           <div class="mm-legend-item mm-legend-icon">🏰 城堡</div>
           <div class="mm-legend-item mm-legend-icon">🏘️ 村落</div>
-          <div class="mm-legend-item mm-legend-icon">⚓ 港口</div>
           <div class="mm-legend-item mm-legend-icon">🌟 玩家位置</div>
         </div>
       </div>
@@ -1504,9 +1491,6 @@ export class GameUI {
     }
     for (const { x, y } of this._mapData.villages) {
       drawIcon(x, y, 2, '🏘️');
-    }
-    for (const { x, y } of this._mapData.ports) {
-      drawIcon(x, y, 1, '⚓');
     }
   }
 
@@ -3558,14 +3542,13 @@ export class GameUI {
    * Shows / hides the "enter facility" floating button accordingly.
    *
    * @param {import('../systems/NationSystem.js').Settlement|null} settlement
-   * @param {'castle'|'village'|'port'|null} [terrainType] Used for ports which have no Settlement object.
    */
-  setNearbySettlement(settlement, terrainType = null) {
+  setNearbySettlement(settlement) {
     const wrap = document.getElementById('facility-action-wrap');
     if (!wrap) return;
 
     const prev = this._nearbySettlement;
-    this._nearbySettlement = settlement ?? (terrainType === 'port' ? { type: 'port', name: '港口' } : null);
+    this._nearbySettlement = settlement ?? null;
 
     // The wrap is visible when either a settlement is nearby OR the map-build button is shown.
     const settlementVisible = this._nearbySettlement !== null;
@@ -3628,7 +3611,7 @@ export class GameUI {
     if (!s) return;
 
     // Header
-    const icons = { castle: '🏰', village: '🏘️', port: '⚓' };
+    const icons = { castle: '🏰', village: '🏘️' };
     document.getElementById('location-icon').textContent = icons[s.type] ?? '🏠';
     document.getElementById('location-title').textContent = s.name;
 
@@ -3640,8 +3623,6 @@ export class GameUI {
       subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
     } else if (s.type === 'village') {
       subtitle = '村落';
-    } else if (s.type === 'port') {
-      subtitle = '沿岸港口';
     }
     document.getElementById('location-subtitle').innerHTML = subtitle;
 
@@ -3708,37 +3689,6 @@ export class GameUI {
   _renderLocationFacilities(settlement) {
     this._facilityView = null;
     const content = document.getElementById('location-content');
-
-    // Port settlements use a minimal hardcoded list (no Building objects).
-    if (settlement.type === 'port') {
-      const portFacilities = [
-        { icon: '⚓', name: '碼頭',   desc: '船運服務\n乘船出行' },
-        { icon: '📦', name: '倉庫',   desc: '存放貨物\n物資管理' },
-        { icon: '🍺', name: '酒館',   desc: '水手常聚\n打聽消息' },
-        { icon: '🏪', name: '雜貨店', desc: '海貨特產\n補給物資' },
-      ];
-      const cards = portFacilities.map((f, i) => `
-        <div class="facility-card" data-port-idx="${i}" role="button" tabindex="0">
-          <div class="fc-icon">${f.icon}</div>
-          <div class="fc-name">${f.name}</div>
-          <div class="fc-desc">${f.desc.replace(/\n/g, '<br>')}</div>
-        </div>`).join('');
-      content.innerHTML = `
-        <div class="loc-facilities-title">港口設施</div>
-        <div class="loc-facilities-grid">${cards}</div>
-      `;
-      content.querySelectorAll('.facility-card[data-port-idx]').forEach(card => {
-        const open = () => {
-          const idx = Number(card.dataset.portIdx);
-          this._toast(`${portFacilities[idx].icon} ${portFacilities[idx].name}：功能開發中…`);
-        };
-        card.addEventListener('click', open);
-        card.addEventListener('keydown', e => {
-          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-        });
-      });
-      return;
-    }
 
     if (!settlement.buildings || settlement.buildings.length === 0) {
       content.innerHTML = '<p class="ui-empty">暫無設施</p>';
@@ -5837,7 +5787,7 @@ export class GameUI {
   /**
    * Return (or create) the construction state object for a settlement.
    * @param {string} key  Settlement key, e.g. "castle:0"
-   * @returns {{ buildingQueue: object[], roads: Map<string,object>, builtRoads: Map<string,{tiles:{tx:number,ty:number}[]}>, hasPort: boolean, portTile: {tx:number,ty:number}|null }}
+   * @returns {{ buildingQueue: object[], roads: Map<string,object>, builtRoads: Map<string,{tiles:{tx:number,ty:number}[]}> }}
    */
   _getConstructionState(key) {
     if (!this._constructionState.has(key)) {
@@ -5845,8 +5795,6 @@ export class GameUI {
         buildingQueue: [],
         roads:         new Map(),
         builtRoads:    new Map(),
-        hasPort:       false,
-        portTile:      null,
       });
     }
     return this._constructionState.get(key);
@@ -5914,21 +5862,6 @@ export class GameUI {
     const a = this._getSettlementCenter(from);
     const b = this._getSettlementCenter(to);
     return Math.abs(a.tx - b.tx) + Math.abs(a.ty - b.ty);
-  }
-
-  /**
-   * Return an array of all player-built port sea-tile positions.
-   * Used by Game.js and StructureRenderer to draw port markers.
-   * @returns {{ tx: number, ty: number }[]}
-   */
-  getBuiltPortTiles() {
-    const result = [];
-    for (const state of this._constructionState.values()) {
-      if (state.hasPort && state.portTile) {
-        result.push(state.portTile);
-      }
-    }
-    return result;
   }
 
   /**
@@ -6048,15 +5981,25 @@ export class GameUI {
       return;
     }
 
-    // If a building already exists on this tile, show an info button instead.
+    // If a building already exists on this tile, show an info button instead
+    // (except for bridges, which don't need an info panel).
     const existing = this._mapBuildings.find(b => b.tx === tx && b.ty === ty);
     if (existing) {
       this._nearbyBuildableTile = null;
-      this._nearbyMapBuilding   = existing;
-      btn.disabled = false;
-      btn.classList.remove('visible');
-      if (infoBtn) infoBtn.classList.add('visible');
-      if (wrap) wrap.classList.add('visible');
+      if (existing.type === 'bridge') {
+        // Bridge already built here – just hide all buttons.
+        this._nearbyMapBuilding = null;
+        btn.disabled = false;
+        btn.classList.remove('visible');
+        if (infoBtn) infoBtn.classList.remove('visible');
+        if (wrap) wrap.classList.toggle('visible', this._nearbySettlement !== null);
+      } else {
+        this._nearbyMapBuilding = existing;
+        btn.disabled = false;
+        btn.classList.remove('visible');
+        if (infoBtn) infoBtn.classList.add('visible');
+        if (wrap) wrap.classList.add('visible');
+      }
       return;
     }
 
@@ -6609,7 +6552,7 @@ export class GameUI {
   // -------------------------------------------------------------------------
 
   /**
-   * Render the main construction panel with three tabs (建築 / 道路 / 港口).
+   * Render the main construction panel with two tabs (建築 / 道路).
    * @param {import('../systems/BuildingSystem.js').Building} building  Government building
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    * @param {boolean} [inCityHall]  When true, render inside #ch-tab-content instead of full screen.
@@ -6619,8 +6562,7 @@ export class GameUI {
     const target = inCityHall ? document.getElementById('ch-tab-content') : document.getElementById('location-content');
     if (!target) return;
 
-    const { coastal } = this._isCoastalSettlement(settlement);
-    const tabs = ['建築', '道路', ...(coastal ? ['港口'] : [])];
+    const tabs = ['建築', '道路'];
     if (!this._constructionTab || !tabs.includes(this._constructionTab)) {
       this._constructionTab = '建築';
     }
@@ -6663,8 +6605,6 @@ export class GameUI {
       this._renderBuildingConstructionTab(building, settlement);
     } else if (this._constructionTab === '道路') {
       this._renderRoadConstructionTab(building, settlement);
-    } else if (this._constructionTab === '港口') {
-      this._renderPortConstructionTab(building, settlement);
     }
   }
 
@@ -7034,63 +6974,6 @@ export class GameUI {
         this._addInboxMessage('🪚', `開始拆除 ${settlement.name} 的道路。`);
         this._renderConstructionPanel(govBuilding, settlement);
       });
-    });
-  }
-
-  // -------------------------------------------------------------------------
-  // Construction – port tab
-  // -------------------------------------------------------------------------
-
-  /**
-   * @param {import('../systems/BuildingSystem.js').Building} govBuilding
-   * @param {import('../systems/NationSystem.js').Settlement} settlement
-   */
-  _renderPortConstructionTab(govBuilding, settlement) {
-    const panel = document.getElementById('constr-tab-content');
-    if (!panel) return;
-
-    const key   = this._settlementKey(settlement);
-    const state = this._getConstructionState(key);
-    const { coastal, tile: portTile } = this._isCoastalSettlement(settlement);
-
-    if (!coastal) {
-      panel.innerHTML = '<div class="constr-empty-note">此地非濱海地區，無法建造港口。</div>';
-      return;
-    }
-
-    if (state.hasPort) {
-      panel.innerHTML = `
-        <div class="constr-port-status built">
-          <span class="cps-icon">⚓</span>
-          <div class="cps-info">
-            <div class="cps-title">港口已建造</div>
-            <div class="cps-desc">玩家可在此出海，返回陸地後需回到此港口方可再次入海。</div>
-          </div>
-        </div>
-      `;
-      return;
-    }
-
-    panel.innerHTML = `
-      <div class="constr-port-status pending">
-        <span class="cps-icon">🚢</span>
-        <div class="cps-info">
-          <div class="cps-title">可建造港口</div>
-          <div class="cps-desc">在濱海地塊自動建造港口，建成後玩家可從此出海。</div>
-          ${this._goldBarHTML()}
-          <button class="btn-buy constr-port-build-btn" id="btn-build-port">⚓ 建造港口（🪙${CONSTR_PORT_COST}）</button>
-        </div>
-      </div>
-    `;
-
-    document.getElementById('btn-build-port')?.addEventListener('click', () => {
-      if (this._getGold() < CONSTR_PORT_COST) { this._toast('💸 金幣不足！'); return; }
-      this._spendGold(CONSTR_PORT_COST);
-      state.hasPort   = true;
-      state.portTile  = portTile;
-      this._addInboxMessage('⚓', `${settlement.name} 港口建造完成！玩家可在此出海。`);
-      if (typeof this.onPortBuilt === 'function') this.onPortBuilt();
-      this._renderConstructionPanel(govBuilding, settlement);
     });
   }
 
@@ -8211,8 +8094,6 @@ export class GameUI {
         buildingQueue: state.buildingQueue,
         roads: [...state.roads.entries()].map(([rk, r]) => ({ roadKey: rk, ...r })),
         builtRoads: [...state.builtRoads.entries()].map(([rk, data]) => ({ roadKey: rk, tiles: data.tiles ?? [] })),
-        hasPort: state.hasPort,
-        portTile: state.portTile,
       });
     }
 
@@ -8322,8 +8203,6 @@ export class GameUI {
             }
             return m;
           })(),
-          hasPort:       entry.hasPort ?? false,
-          portTile:      entry.portTile ?? null,
         });
       }
     }
