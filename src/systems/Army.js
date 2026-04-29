@@ -5,7 +5,31 @@
  */
 
 import { generateCharAppearance, charAppearanceFromIndices } from './AppearanceSystem.js';
-import { generateRandomTraits } from './CharacterSystem.js';
+import { generateRandomTraits, TRAIT_ATHLETE, TRAIT_DEFS } from './CharacterSystem.js';
+
+// ---------------------------------------------------------------------------
+// Move-speed helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic pseudo-random float in [0,1) from a numeric seed.
+ * @param {number} n
+ * @returns {number}
+ */
+function _hashFloat(n) {
+  const s = Math.sin(n * 97.3 + 47.9) * 53421.1273;
+  return Math.abs(s) % 1.0;
+}
+
+/**
+ * Compute a unit's base moveSpeed from its unit id.
+ * Returns a value in [3, 8].
+ * @param {number} id
+ * @returns {number}
+ */
+export function baseMoveSpeed(id) {
+  return 3 + Math.floor(_hashFloat(id * 11.3 + 3.7) * 6);
+}
 
 export const MAX_MEMBERS   = 10;
 export const MAX_SQUADS    = 3;
@@ -33,6 +57,15 @@ export class Unit {
     this.role   = role;
     this.traits = [...traits];
     this.stats = { attack: 5, defense: 5, morale: 50, ...stats };
+    // Ensure moveSpeed is always present.  If not in the persisted snapshot,
+    // derive it deterministically from the unit id so it's stable across reloads.
+    if (this.stats.moveSpeed === undefined) {
+      this.stats.moveSpeed = baseMoveSpeed(this.id);
+      // 天生運動員 trait grants +2 base moveSpeed on top of the random value.
+      if (this.traits.includes(TRAIT_ATHLETE)) {
+        this.stats.moveSpeed += TRAIT_DEFS[TRAIT_ATHLETE]?.moveSpeedBonus ?? 2;
+      }
+    }
     // HP derived from defense if not explicitly saved.
     if (this.stats.maxHp === undefined) {
       this.stats.maxHp = 50 + this.stats.defense * 5;

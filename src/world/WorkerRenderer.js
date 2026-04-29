@@ -12,11 +12,13 @@ const TOKEN_RADIUS = 7;
  * 'building' = warm brown (builder)
  * 'road'     = sandy tan (road crew)
  * 'demolish' = slate gray (demolition crew)
+ * 'trade'    = teal (trade caravan)
  */
 const TYPE_COLOR = {
   building: 0x8D6E63, // warm brown
   road:     0xBCAAA4, // sandy tan
   demolish: 0x90A4AE, // slate blue-gray
+  trade:    0x26C6DA, // teal – trade caravan
 };
 
 const DEFAULT_COLOR = 0xA0A0A0;
@@ -102,11 +104,14 @@ export class WorkerRenderer {
    * Build a single worker-token Graphics object for `worker`.
    * The token is centred at (0, 0); `sync` positions it via `.x / .y`.
    *
-   * @param {{ id: string, type: string }} worker
+   * @param {{ id: string, type: string, bodyColor?: number|null }} worker
    * @returns {Graphics}
    */
   _buildToken(worker) {
-    const color = TYPE_COLOR[worker.type] ?? DEFAULT_COLOR;
+    // Use the unit's body color when available, otherwise fall back to type default.
+    const color = (worker.bodyColor != null ? worker.bodyColor : null)
+      ?? TYPE_COLOR[worker.type]
+      ?? DEFAULT_COLOR;
     const g = new Graphics();
 
     // ── Drop shadow ──────────────────────────────────────────────────────────
@@ -141,6 +146,11 @@ export class WorkerRenderer {
         .stroke({ color: 0xFFFFFF, width: 2, alpha: 1 });
       g.moveTo(r, -r).lineTo(-r, r)
         .stroke({ color: 0xFFFFFF, width: 2, alpha: 1 });
+    } else if (worker.type === 'trade') {
+      // ── Cart / bag symbol: small diamond ─────────────────────────────────
+      const r = TOKEN_RADIUS * 0.45;
+      g.moveTo(0, -r).lineTo(r, 0).lineTo(0, r).lineTo(-r, 0).closePath()
+        .fill(0xFFFFFF);
     }
 
     return g;

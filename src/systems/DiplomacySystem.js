@@ -16,7 +16,7 @@
 import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, TERRAIN } from '../world/constants.js';
 import { BuildingSystem, BLDG_TAVERN } from './BuildingSystem.js';
 import { buildPath } from '../world/NpcPathfinder.js';
-import { getSpeedBonus } from './CharacterSystem.js';
+import { getSpeedBonus, getUnitMoveSpeed } from './CharacterSystem.js';
 
 // ---------------------------------------------------------------------------
 // NPC AI constants
@@ -1069,10 +1069,12 @@ export class DiplomacySystem {
 
       // How many world-pixels can the army travel this frame?
       // Apply 天生運動員 speed bonus if the attacker's castle ruler has the trait.
-      const attackerRuler = this.nationSystem?.castleSettlements?.[march.attackerCastleIdx]?.ruler ?? null;
+      // Also apply moveSpeed stat bonus (each point above 5 = +5% speed).
+      const attackerRuler  = this.nationSystem?.castleSettlements?.[march.attackerCastleIdx]?.ruler ?? null;
       const traitSpeedMult = 1.0 + getSpeedBonus(attackerRuler);
+      const moveSpeedBonus = (getUnitMoveSpeed(attackerRuler) - 5) / 20; // ±25% range
       const speedMult  = _marchSpeedMult(mapData, march.worldX, march.worldY);
-      let   remaining  = NPC_MARCH_SPEED_PX * speedMult * traitSpeedMult * dt;
+      let   remaining  = NPC_MARCH_SPEED_PX * speedMult * traitSpeedMult * (1.0 + moveSpeedBonus) * dt;
 
       // Consume `remaining` pixels by stepping along waypoints.
       while (remaining > 0 && march._pathSegIdx < path.length - 1) {

@@ -105,10 +105,12 @@ export const TRAIT_DEFS = {
   },
   [TRAIT_ATHLETE]:    {
     label: '天生運動員', icon: '🏃',
-    description: '擔任隊伍領頭或管理貿易路線時，速度/效率提升 25%。',
-    context: ['squad_leader', 'trade_route'],
-    speedBonus: 0.25,
-    tradeBonus: 0.25,
+    description: '移動速度提升，擔任隊伍領頭、管理貿易路線或參與工程建設時效率 +25%；基礎移動速度 +2。',
+    context: ['squad_leader', 'trade_route', 'construction'],
+    speedBonus:      0.25,
+    tradeBonus:      0.25,
+    constructBonus:  0.25,
+    moveSpeedBonus:  2,
   },
   [TRAIT_METICULOUS]: {
     label: '一絲不苟', icon: '📋',
@@ -307,6 +309,32 @@ export function getRelationBonus(unit) {
     ? (TRAIT_DEFS[TRAIT_DIPLOMAT].relationBonus ?? 0)
     : 0;
 }
+
+/**
+ * Get the construction speed bonus when this unit works on a building or road.
+ * Multiplier to add to 1.0 (e.g. 0.25 = 25% faster).
+ * @param {import('./Army.js').Unit|null} unit
+ * @returns {number}
+ */
+export function getConstructBonus(unit) {
+  if (!unit) return 0;
+  return unit.traits.includes(TRAIT_ATHLETE)
+    ? (TRAIT_DEFS[TRAIT_ATHLETE].constructBonus ?? 0)
+    : 0;
+}
+
+/**
+ * Return the effective total movement speed value for a unit.
+ * Base comes from unit.stats.moveSpeed; 天生運動員 adds a bonus if not already
+ * baked into the stat (safe to call regardless).
+ * @param {import('./Army.js').Unit|null} unit
+ * @returns {number}
+ */
+export function getUnitMoveSpeed(unit) {
+  if (!unit) return 5;
+  return unit.stats?.moveSpeed ?? 5;
+}
+
 
 /**
  * Return a HTML string listing all traits of a unit with colour-coded badges.

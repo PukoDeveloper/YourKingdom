@@ -41,6 +41,8 @@ import {
   TRAIT_DEFS,
   getTaxBonus,
   getTradeBonus,
+  getConstructBonus,
+  getUnitMoveSpeed,
   renderTraitBadgesHTML,
 } from '../systems/CharacterSystem.js';
 
@@ -439,6 +441,23 @@ export class GameUI {
      * @type {Map<string, number>}
      */
     this._assignedRulers = new Map();
+
+    /**
+     * Workers assigned to each trade route (exactly 2 required for income).
+     * Key: routeId (e.g. "castle:0→village:2").
+     * Value: array of unit IDs (max 2).
+     * @type {Map<string, number[]>}
+     */
+    this._tradeRouteWorkers = new Map();
+
+    /**
+     * Workers assigned to construction for each player settlement (max 3).
+     * Key: settlementKey (e.g. "castle:0").
+     * Value: array of unit IDs (max 3).
+     * Each worker drives one simultaneous construction slot.
+     * @type {Map<string, number[]>}
+     */
+    this._buildingWorkers = new Map();
 
     if (savedState) {
       this.loadState(savedState);
@@ -2590,6 +2609,8 @@ export class GameUI {
     }
 
     // Trade-route income: collect gold from each active trade route.
+    // Requires 2 assigned workers; income is zero without them.
+    // Workers with 天生運動員 apply a trade bonus.
     if (this._tradeRoutes.size > 0) {
       let totalTradeGold = 0;
       const brokenRoutes = [];
@@ -2621,9 +2642,12 @@ export class GameUI {
             continue;
           }
         }
-        // Apply 天生運動員 trade bonus from the from-settlement's effective ruler
-        const fromRuler    = this._getEffectiveRuler(fromSett);
-        const tradeBonus   = getTradeBonus(fromRuler);
+        // Require exactly 2 workers assigned to generate income
+        const workers = this._getRouteWorkerUnits(routeId);
+        if (workers.length < 2) continue; // no income without 2 workers
+
+        // Trade bonus: each worker with 天生運動員 contributes
+        const tradeBonus = workers.reduce((sum, u) => sum + getTradeBonus(u), 0);
         const routeIncome  = Math.round(route.dailyGold * (1.0 + tradeBonus));
         totalTradeGold += routeIncome;
       }
@@ -2631,17 +2655,26 @@ export class GameUI {
         this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: totalTradeGold });
       }
       brokenRoutes.forEach(({ routeId, name }) => {
+        this._tradeRouteWorkers.delete(routeId);
         this._tradeRoutes.delete(routeId);
         this._addInboxMessage('🛤', `貿易路線 ${name} 已中斷。`);
       });
     }
 
     // Tick building construction queues for every settlement.
+    // Each assigned worker drives one simultaneous construction slot.
+    // Workers with 天生運動員 reduce daysLeft by 2 instead of 1.
+    // Without assigned workers, construction does not progress.
     for (const [key, state] of this._constructionState) {
       if (state.buildingQueue.length === 0) continue;
+      const workers  = this._getBuildingWorkerUnits(key);
+      const slots    = Math.min(workers.length, state.buildingQueue.length);
+      if (slots === 0) continue; // no workers – construction paused
       const toComplete = [];
-      for (const item of state.buildingQueue) {
-        item.daysLeft -= 1;
+      for (let wi = 0; wi < slots; wi++) {
+        const item       = state.buildingQueue[wi];
+        const reduction  = 1 + Math.round(getConstructBonus(workers[wi]));
+        item.daysLeft   -= reduction;
         if (item.daysLeft <= 0) toComplete.push(item);
       }
       for (const item of toComplete) {
@@ -2657,6 +2690,16 @@ export class GameUI {
           }
           this._addInboxMessage('🏗️', `${settlement.name} 的 ${item.icon} ${item.name} 建造完成！`);
         }
+      }
+    }
+
+    // Sweep player-assigned rulers: if a settlement is no longer player-owned,
+    // free the assigned ruler and notify the player.
+    for (const [key] of [...this._assignedRulers]) {
+      const sett = this._getSettlementByKey(key);
+      if (sett && sett.controllingNationId !== PLAYER_NATION_ID) {
+        this._assignedRulers.delete(key);
+        this._addInboxMessage('👑', `${sett.name} 失守，指派的統治者已撤離！`);
       }
     }
 
@@ -2871,6 +2914,7 @@ export class GameUI {
         <div class="ud-stat"><span class="ud-stat-label">攻擊</span><span class="ud-stat-val">${unit.stats.attack}</span></div>
         <div class="ud-stat"><span class="ud-stat-label">防禦</span><span class="ud-stat-val">${unit.stats.defense}</span></div>
         <div class="ud-stat"><span class="ud-stat-label">士氣</span><span class="ud-stat-val">${unit.stats.morale}</span></div>
+        <div class="ud-stat"><span class="ud-stat-label">速度</span><span class="ud-stat-val">${unit.stats.moveSpeed ?? 5}</span></div>
       </div>
       ${captainBtn ? `<div class="ud-actions">${captainBtn}</div>` : ''}
       ${!isHero ? `
@@ -4004,8 +4048,186 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
-  // Foreign city-hall diplomacy UI
+  // Worker assignment helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Return the (up to 2) live unit objects assigned to a trade route.
+   * Stale unit IDs (unit no longer in army) are automatically pruned.
+   * @param {string} routeId
+   * @returns {import('../systems/Army.js').Unit[]}
+   */
+  _getRouteWorkerUnits(routeId) {
+    const ids = this._tradeRouteWorkers.get(routeId) ?? [];
+    const live = ids.map(id => this._findUnitById(id)).filter(Boolean);
+    if (live.length !== ids.length) {
+      this._tradeRouteWorkers.set(routeId, live.map(u => u.id));
+    }
+    return live;
+  }
+
+  /**
+   * Return the (up to 3) live unit objects assigned to construction for a settlement key.
+   * Stale unit IDs are automatically pruned.
+   * @param {string} settKey
+   * @returns {import('../systems/Army.js').Unit[]}
+   */
+  _getBuildingWorkerUnits(settKey) {
+    const ids = this._buildingWorkers.get(settKey) ?? [];
+    const live = ids.map(id => this._findUnitById(id)).filter(Boolean);
+    if (live.length !== ids.length) {
+      this._buildingWorkers.set(settKey, live.map(u => u.id));
+    }
+    return live;
+  }
+
+  /**
+   * Return a set of all unit IDs that are currently assigned to any role
+   * (ruler, trade route worker, building worker) for quick conflict checking.
+   * @returns {Set<number>}
+   */
+  _getAllAssignedUnitIds() {
+    const ids = new Set();
+    for (const id of this._assignedRulers.values()) ids.add(id);
+    for (const arr of this._tradeRouteWorkers.values()) arr.forEach(id => ids.add(id));
+    for (const arr of this._buildingWorkers.values()) arr.forEach(id => ids.add(id));
+    return ids;
+  }
+
+  /**
+   * Return caravan position objects for active trade routes that have 2 workers.
+   * Caravans oscillate between origin and destination over a 60-second cycle.
+   *
+   * @returns {Array<{ id: string, type: string, worldX: number, worldY: number,
+   *                   workerUnits: import('../systems/Army.js').Unit[] }>}
+   */
+  getTradeCaravans() {
+    const caravans = [];
+    const now = Date.now();
+    for (const [routeId, route] of this._tradeRoutes) {
+      if (!route.fromKey || !route.toKey) continue;
+      const workers = this._getRouteWorkerUnits(routeId);
+      if (workers.length < 2) continue; // only render active (staffed) routes
+
+      const fromSett = this._getSettlementByKey(route.fromKey);
+      const toSett   = this._getSettlementByKey(route.toKey);
+      if (!fromSett || !toSett) continue;
+
+      const fromCenter = this._getSettlementCenter(fromSett);
+      const toCenter   = this._getSettlementCenter(toSett);
+
+      const fromX = (fromCenter.tx + 0.5) * TILE_SIZE;
+      const fromY = (fromCenter.ty + 0.5) * TILE_SIZE;
+      const toX   = (toCenter.tx + 0.5) * TILE_SIZE;
+      const toY   = (toCenter.ty + 0.5) * TILE_SIZE;
+
+      // Oscillate back and forth; cycle length: 60 s
+      const CYCLE_MS = 60_000;
+      const cyclePos = (now % CYCLE_MS) / CYCLE_MS; // 0..1
+      // Triangle wave: 0→1→0
+      const t = cyclePos < 0.5 ? cyclePos * 2 : (1 - cyclePos) * 2;
+      // Speed bonus from 天生運動員 workers shortens effective cycle
+      const speedMult = 1.0 + workers.reduce((s, u) => s + (getUnitMoveSpeed(u) - 5) / 20, 0);
+      const adjT = Math.min(1, t * speedMult);
+
+      caravans.push({
+        id:          `caravan:${routeId}`,
+        type:        'trade',
+        worldX:      fromX + (toX - fromX) * adjT,
+        worldY:      fromY + (toY - fromY) * adjT,
+        workerUnits: workers,
+        // Pass representative unit (first worker) body color for renderer
+        bodyColor:   workers[0].appearance?.bodyColor ?? 0x4fc3f7,
+      });
+    }
+    return caravans;
+  }
+
+
+
+  /**
+   * Open an inline worker-assignment panel.
+   *
+   * @param {'trade'|'building'} context   What type of assignment
+   * @param {string}             entityKey  routeId or settlementKey
+   * @param {number}             maxSlots   Max workers (2 for trade, 3 for building)
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   * @param {()=>void}           onBack     Callback when done / back button pressed
+   */
+  _openAssignWorkerPanel(context, entityKey, maxSlots, building, settlement, onBack) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const currentMap  = context === 'trade' ? this._tradeRouteWorkers : this._buildingWorkers;
+    const currentIds  = currentMap.get(entityKey) ?? [];
+    const assignedAll = this._getAllAssignedUnitIds();
+
+    // All army members across squads (including hero)
+    const allUnits = [];
+    for (const squad of this.army.getSquads()) {
+      for (const m of squad.members) allUnits.push(m);
+    }
+
+    const contextLabel = context === 'trade'
+      ? '貿易路線（需 2 人）'
+      : '工程建設（最多 3 人）';
+
+    const unitRows = allUnits.map(unit => {
+      const isAssignedHere = currentIds.includes(unit.id);
+      const isAssignedElse = !isAssignedHere && assignedAll.has(unit.id);
+      const traitBadges    = renderTraitBadgesHTML(unit.traits.slice(0, 3), PERSONALITY_COLORS);
+      const isFull         = currentIds.length >= maxSlots && !isAssignedHere;
+      const canAssign      = !isAssignedElse && !isFull;
+
+      const bonus = context === 'trade'
+        ? (getTradeBonus(unit) > 0 ? `🛤 +${Math.round(getTradeBonus(unit) * 100)}%` : '')
+        : (getConstructBonus(unit) > 0 ? `🏗 +${Math.round(getConstructBonus(unit) * 100)}%` : '');
+
+      return `
+        <div class="assign-worker-row${isAssignedHere ? ' assigned-here' : ''}${isAssignedElse ? ' assigned-elsewhere' : ''}">
+          <span class="awr-name">${unit.name}</span>
+          <span class="awr-speed">🏃${unit.stats?.moveSpeed ?? 5}</span>
+          <span class="awr-traits">${traitBadges}</span>
+          ${bonus ? `<span class="awr-bonus">${bonus}</span>` : ''}
+          ${isAssignedElse ? '<span class="awr-conflict">已指派他處</span>' : ''}
+          ${isAssignedHere
+            ? `<button class="btn-buy awr-remove" data-unit-id="${unit.id}">解除</button>`
+            : `<button class="btn-buy awr-assign${!canAssign ? ' disabled' : ''}" data-unit-id="${unit.id}"
+               ${!canAssign ? 'disabled' : ''}>指派</button>`
+          }
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="aw-back">← 返回</button>
+      <div class="fac-title">👷 指派人員：${contextLabel}</div>
+      <div class="assign-worker-list">${unitRows}</div>
+    `;
+
+    document.getElementById('aw-back')?.addEventListener('click', onBack);
+
+    content.querySelectorAll('.awr-assign:not(.disabled)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const ids    = [...(currentMap.get(entityKey) ?? [])];
+        if (ids.length < maxSlots && !ids.includes(unitId)) {
+          ids.push(unitId);
+          currentMap.set(entityKey, ids);
+        }
+        onBack();
+      });
+    });
+
+    content.querySelectorAll('.awr-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const ids    = (currentMap.get(entityKey) ?? []).filter(id => id !== unitId);
+        currentMap.set(entityKey, ids);
+        this._openAssignWorkerPanel(context, entityKey, maxSlots, building, settlement, onBack);
+      });
+    });
+  }
 
   /**
    * Render the diplomatic proposal panel inside a foreign nation's government
@@ -4102,7 +4324,8 @@ export class GameUI {
 
   /**
    * Show the trade route management screen for a player-owned settlement.
-   * Lists existing routes and lets the player add new ones.
+   * Lists existing routes (with 2-worker assignment UI) and lets the player
+   * add new ones.
    * @param {import('../systems/BuildingSystem.js').Building} building
    * @param {import('../systems/NationSystem.js').Settlement} settlement  Player-owned.
    */
@@ -4118,14 +4341,47 @@ export class GameUI {
       .filter(([, r]) => r.fromKey === fromKey)
       .map(([id, r]) => ({ id, ...r }));
 
+    // Helper: render the 2-slot worker assignment row for a route
+    const renderRouteWorkerSlots = (routeId) => {
+      const workers = this._getRouteWorkerUnits(routeId);
+      const slots = [0, 1].map(i => {
+        const unit = workers[i];
+        if (unit) {
+          return `<span class="tr-worker-slot tr-worker-filled" data-route-id="${routeId}" data-slot="${i}" title="點擊解除">
+            ${renderTraitBadgesHTML(unit.traits.slice(0, 1), PERSONALITY_COLORS)}
+            ${unit.name} <span class="tr-worker-speed">🏃${unit.stats?.moveSpeed ?? 5}</span>
+            <button class="tr-worker-remove" data-route-id="${routeId}" data-unit-id="${unit.id}">✕</button>
+          </span>`;
+        }
+        return `<span class="tr-worker-slot tr-worker-empty" data-route-id="${routeId}" data-slot="${i}">空位 ${i + 1}</span>`;
+      });
+      const active = workers.length >= 2;
+      return `<div class="tr-route-workers">
+        <span class="tr-workers-label">👤 工作人員 ${active ? '<span class="tr-active-badge">運作中</span>' : '<span class="tr-inactive-badge">需 2 人</span>'}</span>
+        ${slots.join('')}
+        ${workers.length < 2 ? `<button class="btn-buy tr-assign-worker-btn" data-route-id="${routeId}">指派</button>` : ''}
+      </div>`;
+    };
+
     const existingHTML = myRoutes.length > 0
-      ? myRoutes.map(r => `
-          <div class="tr-route-row">
-            <span class="tr-route-dest">${r.toName}</span>
-            <span class="tr-route-goods">${(r.resources ?? []).join('、') || '—'}</span>
-            <span class="tr-route-gold">+${r.dailyGold} 🪙/日</span>
-            <button class="tr-route-del" data-route-id="${r.id}" title="取消路線">✕</button>
-          </div>`).join('')
+      ? myRoutes.map(r => {
+          const workers = this._getRouteWorkerUnits(r.id);
+          const bonus   = workers.reduce((s, u) => s + getTradeBonus(u), 0);
+          const effectiveGold = Math.round(r.dailyGold * (1 + bonus));
+          return `
+          <div class="tr-route-card">
+            <div class="tr-route-row">
+              <span class="tr-route-dest">${r.toName}</span>
+              <span class="tr-route-goods">${(r.resources ?? []).join('、') || '—'}</span>
+              <span class="tr-route-gold">
+                +${r.dailyGold} 🪙/日
+                ${bonus > 0 ? `<span style="color:#42a5f5">(實得 ${effectiveGold})</span>` : ''}
+              </span>
+              <button class="tr-route-del" data-route-id="${r.id}" title="取消路線">✕</button>
+            </div>
+            ${renderRouteWorkerSlots(r.id)}
+          </div>`;
+        }).join('')
       : '<div class="tr-empty">尚無對外貿易路線</div>';
 
     // All other settlements as potential destinations
@@ -4186,6 +4442,7 @@ export class GameUI {
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">🛤 貿易路線管理</div>
+      <div class="tr-worker-note">⚠ 每條路線需指派 2 名人員方可產生收益。</div>
       <div class="tr-section-title">現有路線</div>
       <div class="tr-route-list">${existingHTML}</div>
       <div class="tr-section-title">可建立路線</div>
@@ -4200,9 +4457,30 @@ export class GameUI {
         const routeId = btn.dataset.routeId;
         const route   = this._tradeRoutes.get(routeId);
         if (!route) return;
+        this._tradeRouteWorkers.delete(routeId);
         this._tradeRoutes.delete(routeId);
         this._addInboxMessage('🛤', `已取消 ${route.fromName} → ${route.toName} 的貿易路線。`);
         this._renderTradeRoutePanel(building, settlement);
+      });
+    });
+
+    // Remove worker from route
+    content.querySelectorAll('.tr-worker-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const routeId = btn.dataset.routeId;
+        const unitId  = Number(btn.dataset.unitId);
+        const ids = this._tradeRouteWorkers.get(routeId) ?? [];
+        this._tradeRouteWorkers.set(routeId, ids.filter(id => id !== unitId));
+        this._renderTradeRoutePanel(building, settlement);
+      });
+    });
+
+    // Assign workers to routes
+    content.querySelectorAll('.tr-assign-worker-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const routeId = btn.dataset.routeId;
+        this._openAssignWorkerPanel('trade', routeId, 2, building, settlement,
+          () => this._renderTradeRoutePanel(building, settlement));
       });
     });
 
@@ -4502,16 +4780,23 @@ export class GameUI {
     for (const [key, state] of this._constructionState) {
       // ── Building workers ────────────────────────────────────────────────────
       const settlement = this._getSettlementByKey(key);
+      const assignedBuildWorkers = this._getBuildingWorkerUnits(key);
       if (settlement && state.buildingQueue.length > 0) {
         const center = this._getSettlementCenter(settlement);
-        state.buildingQueue.forEach((item, i) => {
+        // Only emit tokens for queue slots that have a worker driving them.
+        const slots = Math.min(assignedBuildWorkers.length, state.buildingQueue.length);
+        for (let wi = 0; wi < Math.max(slots, state.buildingQueue.length); wi++) {
+          const unit = assignedBuildWorkers[wi];
           workers.push({
-            id:     `building:${key}:${i}`,
-            type:   'building',
-            worldX: (center.tx + 0.5) * TILE_SIZE,
-            worldY: (center.ty + 0.5) * TILE_SIZE,
+            id:        `building:${key}:${wi}`,
+            type:      'building',
+            worldX:    (center.tx + 0.5) * TILE_SIZE,
+            worldY:    (center.ty + 0.5) * TILE_SIZE,
+            // Include unit appearance so renderer can show the character's color
+            bodyColor: unit?.appearance?.bodyColor ?? null,
+            unitId:    unit?.id ?? null,
           });
-        });
+        }
       }
 
       // ── Road workers ────────────────────────────────────────────────────────
@@ -4538,11 +4823,17 @@ export class GameUI {
         const toX   = (toCenter.tx + 0.5) * TILE_SIZE;
         const toY   = (toCenter.ty + 0.5) * TILE_SIZE;
 
+        // Use the road-construction workers from the origin settlement.
+        const roadWorkers = this._getBuildingWorkerUnits(fromKey);
+        const repUnit     = roadWorkers[0];
+
         workers.push({
-          id:     `road:${rk}`,
-          type:   road.isDemo ? 'demolish' : 'road',
-          worldX: fromX + (toX - fromX) * progress,
-          worldY: fromY + (toY - fromY) * progress,
+          id:        `road:${rk}`,
+          type:      road.isDemo ? 'demolish' : 'road',
+          worldX:    fromX + (toX - fromX) * progress,
+          worldY:    fromY + (toY - fromY) * progress,
+          bodyColor: repUnit?.appearance?.bodyColor ?? null,
+          unitId:    repUnit?.id ?? null,
         });
       }
     }
@@ -4631,17 +4922,41 @@ export class GameUI {
     const usedSlots = (settlement.buildings?.length ?? 0) + state.buildingQueue.length;
     const freeSlots = maxSlots - usedSlots;
 
+    // Assigned construction workers (max 3)
+    const assignedWorkers = this._getBuildingWorkerUnits(key);
+    const workerSlotsHTML = [0, 1, 2].map(i => {
+      const unit = assignedWorkers[i];
+      if (unit) {
+        const bonus = getConstructBonus(unit);
+        return `<span class="cw-slot cw-filled">
+          ${unit.name} 🏃${unit.stats?.moveSpeed ?? 5}
+          ${bonus > 0 ? `<span style="color:#66bb6a">×${(1 + bonus).toFixed(2)}</span>` : ''}
+          <button class="cw-remove" data-unit-id="${unit.id}">✕</button>
+        </span>`;
+      }
+      return `<span class="cw-slot cw-empty">工位 ${i + 1}</span>`;
+    }).join('');
+
+    const activeWorkers = assignedWorkers.length;
+    const simultaneousNote = activeWorkers === 0
+      ? '<span style="color:#ef9a9a">⚠ 未指派工人，建造暫停</span>'
+      : `可同時建造 ${activeWorkers} 棟`;
+
     // Already-built buildings
     const builtNames = (settlement.buildings ?? []).map(b => b.name);
 
     // In-progress buildings
     const queueHTML = state.buildingQueue.length > 0
-      ? state.buildingQueue.map((q, i) => `
-          <div class="constr-queue-row">
+      ? state.buildingQueue.map((q, i) => {
+          const w = assignedWorkers[i];
+          const active = i < activeWorkers;
+          return `
+          <div class="constr-queue-row${active ? '' : ' paused'}">
             <span class="cqr-icon">${q.icon}</span>
             <span class="cqr-name">${q.name}</span>
-            <span class="cqr-timer">⏳ 剩 ${q.daysLeft} 天</span>
-          </div>`).join('')
+            <span class="cqr-timer">⏳ 剩 ${q.daysLeft} 天${active && w ? ` · ${w.name}施工` : ' · 暫停'}</span>
+          </div>`;
+        }).join('')
       : '<div class="constr-empty-note">（無建造中的建築）</div>';
 
     // Buildable types (not already built, not in queue)
@@ -4667,6 +4982,9 @@ export class GameUI {
           }).join('') || '<div class="constr-empty-note">所有建築類型已建造</div>';
 
     panel.innerHTML = `
+      <div class="constr-section-title">工人團隊（最多 3 人，${simultaneousNote}）</div>
+      <div class="cw-slots">${workerSlotsHTML}</div>
+      <button class="btn-buy cw-assign-btn" id="btn-assign-build-workers">👷 指派工人</button>
       <div class="constr-section-title">建築位置：${usedSlots} / ${maxSlots}</div>
       <div class="constr-built-list">
         ${builtNames.map(n => `<span class="constr-built-tag">✅ ${n}</span>`).join('')}
@@ -4676,6 +4994,22 @@ export class GameUI {
       ${freeSlots > 0 ? '<div class="constr-section-title">可新增建築</div>' : ''}
       <div class="constr-option-list">${availableHTML}</div>
     `;
+
+    // Remove worker button
+    panel.querySelectorAll('.cw-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const ids = (this._buildingWorkers.get(key) ?? []).filter(id => id !== unitId);
+        this._buildingWorkers.set(key, ids);
+        this._renderBuildingConstructionTab(govBuilding, settlement);
+      });
+    });
+
+    // Assign workers button
+    document.getElementById('btn-assign-build-workers')?.addEventListener('click', () => {
+      this._openAssignWorkerPanel('building', key, 3, govBuilding, settlement,
+        () => this._renderConstructionPanel(govBuilding, settlement));
+    });
 
     panel.querySelectorAll('.coc-build-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -4689,7 +5023,7 @@ export class GameUI {
 
         this._spendGold(cost);
         state.buildingQueue.push({ type: btype, name: meta.name, icon: meta.icon, daysLeft: CONSTR_BUILDING_DAYS });
-        this._addInboxMessage('🏗️', `開始建造 ${meta.name}（${settlement.name}），預計 ${CONSTR_BUILDING_DAYS} 天後完工。`);
+        this._addInboxMessage('🏗️', `開始建造 ${meta.name}（${settlement.name}），預計 ${CONSTR_BUILDING_DAYS} 天後完工（需指派工人才能進行）。`);
         this._renderConstructionPanel(govBuilding, settlement);
       });
     });
@@ -5983,6 +6317,8 @@ export class GameUI {
       tradeRoutes:          [...this._tradeRoutes.entries()],
       festivalCooldowns:     Object.fromEntries(this._festivalCooldowns),
       assignedRulers:       [...this._assignedRulers.entries()],
+      tradeRouteWorkers:    [...this._tradeRouteWorkers.entries()],
+      buildingWorkers:      [...this._buildingWorkers.entries()],
     };
   }
 
@@ -6051,6 +6387,16 @@ export class GameUI {
     if (Array.isArray(state.assignedRulers)) {
       this._assignedRulers = new Map(
         state.assignedRulers.filter(([k, v]) => typeof k === 'string' && typeof v === 'number'),
+      );
+    }
+    if (Array.isArray(state.tradeRouteWorkers)) {
+      this._tradeRouteWorkers = new Map(
+        state.tradeRouteWorkers.filter(([k, v]) => typeof k === 'string' && Array.isArray(v)),
+      );
+    }
+    if (Array.isArray(state.buildingWorkers)) {
+      this._buildingWorkers = new Map(
+        state.buildingWorkers.filter(([k, v]) => typeof k === 'string' && Array.isArray(v)),
       );
     }
   }
@@ -6168,6 +6514,10 @@ export class GameUI {
 
     // If previously liberated, remove from that set first.
     this._liberatedSettlements.delete(key);
+
+    // Clear any stale ruler assignment for this settlement key
+    // (in case it was previously captured, assigned, then lost, then recaptured).
+    this._assignedRulers.delete(key);
 
     this._setSettlementOwnership(settlement, true);
     this._capturedSettlements.add(key);
