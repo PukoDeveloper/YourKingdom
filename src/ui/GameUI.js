@@ -5320,8 +5320,46 @@ export class GameUI {
       : false;
 
     const resources  = (settlement.resources ?? []).join('、') || '無';
+    const foreignResSet = new Set(settlement.resources ?? []);
     const economyStr = '⭐'.repeat(Math.max(1, settlement.economyLevel ?? 1));
     const dailyGold  = Math.max(1, (settlement.economyLevel ?? 1) * TRADE_INCOME_PER_ECONOMY_LEVEL);
+
+    // Build "my settlement demands" block so the player can see which of their
+    // regions would benefit from this trade route.
+    const myDemandsHTML = (() => {
+      if (this._capturedSettlements.size === 0) return '';
+      const rows = [...this._capturedSettlements].map(pk => {
+        const ps = this._getSettlementByKey(pk);
+        if (!ps) return '';
+        const demand  = this._getSettlementDemand(pk, ps);
+        const already = this._isSettlementDemandMet(pk, ps);
+        const canFill = foreignResSet.has(demand);
+        let statusIcon, statusColor;
+        if (already) {
+          statusIcon  = '✅';
+          statusColor = 'rgba(255,255,255,0.35)';
+        } else if (canFill) {
+          statusIcon  = '💡';
+          statusColor = '#66bb6a';
+        } else {
+          statusIcon  = '⚠';
+          statusColor = '#ef6c00';
+        }
+        return `
+          <div class="trade-my-demand-row">
+            <span class="trade-my-demand-name">${ps.name}</span>
+            <span class="trade-my-demand-res" style="color:${statusColor}">
+              ${statusIcon} 需求：${demand}${canFill && !already ? '（此商路可供應）' : (already ? '（已滿足）' : '')}
+            </span>
+          </div>`;
+      }).filter(Boolean).join('');
+      if (!rows) return '';
+      return `
+        <div class="trade-my-demands-block">
+          <div class="trade-my-demands-title">📋 我的地區需求</div>
+          ${rows}
+        </div>`;
+    })();
 
     content.innerHTML = `
       <button class="fac-back-btn" id="diplo-back">← 返回</button>
@@ -5350,6 +5388,7 @@ export class GameUI {
             ${foreignDemand} ${playerCanSupply ? '（你可供應 +成功率）' : '（你無法供應）'}
           </span>
         </div>` : ''}
+        ${myDemandsHTML}
         <div class="treaty-note">統治者將根據雙方關係（${relStr}）${playerCanSupply ? '及你能供應其需求，' : ''}評估是否同意。</div>
         <button class="btn-buy treaty-send-btn" id="diplo-trade-confirm">🛤 提出貿易請求</button>
       </div>
@@ -5430,18 +5469,41 @@ export class GameUI {
     addArr(this.nationSystem.villageSettlements, this._mapData?.villages ?? [], 'village');
     playerSettlements.sort((a, b) => (a.dist ?? 9999) - (b.dist ?? 9999));
 
-    const rowsHTML = playerSettlements.map(({ s, key, dist, alreadyRouted }) => `
+    const foreignResSet = new Set(foreignSettlement.resources ?? []);
+
+    const rowsHTML = playerSettlements.map(({ s, key, dist, alreadyRouted }) => {
+      const demand   = this._getSettlementDemand(key, s);
+      const already  = this._isSettlementDemandMet(key, s);
+      const canFill  = foreignResSet.has(demand);
+      let demandNote = '', demandColor = 'rgba(255,255,255,0.4)';
+      if (alreadyRouted) {
+        demandNote  = '';
+      } else if (already) {
+        demandNote  = `需求：${demand}（已滿足）`;
+        demandColor = 'rgba(255,255,255,0.35)';
+      } else if (canFill) {
+        demandNote  = `💡 需求：${demand}（此商路可供應）`;
+        demandColor = '#66bb6a';
+      } else {
+        demandNote  = `⚠ 需求：${demand}`;
+        demandColor = '#ef6c00';
+      }
+      return `
       <div class="tr-cand-row${alreadyRouted ? ' tr-cand-locked' : ''}">
         <div class="tr-cand-info">
           <span class="tr-cand-name">${s.name}</span>
-          ${dist != null ? `<span class="tr-cand-detail">距離：${dist}</span>` : ''}
+          <span class="tr-cand-detail">
+            ${dist != null ? `距離：${dist}` : ''}
+            ${demandNote ? `&nbsp;&nbsp;<span style="color:${demandColor}">${demandNote}</span>` : ''}
+          </span>
         </div>
         <button class="tr-cand-btn${alreadyRouted ? ' connected' : ''}"
                 data-dest-key="${key}"
                 ${alreadyRouted ? 'disabled' : ''}>
           ${alreadyRouted ? '已接收' : '選擇此地'}
         </button>
-      </div>`).join('');
+      </div>`;
+    }).join('');
 
     content.innerHTML = `
       <button class="fac-back-btn" id="itdp-back">← 返回</button>
