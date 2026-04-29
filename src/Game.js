@@ -228,8 +228,12 @@ export class Game {
     this._hudTileY = -1;
     /** @type {object|null} */
     this._hudHit   = null;
+    /** @type {number|null} Cached terrain type for the current tile. */
+    this._hudTerrainType = null;
     /** @type {string} Cached terrain label for the current tile. */
     this._hudLabel = '';
+    /** @type {number} Last facing octant (0–7) used for buildable-tile detection; -1 = uninitialised. */
+    this._hudFacingOctant = -1;
     /** @type {boolean} Whether the day/night overlay was visible last frame. */
     this._prevOverlayVisible = false;
 
@@ -246,6 +250,7 @@ export class Game {
     this._gameUI.onCaptureSettlement = () => {
       this._structureRenderer.rebuild();
       this._hudTileX = -1; // force HUD refresh next frame
+      this._hudFacingOctant = -1;
     };
 
     // Rebuild map structures whenever the player changes their kingdom flag or name.
@@ -408,29 +413,43 @@ export class Game {
       const tileX = Math.floor(this._player.x / TILE_SIZE);
       const tileY = Math.floor(this._player.y / TILE_SIZE);
 
-      // Only re-run settlement / build-button queries when the player tile changes.
-      // This avoids ~60 redundant DOM mutations per second while the player is standing still.
+      // Re-run settlement / build-button queries when the player tile changes.
+      // Also re-run the facing-dependent buildable-tile detection when the player's
+      // facing octant changes, so the highlighted tile updates as the player turns
+      // even without stepping to a new tile.
       const tileChanged = tileX !== this._hudTileX || tileY !== this._hudTileY;
+      const facing = this._player.getFacingDirection();
+      // Map the continuous facing angle to one of 8 octants (0 = N, clockwise).
+      // atan2 produces an angle in radians; dividing by π/4 converts it to octant
+      // units; rounding snaps to the nearest octant; +8 ensures a positive value
+      // before the &7 bitmask wraps the result into the 0–7 range.
+      const facingOctant = (Math.round(Math.atan2(facing.dx, -facing.dy) / (Math.PI / 4)) + 8) & 7;
+      const facingChanged = facingOctant !== this._hudFacingOctant;
+
       if (tileChanged) {
         this._hudTileX = tileX;
         this._hudTileY = tileY;
         this._hudHit   = this._nationSystem.getSettlementAtTile(tileX, tileY, this._mapData);
 
-        // Cache terrain label for the non-settlement case; use tile coords directly
+        // Cache terrain type and label for the non-settlement case; use tile coords directly
         // (equivalent to getTerrainAtWorld but avoids the per-call pixel→tile division).
         const t = this._mapData.getTerrain(tileX, tileY);
+        this._hudTerrainType = t;
         this._hudLabel = TERRAIN_NAMES[t] ?? '';
 
         this._gameUI.setNearbySettlement(
           this._hudHit ? this._hudHit.settlement : null,
         );
+      }
 
+      if (tileChanged || facingChanged) {
+        this._hudFacingOctant = facingOctant;
         let nearbyBuildTile = null;
         if (!this._hudHit) {
-          if (t === TERRAIN.FOREST) {
+          const terrainType = this._hudTerrainType;
+          if (terrainType === TERRAIN.FOREST) {
             nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: TERRAIN.FOREST };
           } else {
-            const facing = this._player.getFacingDirection();
             const sortedOffsets = [...ADJACENT_OFFSETS].sort(
               ([ax, ay], [bx, by]) =>
                 (bx * facing.dx + by * facing.dy) - (ax * facing.dx + ay * facing.dy),

@@ -451,11 +451,11 @@ export function drawMineBuilding(g, px, py) {
  * Draw a wooden bridge overlay at world-pixel position (px, py).
  * Sits on top of a WATER tile to indicate a passable crossing.
  *
- * The bridge visual adapts to which orthogonal neighbours are also water:
- *   bit 0 (1)  = North neighbour is water → draw north arm
- *   bit 1 (2)  = East  neighbour is water → draw east arm
- *   bit 2 (4)  = South neighbour is water → draw south arm
- *   bit 3 (8)  = West  neighbour is water → draw west arm
+ * The bridge visual adapts to which orthogonal neighbours are land (non-water):
+ *   bit 0 (1)  = North neighbour is land → draw north arm toward land
+ *   bit 1 (2)  = East  neighbour is land → draw east arm toward land
+ *   bit 2 (4)  = South neighbour is land → draw south arm toward land
+ *   bit 3 (8)  = West  neighbour is land → draw west arm toward land
  *
  * Examples:
  *   0b0101 (5)  – straight N-S bridge
