@@ -331,6 +331,15 @@ export class DiplomacySystem {
     /** Monotonically increasing id generator for peace missives. */
     this._missiveNextId = 0;
 
+    /**
+     * Number of consecutive player settlement captures (conquests) without
+     * a day-based cool-down period elapsing.
+     * Used to scale the "conquest fear" penalty applied to all surrounding nations.
+     * Decays by 1 per in-game day in onDayPassed() and is persisted in getState().
+     * @type {number}
+     */
+    this._playerConquestStreak = 0;
+
     this._build(mapData);
     this._initSovereignty();
     this._initNpcState();
@@ -606,6 +615,59 @@ export class DiplomacySystem {
         const penaltyDelta = -(10 + Math.floor(Math.random() * 10));
         this.modifyPlayerRelation(allyId, penaltyDelta);
       }
+    });
+  }
+
+  /**
+   * Record that the player has annexed (captured) a settlement and propagate
+   * a "conquest fear" penalty to every surviving nation.
+   *
+   * The penalty escalates with the player's consecutive conquest streak so that
+   * rapid serial annexations alarm the whole world far more than isolated raids.
+   *
+   * Penalty formula (per nation, before distance scaling):
+   *   basePenalty = -(10 + streak * 8), capped at -50
+   * Then multiplied by the distance factor so nearby nations feel it more.
+   *
+   * @param {object} opts
+   * @param {string} opts.settlementName      Name of the captured settlement.
+   * @param {string} opts.attackerDisplayName Human-readable attacker name.
+   * @param {number} opts.targetNationId      Nation id of the settlement's original owner.
+   */
+  recordConquest({ settlementName, attackerDisplayName, targetNationId }) {
+    this._playerConquestStreak++;
+    const streak = this._playerConquestStreak;
+
+    // Base fear penalty this conquest generates (escalates with streak, capped).
+    const rawBase = -(10 + streak * 8);
+    const basePenalty = Math.max(-50, rawBase);
+
+    const nations = this.nationSystem.nations;
+
+    nations.forEach((nation, nId) => {
+      if (!nation) return;
+      if (this.nationSystem.isNationExtinct(nId)) return;
+      // Skip the directly attacked nation – it was already penalised by recordAttackEvent.
+      if (nId === targetNationId) return;
+
+      // Scale by geographic proximity: neighbours fear the player more than
+      // distant nations.
+      const distFactor = this._distanceFactor(nId, targetNationId);
+      const delta = Math.round(basePenalty * distFactor);
+      if (delta === 0) return;
+
+      this.modifyPlayerRelation(nId, delta);
+
+      const streakLabel = streak >= 5
+        ? '天下震驚'
+        : streak >= 3
+          ? '列國恐慌'
+          : '鄰國警惕';
+      this._addMemoryEntry(
+        nId,
+        `${attackerDisplayName} 接連攻下 ${settlementName}（第 ${streak} 次征服），${streakLabel}，關係 ${delta}`,
+        delta,
+      );
     });
   }
 
@@ -2153,6 +2215,11 @@ export class DiplomacySystem {
   onDayPassed() {
     this._currentDay++;
     this._condemnedToday.clear();
+    // Conquest streak decays by 1 per day so a period of peace gradually
+    // reduces the world-wide fear bonus.
+    if (this._playerConquestStreak > 0) {
+      this._playerConquestStreak--;
+    }
     return this._processNpcDailyEvents();
   }
 
@@ -2415,16 +2482,17 @@ export class DiplomacySystem {
   /** @returns {{ playerRelations: [number, number][], npcRelations: [string, number][], nationMemory: [number, object[]][], currentDay: number, surrenderIndex: [number, number][], npcGold: [number, number][], npcArmies: [string, object[][][]][], warPairs: string[], nonAggressionPacts: string[], mutualProtectionPacts: string[] }} */
   getState() {
     return {
-      playerRelations:      [...this._playerRelations.entries()],
-      npcRelations:         [...this._npcRelations.entries()],
-      nationMemory:         [...this._nationMemory.entries()],
-      currentDay:           this._currentDay,
-      surrenderIndex:       [...this._surrenderIndex.entries()],
-      npcGold:              [...this._npcGold.entries()],
-      npcArmies:            [...this._npcArmies.entries()],
-      warPairs:             [...this._warPairs],
-      nonAggressionPacts:   [...this._nonAggressionPacts],
-      mutualProtectionPacts:[...this._mutualProtectionPacts],
+      playerRelations:       [...this._playerRelations.entries()],
+      npcRelations:          [...this._npcRelations.entries()],
+      nationMemory:          [...this._nationMemory.entries()],
+      currentDay:            this._currentDay,
+      surrenderIndex:        [...this._surrenderIndex.entries()],
+      npcGold:               [...this._npcGold.entries()],
+      npcArmies:             [...this._npcArmies.entries()],
+      warPairs:              [...this._warPairs],
+      nonAggressionPacts:    [...this._nonAggressionPacts],
+      mutualProtectionPacts: [...this._mutualProtectionPacts],
+      playerConquestStreak:  this._playerConquestStreak,
     };
   }
 
@@ -2493,6 +2561,9 @@ export class DiplomacySystem {
       state.mutualProtectionPacts.forEach(key => {
         if (typeof key === 'string') this._mutualProtectionPacts.add(key);
       });
+    }
+    if (typeof state.playerConquestStreak === 'number') {
+      this._playerConquestStreak = Math.max(0, Math.floor(state.playerConquestStreak));
     }
   }
 }

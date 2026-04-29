@@ -5369,6 +5369,20 @@ export class GameUI {
         if (this._activePanel === 'nations') this._renderNations();
       }
     }
+
+    // Propagate conquest fear to all surrounding nations.
+    if (this.diplomacySystem) {
+      const pk = this.getPlayerNation();
+      this.diplomacySystem.recordConquest({
+        settlementName:      settlement.name,
+        attackerDisplayName: pk.name,
+        targetNationId:      settlement.nationId,
+      });
+      // Refresh diplomacy panel if it's open so players see the impact immediately.
+      if (this._activePanel === 'nations') {
+        this._renderDiplomacy();
+      }
+    }
   }
 
   /**
