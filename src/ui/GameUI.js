@@ -8073,6 +8073,28 @@ export class GameUI {
       });
     }
 
+    // Serialise per-settlement mutable state (economyLevel, population, buildings).
+    // NationSystem is rebuilt deterministically from seed, so only mutations need saving.
+    const settlementState = [];
+    if (this.nationSystem) {
+      this.nationSystem.castleSettlements.forEach((s, i) => {
+        settlementState.push({
+          key:          `castle:${i}`,
+          economyLevel: s.economyLevel,
+          population:   s.population,
+          buildings:    (s.buildings ?? []).map(b => ({ type: b.type, priceMult: b.priceMult ?? 1 })),
+        });
+      });
+      this.nationSystem.villageSettlements.forEach((s, i) => {
+        settlementState.push({
+          key:          `village:${i}`,
+          economyLevel: s.economyLevel,
+          population:   s.population,
+          buildings:    (s.buildings ?? []).map(b => ({ type: b.type, priceMult: b.priceMult ?? 1 })),
+        });
+      });
+    }
+
     return {
       inventory:            this.inventory.getState(),
       army:                 this.army.getState(),
@@ -8083,6 +8105,7 @@ export class GameUI {
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
       constructionState,
+      settlementState,
       tradeRoutes:          [...this._tradeRoutes.entries()].map(([k, v]) => {
         // Strip computed/cached fields that should not be persisted.
         const { _path, _pathDists, _pathLen, ...rest } = v;
@@ -8210,6 +8233,26 @@ export class GameUI {
     }
     if (typeof state.mapBuildingIdSeq === 'number') {
       this._mapBuildingIdSeq = state.mapBuildingIdSeq;
+    }
+    // Restore mutable settlement state (economyLevel, population, buildings).
+    // Must run after nationSystem is already populated (it is passed to the constructor).
+    if (Array.isArray(state.settlementState) && this.nationSystem) {
+      for (const ss of state.settlementState) {
+        if (!ss || typeof ss.key !== 'string') continue;
+        const sett = this._getSettlementByKey(ss.key);
+        if (!sett) continue;
+        if (typeof ss.economyLevel === 'number') {
+          sett.economyLevel = Math.max(1, Math.min(5, ss.economyLevel));
+        }
+        if (typeof ss.population === 'number') {
+          sett.population = Math.max(0, ss.population);
+        }
+        if (Array.isArray(ss.buildings)) {
+          sett.buildings = ss.buildings
+            .filter(b => b && typeof b.type === 'string')
+            .map(b => new Building(b.type, typeof b.priceMult === 'number' ? b.priceMult : 1));
+        }
+      }
     }
   }
 
