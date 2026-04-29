@@ -2991,9 +2991,15 @@ export class GameUI {
     const detail = document.getElementById('squad-detail');
     const captain = squad.captain;
 
+    // Separate members into "present" and "on mission" (dispatched to ruler/trade/build/messenger)
+    const assignedIds = this._getAllAssignedUnitIds();
+
+    const presentMembers  = squad.members.filter(m => !assignedIds.has(m.id));
+    const missionMembers  = squad.members.filter(m =>  assignedIds.has(m.id));
+
     const memberCards = [];
     for (let i = 0; i < MAX_MEMBERS; i++) {
-      const m = squad.members[i];
+      const m = presentMembers[i];
       if (m) {
         const isCaptain = m.id === squad.captainId;
         const avatarHTML = m.appearance ? renderCharHTML(m.appearance, 32) : '';
@@ -3028,14 +3034,47 @@ export class GameUI {
       }
     }
 
+    // Build "on mission" section for dispatched members
+    const missionCards = missionMembers.map(m => {
+      const isCaptain  = m.id === squad.captainId;
+      const avatarHTML = m.appearance ? renderCharHTML(m.appearance, 32) : '';
+      let missionLabel = '執行任務中';
+      if (this._messengerUnitIds.has(m.id)) missionLabel = '📨 信使中';
+      else if ([...this._assignedRulers.values()].includes(m.id)) missionLabel = '🏯 地區統治';
+      else if ([...this._tradeRouteWorkers.values()].some(arr => arr.includes(m.id))) missionLabel = '🛤 貿易路線';
+      else if ([...this._buildingWorkers.values()].some(arr => arr.includes(m.id))) missionLabel = '🏗 建設工程';
+      return `
+        <div class="unit-card-compact on-mission${isCaptain ? ' captain' : ''}"
+             data-id="${m.id}" role="button" tabindex="0">
+          <span class="ucc-avatar">${avatarHTML}</span>
+          <span class="ucc-badge">${isCaptain ? '⭐' : ''}</span>
+          <div class="ucc-info">
+            <div class="ucc-top">
+              <span class="ucc-name">${m.name}</span>
+              <span class="ucc-role">${m.role}</span>
+              <span class="ucc-status ucc-status-mission">${missionLabel}</span>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+
+    const missionSection = missionMembers.length > 0
+      ? `<div class="squad-mission-section">
+           <div class="squad-mission-title">📤 派遣中（${missionMembers.length} 人）</div>
+           ${missionCards}
+         </div>`
+      : '';
+
     detail.innerHTML = `
       <div class="squad-stat">
-        成員 ${squad.members.length} / ${MAX_MEMBERS}
-        ${captain ? `&nbsp;｜&nbsp;隊長：${captain.name}` : '&nbsp;⚠ 無隊長'}
+        成員 ${presentMembers.length} / ${MAX_MEMBERS}
+        ${missionMembers.length > 0 ? `（${missionMembers.length} 人派遣中）` : ''}
+        ${captain && !assignedIds.has(captain.id) ? `&nbsp;｜&nbsp;隊長：${captain.name}` : captain ? `&nbsp;｜&nbsp;隊長：${captain.name}（派遣中）` : '&nbsp;⚠ 無隊長'}
       </div>
       <div class="member-list">
         ${memberCards.join('')}
       </div>
+      ${missionSection}
     `;
 
     detail.querySelectorAll('.unit-card-compact[data-id]').forEach(card => {
@@ -4837,6 +4876,66 @@ export class GameUI {
         </div>`;
     }).join('');
 
+    // ── Foreign trade relationship summary ────────────────────────────────────
+    // For each foreign nation, determine whether we export to them, they import
+    // to us, or both, then show a → / ← / ↔ indicator.
+    const foreignRelMap = new Map(); // nationId → { nationName, hasExport, hasImport }
+    for (const [, route] of this._tradeRoutes) {
+      const otherKey = route.isImport ? route.fromKey : route.toKey;
+      const selfKey  = route.isImport ? route.toKey   : route.fromKey;
+      if (selfKey !== fromKey) continue; // not about this settlement
+      const otherSett = this._getSettlementByKey(otherKey);
+      if (!otherSett) continue;
+      const nid = otherSett.controllingNationId;
+      if (nid === PLAYER_NATION_ID || nid === NEUTRAL_NATION_ID) continue;
+      if (!foreignRelMap.has(nid)) {
+        const nName = this.nationSystem?.nations?.[nid]?.name ?? otherSett.name;
+        foreignRelMap.set(nid, { nationName: nName, hasExport: false, hasImport: false });
+      }
+      const entry = foreignRelMap.get(nid);
+      if (route.isImport) entry.hasImport = true;
+      else                entry.hasExport = true;
+    }
+    // Also include NPC-level trade routes from DiplomacySystem (nation-to-nation).
+    if (this.diplomacySystem && this._capturedSettlements.has(fromKey)) {
+      for (const r of this.diplomacySystem.getActiveTradeRoutes()) {
+        const isPlayerA = r.nationA === _PLAYER_NATION_ID_UI;
+        const isPlayerB = r.nationB === _PLAYER_NATION_ID_UI;
+        if (!isPlayerA && !isPlayerB) continue;
+        const nid = isPlayerA ? r.nationB : r.nationA;
+        if (!foreignRelMap.has(nid)) {
+          const nName = this.nationSystem?.nations?.[nid]?.name ?? `國家${nid}`;
+          foreignRelMap.set(nid, { nationName: nName, hasExport: false, hasImport: false });
+        }
+        // DiplomacySystem routes are bidirectional at the nation level.
+        const entry = foreignRelMap.get(nid);
+        entry.hasExport = true;
+        entry.hasImport = true;
+      }
+    }
+
+    let foreignRelHTML = '';
+    if (foreignRelMap.size > 0) {
+      const rows = [...foreignRelMap.values()].map(({ nationName, hasExport, hasImport }) => {
+        let arrow, arrowTitle;
+        if (hasExport && hasImport) {
+          arrow = '↔'; arrowTitle = '雙向貿易';
+        } else if (hasExport) {
+          arrow = '→'; arrowTitle = '我方出口至對方';
+        } else {
+          arrow = '←'; arrowTitle = '對方進口至我方';
+        }
+        return `<div class="tr-foreign-rel-row">
+          <span class="tr-foreign-rel-arrow" title="${arrowTitle}">${arrow}</span>
+          <span class="tr-foreign-rel-name">${nationName}</span>
+          <span class="tr-foreign-rel-type">${arrowTitle}</span>
+        </div>`;
+      }).join('');
+      foreignRelHTML = `
+        <div class="tr-section-title">外國貿易關係</div>
+        <div class="tr-foreign-rel-list">${rows}</div>`;
+    }
+
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">🛤 貿易路線管理</div>
@@ -4844,6 +4943,7 @@ export class GameUI {
       ${importRoutes.length > 0 ? `<div class="tr-section-title">進口路線（外國商隊來此）</div><div class="tr-route-list">${importHTML}</div>` : ''}
       <div class="tr-section-title">現有出口路線</div>
       <div class="tr-route-list">${existingHTML}</div>
+      ${foreignRelHTML}
       <div class="tr-section-title">可建立出口路線</div>
       <div class="tr-candidates">${candidatesHTML || '<div class="tr-empty">無可用目標</div>'}</div>
     `;
@@ -5209,41 +5309,162 @@ export class GameUI {
         demandMet: playerCanSupply,
       });
       if (accepted) {
-        const ok = this._establishImportTrade(settlement);
-        if (ok) {
-          this.diplomacySystem.modifyPlayerRelation(nationId, 5);
-          this._addInboxMessage('🛤', `${nationName} 同意建立進口貿易路線！商隊將前往你的城市，每日 +${dailyGold} 🪙，帶來：${resources || '各類物資'}。關係 +5。`);
-          this._toast(`✅ ${nationName} 同意建立貿易路線！`);
-        } else {
+        // Check player has at least one settlement before showing picker
+        if (this._capturedSettlements.size === 0) {
           this._addInboxMessage('🛤', `${nationName} 同意了，但你尚未佔領任何城市，無法接待商隊。`);
           this._toast('❌ 你尚未佔領任何城市，商隊無法前往！');
+          this._renderGovBuilding(building, settlement);
+          return;
         }
+        // Let the player choose which settlement will receive the import route
+        this._renderImportTradeDestPicker(building, settlement, nationId, nationName, resources, dailyGold);
       } else {
         const relDelta = -(1 + Math.floor(Math.random() * 3));
         this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
         this._addInboxMessage('❌', `${nationName} 拒絕了貿易路線提案，關係 ${relDelta}。`);
         this._toast(`❌ ${nationName} 拒絕了提案。`);
+        this._renderGovBuilding(building, settlement);
       }
-      this._renderGovBuilding(building, settlement);
     });
   }
 
   /**
-   * Establish an import trade route from a foreign settlement to the nearest
+   * Show a picker so the player can choose which of their settlements will
+   * receive the accepted import trade route from a foreign nation.
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} foreignSettlement  The foreign origin.
+   * @param {number} nationId
+   * @param {string} nationName
+   * @param {string} resources  Formatted resource string for the message.
+   * @param {number} dailyGold
+   */
+  _renderImportTradeDestPicker(building, foreignSettlement, nationId, nationName, resources, dailyGold) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    // Build list of player-owned settlements that don't already have an import route from this foreign settlement
+    const fromKey = this._settlementKey(foreignSettlement);
+    const playerSettlements = [];
+    const addArr = (arr, mapArr, typeLabel) => {
+      arr.forEach((s, i) => {
+        const key = `${typeLabel}:${i}`;
+        if (!this._capturedSettlements.has(key)) return;
+        const alreadyRouted = fromKey
+          ? [...this._tradeRoutes.values()].some(r => r.fromKey === fromKey && r.toKey === key && r.isImport)
+          : false;
+        let dist = null;
+        if (this._mapData && fromKey) {
+          const srcIdx = foreignSettlement.type === 'castle'
+            ? this.nationSystem.castleSettlements.indexOf(foreignSettlement)
+            : this.nationSystem.villageSettlements.indexOf(foreignSettlement);
+          const srcTile = foreignSettlement.type === 'castle'
+            ? this._mapData.castles[srcIdx]
+            : this._mapData.villages[srcIdx];
+          const tile = mapArr[i];
+          if (srcTile && tile) {
+            const dx = tile.x - srcTile.x;
+            const dy = tile.y - srcTile.y;
+            dist = Math.round(Math.sqrt(dx * dx + dy * dy));
+          }
+        }
+        playerSettlements.push({ s, key, dist, alreadyRouted });
+      });
+    };
+    addArr(this.nationSystem.castleSettlements, this._mapData?.castles ?? [], 'castle');
+    addArr(this.nationSystem.villageSettlements, this._mapData?.villages ?? [], 'village');
+    playerSettlements.sort((a, b) => (a.dist ?? 9999) - (b.dist ?? 9999));
+
+    const rowsHTML = playerSettlements.map(({ s, key, dist, alreadyRouted }) => `
+      <div class="tr-cand-row${alreadyRouted ? ' tr-cand-locked' : ''}">
+        <div class="tr-cand-info">
+          <span class="tr-cand-name">${s.name}</span>
+          ${dist != null ? `<span class="tr-cand-detail">距離：${dist}</span>` : ''}
+        </div>
+        <button class="tr-cand-btn${alreadyRouted ? ' connected' : ''}"
+                data-dest-key="${key}"
+                ${alreadyRouted ? 'disabled' : ''}>
+          ${alreadyRouted ? '已接收' : '選擇此地'}
+        </button>
+      </div>`).join('');
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="itdp-back">← 返回</button>
+      <div class="fac-title">🛤 選擇接收地區</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          ${nationName} 同意建立貿易路線！請選擇哪個地區接收此進口商路。<br>
+          商隊將帶來：${resources || '各類物資'}，每日 +${dailyGold} 🪙。
+        </div>
+        <div class="tr-candidates">${rowsHTML || '<div class="tr-empty">無可用地區</div>'}</div>
+      </div>
+    `;
+
+    document.getElementById('itdp-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, foreignSettlement);
+    });
+
+    content.querySelectorAll('.tr-cand-btn:not([disabled])').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const destKey = btn.dataset.destKey;
+        const destSett = this._getSettlementByKey(destKey);
+        if (!destSett) return;
+        const ok = this._establishImportTrade(foreignSettlement, destSett);
+        if (ok) {
+          this.diplomacySystem.modifyPlayerRelation(nationId, 5);
+          this._addInboxMessage('🛤', `${nationName} 同意建立進口貿易路線！商隊將前往 ${destSett.name}，每日 +${dailyGold} 🪙，帶來：${resources || '各類物資'}。關係 +5。`);
+          this._toast(`✅ ${nationName} 同意建立貿易路線！`);
+        } else {
+          this._addInboxMessage('❌', `無法建立進口貿易路線。`);
+          this._toast('❌ 建立進口路線失敗。');
+        }
+        this._renderGovBuilding(building, foreignSettlement);
+      });
+    });
+  }
+
+  /**
+   * Establish an import trade route from a foreign settlement to a
    * player-owned settlement.
+   *
    * @param {import('../systems/NationSystem.js').Settlement} fromSettlement  Foreign settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} [toSettlement]  Explicit player
+   *   destination. When omitted the nearest player-controlled settlement is used (legacy fallback
+   *   used by NPC-initiated missives).
    * @returns {boolean}  true if the route was created (or already exists).
    */
-  _establishImportTrade(fromSettlement) {
+  _establishImportTrade(fromSettlement, toSettlement = null) {
     if (!this.nationSystem || !this._mapData) return false;
 
     const fromKey = this._settlementKey(fromSettlement);
     if (!fromKey) return false;
 
+    // If an explicit destination was provided, use it directly.
+    if (toSettlement) {
+      const toKey = this._settlementKey(toSettlement);
+      if (!toKey) return false;
+      // If a route for this exact pair already exists, treat as success.
+      const routeId = `${fromKey}→${toKey}`;
+      if (this._tradeRoutes.has(routeId)) return true;
+      const resources = [...(fromSettlement.resources ?? [])];
+      const dailyGold = Math.max(1, (fromSettlement.economyLevel ?? 1) * TRADE_INCOME_PER_ECONOMY_LEVEL);
+      this._tradeRoutes.set(routeId, {
+        fromKey,
+        fromName: fromSettlement.name,
+        toKey,
+        toName:   toSettlement.name,
+        resources,
+        dailyGold,
+        isImport: true,
+      });
+      return true;
+    }
+
+    // Legacy path: find nearest player-controlled settlement.
+
     // If an import route from this settlement already exists, treat as success.
     if ([...this._tradeRoutes.values()].some(r => r.fromKey === fromKey && r.isImport)) return true;
 
-    // Find nearest player-controlled settlement.
     const isCastleSrc = fromSettlement.type === 'castle';
     const srcIdx      = (isCastleSrc ? this.nationSystem.castleSettlements : this.nationSystem.villageSettlements).indexOf(fromSettlement);
     const srcTile     = srcIdx >= 0 ? (isCastleSrc ? this._mapData.castles : this._mapData.villages)[srcIdx] : null;
