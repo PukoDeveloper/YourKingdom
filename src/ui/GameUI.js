@@ -4553,14 +4553,14 @@ export class GameUI {
     }).sort((a, b) => a.dist - b.dist);
 
     const candidatesHTML = candidates.map(c => {
-      const gold = Math.max(1, c.s.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
-      const res  = (c.s.resources ?? []).join('、') || '—';
+      const gold   = Math.max(1, c.s.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
+      const demand = this._getSettlementDemand(c.k, c.s);
       return `
         <div class="tr-cand-row${c.ok && !c.alreadyConnected ? '' : ' tr-cand-locked'}">
           <span class="tr-cand-type" style="color:${c.typeColor}">${c.typeLabel}</span>
           <div class="tr-cand-info">
             <span class="tr-cand-name">${c.s.name}</span>
-            <span class="tr-cand-detail">資源：${res}　距離：${c.dist}</span>
+            <span class="tr-cand-detail">需求：${demand}　距離：${c.dist}</span>
             ${!c.ok && !c.alreadyConnected ? `<span class="tr-cand-reason">${c.reason}</span>` : ''}
           </div>
           <button class="tr-cand-btn${c.alreadyConnected ? ' connected' : ''}${c.ok && !c.alreadyConnected ? '' : ' disabled'}"
@@ -4574,7 +4574,7 @@ export class GameUI {
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">🛤 貿易路線管理</div>
-      <div class="tr-worker-note">⚠ 出口路線需指派 2 名人員方可產生收益；進口路線由外國商隊負責。</div>
+      <div class="tr-worker-note">💡 建立路線時需指派 2 名人員；進口路線由外國商隊負責。</div>
       ${importRoutes.length > 0 ? `<div class="tr-section-title">進口路線（外國商隊來此）</div><div class="tr-route-list">${importHTML}</div>` : ''}
       <div class="tr-section-title">現有出口路線</div>
       <div class="tr-route-list">${existingHTML}</div>
@@ -4617,16 +4617,101 @@ export class GameUI {
       });
     });
 
-    // Add route buttons
+    // Add route buttons — open worker picker first; route is only saved after 2 workers are confirmed.
     content.querySelectorAll('.tr-cand-btn:not(.disabled):not(.connected)').forEach(btn => {
       btn.addEventListener('click', () => {
         const toKey  = btn.dataset.toKey;
         const toSett = this._getSettlementByKey(toKey);
         if (!toSett) return;
-        this._establishTrade(settlement, toSett);
-        this._renderTradeRoutePanel(building, settlement);
+        this._openNewRouteWorkerPanel(building, settlement, toSett);
       });
     });
+  }
+
+  /**
+   * Worker-picker shown when the player wants to create a new export trade route.
+   * The route is only stored once 2 workers are confirmed; clicking back cancels.
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement  Player-owned origin.
+   * @param {import('../systems/NationSystem.js').Settlement} toSettlement    Target settlement.
+   */
+  _openNewRouteWorkerPanel(building, fromSettlement, toSettlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const assignedAll   = this._getAllAssignedUnitIds();
+    const allUnits      = [];
+    for (const squad of this.army.getSquads()) {
+      for (const m of squad.members) allUnits.push(m);
+    }
+
+    // Track selected unit IDs locally (toggled by the player).
+    const selected = new Set();
+
+    const render = () => {
+      const unitRows = allUnits.map(unit => {
+        const isBusy      = assignedAll.has(unit.id);
+        const isSel       = selected.has(unit.id);
+        const traitBadges = renderTraitBadgesHTML(unit.traits.slice(0, 3), PERSONALITY_COLORS);
+        const bonus       = getTradeBonus(unit) > 0 ? `🛤 +${Math.round(getTradeBonus(unit) * 100)}%` : '';
+        return `
+          <div class="assign-worker-row${isSel ? ' assigned-here' : ''}${isBusy ? ' assigned-elsewhere' : ''}">
+            <span class="awr-name">${unit.name}</span>
+            <span class="awr-speed">🏃${unit.stats?.moveSpeed ?? 5}</span>
+            <span class="awr-traits">${traitBadges}</span>
+            ${bonus ? `<span class="awr-bonus">${bonus}</span>` : ''}
+            ${isBusy ? '<span class="awr-conflict">已派遣他處</span>' : ''}
+            ${!isBusy ? `<button class="btn-buy awr-assign${isSel ? ' awr-desel' : ''}" data-unit-id="${unit.id}">
+              ${isSel ? '取消' : '選擇'}
+            </button>` : ''}
+          </div>`;
+      }).join('');
+
+      const ready    = selected.size >= 2;
+      const fromKey  = this._settlementKey(fromSettlement);
+      const toKey    = this._settlementKey(toSettlement);
+      const routeId  = `${fromKey}→${toKey}`;
+      const dailyGold = Math.max(1, toSettlement.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
+
+      content.innerHTML = `
+        <button class="fac-back-btn" id="nrw-back">← 返回</button>
+        <div class="fac-title">👤 指派路線人員</div>
+        <div class="tr-worker-note">目標：${fromSettlement.name} → ${toSettlement.name}，每日 +${dailyGold}🪙<br>
+          請選擇 2 名人員負責此路線（已選：${selected.size} / 2）</div>
+        <div class="assign-worker-list">${unitRows}</div>
+        <button class="btn-buy treaty-send-btn${ready ? '' : ' disabled'}" id="nrw-confirm" ${ready ? '' : 'disabled'}>
+          🛤 建立路線（${selected.size}/2 人）
+        </button>
+      `;
+
+      document.getElementById('nrw-back')?.addEventListener('click', () => {
+        this._renderTradeRoutePanel(building, fromSettlement);
+      });
+
+      document.getElementById('nrw-confirm')?.addEventListener('click', () => {
+        if (selected.size < 2) return;
+        this._establishTrade(fromSettlement, toSettlement);
+        if (this._tradeRoutes.has(routeId)) {
+          this._tradeRouteWorkers.set(routeId, [...selected].slice(0, 2));
+        }
+        this._renderTradeRoutePanel(building, fromSettlement);
+      });
+
+      content.querySelectorAll('.awr-assign').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const unitId = Number(btn.dataset.unitId);
+          if (selected.has(unitId)) {
+            selected.delete(unitId);
+          } else if (selected.size < 2) {
+            selected.add(unitId);
+          }
+          render();
+        });
+      });
+    };
+
+    render();
   }
 
   /**
