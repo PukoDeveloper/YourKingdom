@@ -1674,6 +1674,8 @@ export class DiplomacySystem {
     // empty, so NPC-NPC diplomatic events would never fire.  Evaluate each
     // nation's diplomatic opportunities directly on the main thread instead.
     if (!this._aiWorker) {
+      // castleSettlements is parallel to nations: index `id` is both the castle
+      // settlement index and its founding nation's id.
       castleSettlements.forEach((s, id) => {
         if (!s || s.controllingNationId !== id) return;
         if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
@@ -1686,6 +1688,7 @@ export class DiplomacySystem {
         // in the "wary but not yet an enemy" band.
         if (!napDecisions.some(d => d.nationId === id)) {
           let napTargetId = -1, napBestRel = NAP_PROPOSAL_REL_MIN - 1;
+          // nations is parallel to castleSettlements; index `tid` is the nation id.
           nations.forEach((n, tid) => {
             if (!n || tid === id) return;
             if (this.isAtWar(id, tid) || this.hasNonAggressionPact(id, tid)) return;
@@ -1708,6 +1711,7 @@ export class DiplomacySystem {
         // MPP proposal: target the nation with the highest friendly relation.
         if (!mppDecisions.some(d => d.nationId === id)) {
           let mppTargetId = -1, mppBestRel = MPP_PROPOSAL_REL_MIN - 1;
+          // nations is parallel to castleSettlements; index `tid` is the nation id.
           nations.forEach((n, tid) => {
             if (!n || tid === id) return;
             if (this.hasMutualProtectionPact(id, tid)) return;
