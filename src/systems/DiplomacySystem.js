@@ -1404,9 +1404,91 @@ export class DiplomacySystem {
     const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
     this._pendingMissives.push({
       id:               this._missiveNextId++,
+      type:             'peace',
       senderNationId,
       receiverNationId,
       terms,
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+    });
+    return true;
+  }
+
+  /**
+   * Dispatch a condemnation letter from the player to a target nation.
+   * @param {{ receiverNationId: number, fromSettlement: object }} opts
+   * @returns {boolean}
+   */
+  sendCondemnationLetter({ receiverNationId, fromSettlement }) {
+    const fromPx = this._getSettlementPx(fromSettlement);
+    if (!fromPx) return false;
+    const castle = this._mapData.castles[receiverNationId];
+    const toPx = castle ? _marchCastlePx(castle) : null;
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'condemn',
+      senderNationId:   _PLAYER_NATION_ID,
+      receiverNationId,
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+    });
+    return true;
+  }
+
+  /**
+   * Dispatch a gift letter from the player to a target nation.
+   * @param {{ receiverNationId: number, fromSettlement: object, goldAmount: number }} opts
+   * @returns {boolean}
+   */
+  sendGiftLetter({ receiverNationId, fromSettlement, goldAmount }) {
+    const fromPx = this._getSettlementPx(fromSettlement);
+    if (!fromPx) return false;
+    const castle = this._mapData.castles[receiverNationId];
+    const toPx = castle ? _marchCastlePx(castle) : null;
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'gift',
+      senderNationId:   _PLAYER_NATION_ID,
+      receiverNationId,
+      goldAmount:       Math.max(0, goldAmount),
+      worldX:           path[0].x,
+      worldY:           path[0].y,
+      _path:            path,
+      _pathSegIdx:      0,
+    });
+    return true;
+  }
+
+  /**
+   * Dispatch a formal war declaration letter from the player to a target nation.
+   * The declaration takes effect when the messenger arrives.
+   * @param {{ receiverNationId: number, fromSettlement: object, reason: string }} opts
+   * @returns {boolean}
+   */
+  sendWarDeclaration({ receiverNationId, fromSettlement, reason = '' }) {
+    const fromPx = this._getSettlementPx(fromSettlement);
+    if (!fromPx) return false;
+    const castle = this._mapData.castles[receiverNationId];
+    const toPx = castle ? _marchCastlePx(castle) : null;
+    if (!toPx) return false;
+
+    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+    this._pendingMissives.push({
+      id:               this._missiveNextId++,
+      type:             'war_declaration',
+      senderNationId:   _PLAYER_NATION_ID,
+      receiverNationId,
+      reason,
       worldX:           path[0].x,
       worldY:           path[0].y,
       _path:            path,
@@ -1576,7 +1658,74 @@ export class DiplomacySystem {
    * @returns {{ type: string, missive: object, accepted?: boolean }}
    */
   _resolveMissive(missive) {
-    const { senderNationId, receiverNationId, terms } = missive;
+    const { type = 'peace', senderNationId, receiverNationId } = missive;
+
+    // ── Condemnation letter ──────────────────────────────────────────────────
+    if (type === 'condemn') {
+      const delta = -(15 + Math.floor(Math.random() * 11)); // -15 … -25
+      this.modifyPlayerRelation(receiverNationId, delta);
+      this._addMemoryEntry(receiverNationId, `玩家派使者公開譴責了我國，關係 ${delta}`, delta);
+      // Also ripple to third-party nations (milder than an attack)
+      const nations = this.nationSystem.nations;
+      nations.forEach((n, cId) => {
+        if (!n || cId === receiverNationId) return;
+        const cToTarget = this.getRelation(cId, receiverNationId);
+        if (cToTarget >= 60) {
+          const ripple = Math.round(-(2 + Math.floor(Math.random() * 5)) * this._distanceFactor(cId, receiverNationId));
+          this.modifyPlayerRelation(cId, ripple);
+        }
+      });
+      return { type: 'player_condemn_delivered', missive, delta };
+    }
+
+    // ── Gift letter ──────────────────────────────────────────────────────────
+    if (type === 'gift') {
+      const gold   = missive.goldAmount ?? 0;
+      const delta  = 10 + Math.floor(gold / 20); // base +10, +1 per 20 gold
+      const capped = Math.min(delta, 40);
+      this.modifyPlayerRelation(receiverNationId, capped);
+      this._addMemoryEntry(receiverNationId, `玩家派使者送來禮物（🪙${gold}），關係 +${capped}`, capped);
+      // Small NPC gold gain
+      const cur = this._npcGold.get(receiverNationId) ?? 0;
+      this._npcGold.set(receiverNationId, Math.min(NPC_GOLD_CAP, cur + gold));
+      return { type: 'player_gift_delivered', missive, delta: capped };
+    }
+
+    // ── War declaration ──────────────────────────────────────────────────────
+    if (type === 'war_declaration') {
+      this.declareWar(_PLAYER_NATION_ID, receiverNationId);
+      const reason = missive.reason ?? '';
+      const hasReason = reason.length > 0;
+      // With a stated reason the direct relation penalty is smaller and ripple is halved.
+      const directDelta = hasReason
+        ? -(15 + Math.floor(Math.random() * 10)) // -15 … -24
+        : -(25 + Math.floor(Math.random() * 15)); // -25 … -39
+      this.modifyPlayerRelation(receiverNationId, directDelta);
+      this._addMemoryEntry(
+        receiverNationId,
+        `玩家正式向我國宣戰${hasReason ? `（理由：${reason}）` : '（無正當理由）'}，關係 ${directDelta}`,
+        directDelta,
+      );
+      // Ripple to third parties
+      const nations = this.nationSystem.nations;
+      nations.forEach((n, cId) => {
+        if (!n || cId === receiverNationId) return;
+        const cToTarget = this.getRelation(cId, receiverNationId);
+        let ripple = 0;
+        if (cToTarget >= 60) {
+          const base = -(5 + Math.floor(Math.random() * 10));
+          ripple = Math.round(base * this._distanceFactor(cId, receiverNationId) * (hasReason ? 0.5 : 1));
+        } else if (cToTarget <= -60) {
+          const base = 3 + Math.floor(Math.random() * 7);
+          ripple = Math.round(base * this._distanceFactor(cId, receiverNationId));
+        }
+        if (ripple !== 0) this.modifyPlayerRelation(cId, ripple);
+      });
+      return { type: 'player_war_declared', missive, directDelta };
+    }
+
+    // ── Peace treaty ────────────────────────────────────────────────────────
+    const terms = missive.terms ?? {};
 
     // NPC receives player's peace offer → evaluate acceptance
     if (senderNationId === _PLAYER_NATION_ID && receiverNationId >= 0) {

@@ -3030,6 +3030,57 @@
         font-size: 14px;
         letter-spacing: 0.05em;
       }
+      /* War declaration send button (red variant) */
+      .war-send-btn { background: linear-gradient(135deg,#b71c1c,#c62828) !important; }
+      .war-send-btn:hover { background: linear-gradient(135deg,#c62828,#d32f2f) !important; }
+      /* Diplomacy – relations button (replaces condemn) */
+      .dipl-relations-btn {
+        flex-shrink: 0;
+        padding: 4px 10px;
+        font-size: 11px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.2);
+        background: rgba(255,255,255,0.05);
+        color: rgba(255,255,255,0.7);
+        cursor: pointer;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        transition: background 0.15s;
+        white-space: nowrap;
+      }
+      .dipl-relations-btn:hover, .dipl-relations-btn.active {
+        background: rgba(255,255,255,0.15);
+        color: #fff;
+      }
+      /* Inline inter-nation relations panel */
+      .dn-relations-panel {
+        margin: 6px 0 0;
+        padding: 8px 10px;
+        background: rgba(0,0,0,0.25);
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.08);
+      }
+      .dn-relp-title {
+        color: rgba(255,255,255,0.5);
+        font-size: 11px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        letter-spacing: 0.05em;
+        margin-bottom: 6px;
+      }
+      .dn-relp-list { display: flex; flex-direction: column; gap: 4px; }
+      .dn-relrow {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        padding: 2px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+      }
+      .dn-relrow:last-child { border-bottom: none; }
+      .dn-relrow-name { color: rgba(255,255,255,0.75); }
+      .dn-relrow-val { font-weight: 600; }
+      /* War declaration note */
+      .war-decl-note { color: rgba(255,190,50,0.7) !important; }
     </style>
   </head>
   <body>

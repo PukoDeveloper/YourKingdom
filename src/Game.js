@@ -284,6 +284,18 @@ export class Game {
             this._structureRenderer.rebuild();
             this._gameUI.refreshNationsPanel();
           }
+        } else if (result.type === 'player_condemn_delivered') {
+          const nation = this._nationSystem.nations[result.missive.receiverNationId];
+          this._gameUI.addSystemMessage('📢', `你的譴責信已送達 ${nation?.name ?? '對方'}，關係惡化 ${result.delta}。`);
+          this._gameUI.refreshNationsPanel();
+        } else if (result.type === 'player_gift_delivered') {
+          const nation = this._nationSystem.nations[result.missive.receiverNationId];
+          this._gameUI.addSystemMessage('🎁', `禮物已送達 ${nation?.name ?? '對方'}，關係改善 +${result.delta}。`);
+          this._gameUI.refreshNationsPanel();
+        } else if (result.type === 'player_war_declared') {
+          const nation = this._nationSystem.nations[result.missive.receiverNationId];
+          this._gameUI.addSystemMessage('⚔', `已向 ${nation?.name ?? '對方'} 正式宣戰！`);
+          this._gameUI.refreshNationsPanel();
         }
       });
     }
