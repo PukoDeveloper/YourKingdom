@@ -203,25 +203,6 @@ export function generateRandomTraits(seed, exclude = []) {
   return [t1, t2];
 }
 
-/**
- * Generate 0–1 specialty trait for an NPC ruler (on top of their personality).
- * Uses SPECIALTY_TRAITS pool so diplomacy personality is not duplicated.
- *
- * @param {number} seed
- * @param {string[]} [exclude=[]]
- * @returns {string[]}
- */
-export function generateRulerSpecialtyTrait(seed, exclude = []) {
-  const p = _h(seed * 5.9 + 23.1);
-  if (p < 0.40) return []; // 40% chance of no extra trait
-
-  const pool = SPECIALTY_TRAITS.filter(t => !exclude.includes(t));
-  if (pool.length === 0) return [];
-
-  const t = pool[Math.floor(_h(seed * 13.1 + 4.7) * pool.length)];
-  return [t];
-}
-
 // ---------------------------------------------------------------------------
 // Effect computation helpers
 // ---------------------------------------------------------------------------

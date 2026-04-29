@@ -4126,9 +4126,10 @@ export class GameUI {
       const cyclePos = (now % CYCLE_MS) / CYCLE_MS; // 0..1
       // Triangle wave: 0→1→0
       const t = cyclePos < 0.5 ? cyclePos * 2 : (1 - cyclePos) * 2;
-      // Speed bonus from 天生運動員 workers shortens effective cycle
+      // Speed bonus from 天生運動員 workers shortens effective cycle.
       const speedMult = 1.0 + workers.reduce((s, u) => s + (getUnitMoveSpeed(u) - 5) / 20, 0);
-      const adjT = Math.min(1, t * speedMult);
+      const animationSpeedMult = speedMult;
+      const adjT = Math.min(1, t * animationSpeedMult);
 
       caravans.push({
         id:          `caravan:${routeId}`,
@@ -4783,9 +4784,9 @@ export class GameUI {
       const assignedBuildWorkers = this._getBuildingWorkerUnits(key);
       if (settlement && state.buildingQueue.length > 0) {
         const center = this._getSettlementCenter(settlement);
-        // Only emit tokens for queue slots that have a worker driving them.
-        const slots = Math.min(assignedBuildWorkers.length, state.buildingQueue.length);
-        for (let wi = 0; wi < Math.max(slots, state.buildingQueue.length); wi++) {
+        // Emit one token per queued building (all visible on map).
+        // Only items with an assigned worker show that worker's color.
+        for (let wi = 0; wi < state.buildingQueue.length; wi++) {
           const unit = assignedBuildWorkers[wi];
           workers.push({
             id:        `building:${key}:${wi}`,

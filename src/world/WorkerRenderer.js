@@ -109,9 +109,7 @@ export class WorkerRenderer {
    */
   _buildToken(worker) {
     // Use the unit's body color when available, otherwise fall back to type default.
-    const color = (worker.bodyColor != null ? worker.bodyColor : null)
-      ?? TYPE_COLOR[worker.type]
-      ?? DEFAULT_COLOR;
+    const color = worker.bodyColor ?? TYPE_COLOR[worker.type] ?? DEFAULT_COLOR;
     const g = new Graphics();
 
     // ── Drop shadow ──────────────────────────────────────────────────────────
