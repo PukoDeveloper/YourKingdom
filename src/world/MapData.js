@@ -96,6 +96,8 @@ export class MapData {
           t = TERRAIN.SAND;
         } else if (height > 0.72) {
           t = TERRAIN.MOUNTAIN;
+        } else if (height > 0.58) {
+          t = TERRAIN.HILL;
         } else if (moisture > 0.56) {
           t = TERRAIN.FOREST;
         } else {

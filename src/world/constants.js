@@ -20,6 +20,7 @@ export const TERRAIN = Object.freeze({
   CASTLE_GROUND:  5,
   VILLAGE_GROUND: 6,
   PORT_GROUND:    7,
+  HILL:           8,
 });
 
 /** Human-readable Chinese names shown in the HUD. */
@@ -32,4 +33,5 @@ export const TERRAIN_NAMES = {
   [TERRAIN.CASTLE_GROUND]:  '城堡',
   [TERRAIN.VILLAGE_GROUND]: '村落',
   [TERRAIN.PORT_GROUND]:    '沿岸港口',
+  [TERRAIN.HILL]:           '丘陵',
 };
