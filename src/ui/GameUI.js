@@ -1798,13 +1798,12 @@ export class GameUI {
           if (advanced.has(rk)) continue;
           advanced.add(rk);
           road.hoursLeft = Math.max(0, road.hoursLeft - workHours);
+          const [fromKey, toKey] = rk.split('↔');
+          const fromState = this._constructionState.get(fromKey);
+          const toState   = this._constructionState.get(toKey);
           if (road.hoursLeft <= 0) {
             // Road construction / demolition complete.
-            const fromKey = rk.split('↔')[0];
-            const toKey   = rk.split('↔')[1];
-            const fromState = this._constructionState.get(fromKey);
-            const toState   = this._constructionState.get(toKey);
-            const isDemo    = road.isDemo;
+            const isDemo = road.isDemo;
 
             if (!isDemo) {
               // Mark as built on both endpoints
@@ -1823,12 +1822,8 @@ export class GameUI {
             }
           } else {
             // Mirror updated hoursLeft to both endpoint road entries
-            const fromKey2 = rk.split('↔')[0];
-            const toKey2   = rk.split('↔')[1];
-            const fromState2 = this._constructionState.get(fromKey2);
-            const toState2   = this._constructionState.get(toKey2);
-            if (fromState2?.roads.has(rk)) fromState2.roads.get(rk).hoursLeft = road.hoursLeft;
-            if (toState2?.roads.has(rk))   toState2.roads.get(rk).hoursLeft   = road.hoursLeft;
+            if (fromState?.roads.has(rk)) fromState.roads.get(rk).hoursLeft = road.hoursLeft;
+            if (toState?.roads.has(rk))   toState.roads.get(rk).hoursLeft   = road.hoursLeft;
           }
         }
       }
@@ -2908,10 +2903,12 @@ export class GameUI {
     if (idx < 0) return { coastal: false, tile: null };
     const { x: sx, y: sy } = mapArr[idx];
     const size = isCastle ? 4 : 2;
+    // Number of tiles to scan beyond the settlement footprint in each direction.
+    const COASTAL_SCAN_BORDER = 2;
 
     // Scan a 2-tile border around the settlement for SAND tiles adjacent to WATER.
-    for (let dy = -2; dy <= size + 1; dy++) {
-      for (let dx = -2; dx <= size + 1; dx++) {
+    for (let dy = -COASTAL_SCAN_BORDER; dy <= size + COASTAL_SCAN_BORDER - 1; dy++) {
+      for (let dx = -COASTAL_SCAN_BORDER; dx <= size + COASTAL_SCAN_BORDER - 1; dx++) {
         const tx = sx + dx;
         const ty = sy + dy;
         if (this._mapData.getTerrain(tx, ty) === TERRAIN.SAND) {
@@ -3166,11 +3163,13 @@ export class GameUI {
       }
       // Roads in progress
       for (const [rk, road] of state.roads) {
-        const other  = rk.split('↔').find(p => p !== key) ?? '';
-        const oSett  = this._getSettlementByKey(other);
-        const name   = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : road.targetName;
-        const pct    = Math.round((1 - road.hoursLeft / (road.tilesTotal * (road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE))) * 100);
-        const label  = road.isDemo ? `🪚 拆除中 ${pct}%` : `🚧 施工中 ${pct}%`;
+        const other      = rk.split('↔').find(p => p !== key) ?? '';
+        const oSett      = this._getSettlementByKey(other);
+        const name       = oSett ? `${oSett.type === 'castle' ? '🏰' : '🏘️'} ${oSett.name}` : road.targetName;
+        const hoursPerTile = road.isDemo ? CONSTR_ROAD_DEMO_HOURS_PER_TILE : CONSTR_ROAD_HOURS_PER_TILE;
+        const totalHours = road.tilesTotal * hoursPerTile;
+        const pct        = Math.round((1 - road.hoursLeft / totalHours) * 100);
+        const label      = road.isDemo ? `🪚 拆除中 ${pct}%` : `🚧 施工中 ${pct}%`;
         rows.push(`
           <div class="constr-road-row">
             <span class="crr-icon">${road.isDemo ? '🪚' : '🚧'}</span>
