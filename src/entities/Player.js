@@ -9,6 +9,7 @@ import {
 const SPEED              = 200;  // world pixels per second
 const RADIUS             = 12;   // player body radius in world pixels
 const FOREST_SPEED_MULT  = 0.4;  // speed multiplier when inside forest
+const HILL_SPEED_MULT    = 0.65; // speed multiplier when traversing hills
 
 export class Player {
   /**
@@ -94,9 +95,11 @@ export class Player {
       const nx = dirX / len;
       const ny = dirY / len;
 
-      // Apply forest speed penalty based on the tile the player currently stands on
+      // Apply forest/hill speed penalty based on the tile the player currently stands on
       const terrain   = mapData ? mapData.getTerrainAtWorld(this.x, this.y) : null;
-      const speedMult = terrain === TERRAIN.FOREST ? FOREST_SPEED_MULT : 1;
+      let speedMult = 1;
+      if (terrain === TERRAIN.FOREST) speedMult = FOREST_SPEED_MULT;
+      else if (terrain === TERRAIN.HILL) speedMult = HILL_SPEED_MULT;
       const step      = SPEED * speedMult * dt;
 
       // Attempt X and Y movement independently so the player can slide along

@@ -97,6 +97,18 @@ export function drawTile(g, localX, localY, terrain) {
       break;
 
     // ------------------------------------------------------------------
+    case TERRAIN.HILL:
+      g.rect(x, y, T, T).fill(0x8D9A5A);
+      // Rolling hill silhouettes
+      g.poly([x,      y + T, x + 24, y + 18, x + T, y + T]).fill(0x7A8A48);
+      g.poly([x + 10, y + T, x + 36, y + 24, x + T, y + T]).fill(0x9AAB5F);
+      // Small rocks / pebbles
+      g.circle(x + 12, y + 38, 3).fill(0x6B7A40);
+      g.circle(x + 38, y + 28, 2).fill(0x6B7A40);
+      g.circle(x + 28, y + 42, 2).fill(0x7A8A48);
+      break;
+
+    // ------------------------------------------------------------------
     default:
       g.rect(x, y, T, T).fill(0x1565C0);
   }

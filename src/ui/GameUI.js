@@ -31,7 +31,7 @@ import {
   BUILDING_META,
   CATALOG_GENERAL, CATALOG_BLACKSMITH, CATALOG_MAGE, CATALOG_TAVERN_FOOD,
 } from '../systems/BuildingSystem.js';
-import { TERRAIN, TILE_SIZE } from '../world/constants.js';
+import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
 const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形'];
@@ -375,6 +375,9 @@ export class GameUI {
       description: '擊倒敵方將領所獲得的戰功證明。' });
     this.inventory.addItem({ name: '勝利旗幟', type: 'trophy', icon: '🚩', quantity: 1,
       description: '從攻下的城池上取下的旗幟。' });
+    // Map item
+    this.inventory.addItem({ name: '地圖', type: 'map', icon: '🗺️', quantity: 1,
+      stackable: false, description: '記錄王國全域地形的羊皮紙地圖，可查看整片大陸。' });
 
     // Squad 0 – already has the hero; add three more members
     this.army.acquireUnit({ name: '趙一', role: '劍士',   traits: ['重步兵'],           stats: { attack: 8,  defense: 6  } }, 0);
@@ -487,6 +490,34 @@ export class GameUI {
     `;
     document.body.appendChild(settlementDetail);
 
+    // Minimap overlay (opened by the 地圖 map item)
+    const minimap = document.createElement('div');
+    minimap.id = 'ui-minimap-overlay';
+    minimap.innerHTML = `
+      <div id="ui-minimap-box">
+        <div id="ui-minimap-header">
+          <span id="ui-minimap-title">🗺️ 王國地圖</span>
+          <button id="ui-minimap-close">✕</button>
+        </div>
+        <div id="ui-minimap-canvas-wrap">
+          <canvas id="ui-minimap-canvas"></canvas>
+        </div>
+        <div id="ui-minimap-legend">
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#1565C0"></span>水域</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#E8D5A3"></span>沙灘</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#4CAF50"></span>草原</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#2E7D32"></span>森林</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8D9A5A"></span>丘陵</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#546E7A"></span>山地</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8D8D8D"></span>城堡</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#C8A96E"></span>村落</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8B6914"></span>港口</div>
+          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#FFD700"></span>玩家位置</div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(minimap);
+
     // NOTE: Battle preview overlay and battle scene overlay are declared in index.html
     // (static HTML) so they are always available when _attachListeners() runs.
   }
@@ -550,6 +581,12 @@ export class GameUI {
       if (e.target.id === 'ui-settlement-detail-overlay') this._closeSettlementDetail();
     });
     document.getElementById('ui-settlement-detail-close').addEventListener('click', () => this._closeSettlementDetail());
+
+    // Close minimap overlay when tapping backdrop or close button
+    document.getElementById('ui-minimap-overlay').addEventListener('click', (e) => {
+      if (e.target.id === 'ui-minimap-overlay') this._closeMinimap();
+    });
+    document.getElementById('ui-minimap-close').addEventListener('click', () => this._closeMinimap());
   }
 
   // -------------------------------------------------------------------------
@@ -622,6 +659,7 @@ export class GameUI {
       { id: 'utility',   label: '實用' },
       { id: 'loot',      label: '資源' },
       { id: 'trophy',    label: '戰利品' },
+      { id: 'map',       label: '地圖' },
       { id: 'other',     label: '其他' },
     ];
   }
@@ -641,7 +679,7 @@ export class GameUI {
     return {
       weapon: '武器', helmet: '頭盔', chest: '胸甲', legs: '護腿', boots: '靴子',
       accessory: '飾品', food: '糧食', potion: '藥水', utility: '實用',
-      loot: '資源', consumable: '消耗', trophy: '戰利品',
+      loot: '資源', consumable: '消耗', trophy: '戰利品', map: '地圖',
     };
   }
 
@@ -649,7 +687,7 @@ export class GameUI {
   static get _KNOWN_TYPES() {
     return new Set([
       ...GameUI._EQUIP_TYPES,
-      'accessory', 'food', 'potion', 'consumable', 'utility', 'loot', 'trophy',
+      'accessory', 'food', 'potion', 'consumable', 'utility', 'loot', 'trophy', 'map',
     ]);
   }
 
@@ -746,7 +784,8 @@ export class GameUI {
 
   _openItemDetail(item) {
     const LABEL   = GameUI._TYPE_LABEL;
-    const usable  = ['consumable', 'potion', 'utility'].includes(item.type);
+    const isMap   = item.type === 'map';
+    const usable  = !isMap && ['consumable', 'potion', 'utility'].includes(item.type);
     const statsKeys = item.stats ? Object.keys(item.stats) : [];
     const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
 
@@ -778,7 +817,8 @@ export class GameUI {
       </div>` : ''}
       ${statsHTML}
       <div class="id-actions">
-        ${usable ? `<button class="btn-item-use" data-id="${item.id}">▶ 使用</button>` : ''}
+        ${isMap   ? `<button class="btn-item-use" data-id="${item.id}">🗺️ 查看地圖</button>` : ''}
+        ${usable  ? `<button class="btn-item-use" data-id="${item.id}">▶ 使用</button>` : ''}
         <button class="btn-item-discard" data-id="${item.id}">🗑 丟棄</button>
       </div>
     `;
@@ -787,6 +827,11 @@ export class GameUI {
 
     const detailBody = document.getElementById('ui-item-detail-body');
     detailBody.querySelector('.btn-item-use')?.addEventListener('click', () => {
+      if (isMap) {
+        this._closeItemDetail();
+        this._openMinimap();
+        return;
+      }
       const desc = this.inventory.useItem(item.id);
       if (desc) this._toast(desc);
       this._closeItemDetail();
@@ -803,6 +848,79 @@ export class GameUI {
 
   _closeItemDetail() {
     document.getElementById('ui-item-detail-overlay').classList.remove('visible');
+  }
+
+  // -------------------------------------------------------------------------
+  // Minimap overlay
+  // -------------------------------------------------------------------------
+
+  /** Terrain colour palette for the minimap canvas. */
+  static get _MINIMAP_COLORS() {
+    return {
+      0: '#1565C0', // WATER
+      1: '#E8D5A3', // SAND
+      2: '#4CAF50', // GRASS
+      3: '#2E7D32', // FOREST
+      4: '#546E7A', // MOUNTAIN
+      5: '#8D8D8D', // CASTLE_GROUND
+      6: '#C8A96E', // VILLAGE_GROUND
+      7: '#8B6914', // PORT_GROUND
+      8: '#8D9A5A', // HILL
+    };
+  }
+
+  _openMinimap() {
+    if (!this._mapData) return;
+
+    const SCALE = 2; // pixels per tile
+    const canvas = document.getElementById('ui-minimap-canvas');
+    const maxBoxWidth = Math.min(window.innerWidth * 0.88, 396) - 24; // 12px padding each side
+    const displayScale = Math.min(1, maxBoxWidth / (MAP_WIDTH * SCALE));
+
+    canvas.width  = MAP_WIDTH  * SCALE;
+    canvas.height = MAP_HEIGHT * SCALE;
+    canvas.style.width  = `${Math.round(MAP_WIDTH  * SCALE * displayScale)}px`;
+    canvas.style.height = `${Math.round(MAP_HEIGHT * SCALE * displayScale)}px`;
+
+    const ctx  = canvas.getContext('2d');
+    const COLORS = GameUI._MINIMAP_COLORS;
+
+    // Draw terrain tiles
+    for (let ty = 0; ty < MAP_HEIGHT; ty++) {
+      for (let tx = 0; tx < MAP_WIDTH; tx++) {
+        const terrain = this._mapData.tiles[ty * MAP_WIDTH + tx];
+        ctx.fillStyle = COLORS[terrain] ?? '#1565C0';
+        ctx.fillRect(tx * SCALE, ty * SCALE, SCALE, SCALE);
+      }
+    }
+
+    // Draw player position marker
+    this._drawMinimapPlayer(ctx, SCALE);
+
+    document.getElementById('ui-minimap-overlay').classList.add('visible');
+  }
+
+  _drawMinimapPlayer(ctx, scale) {
+    if (!this.player) return;
+    const tx = this.player.x / TILE_SIZE;
+    const ty = this.player.y / TILE_SIZE;
+    const px = tx * scale;
+    const py = ty * scale;
+    const r  = scale * 1.5;
+
+    ctx.beginPath();
+    ctx.arc(px, py, r + 1, 0, Math.PI * 2);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFD700';
+    ctx.fill();
+  }
+
+  _closeMinimap() {
+    document.getElementById('ui-minimap-overlay').classList.remove('visible');
   }
 
   // -------------------------------------------------------------------------
