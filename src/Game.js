@@ -217,7 +217,7 @@ export class Game {
     if (savedState) {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
       this._builtRoadTileSet   = this._gameUI.getBuiltRoadTileSet();
-      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings());
+      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings(), this._mapData);
       this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
     }
 
@@ -238,7 +238,7 @@ export class Game {
 
     // Rebuild map-building overlay and bridge tile set whenever a map building changes.
     this._gameUI.onMapBuildingChanged = () => {
-      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings());
+      this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings(), this._mapData);
       this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
     };
 
