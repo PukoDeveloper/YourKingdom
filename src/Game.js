@@ -2,6 +2,7 @@ import { Application, Container, Graphics } from 'pixi.js';
 import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
+import { RoadRenderer }     from './world/RoadRenderer.js';
 import { NpcArmyRenderer }  from './world/NpcArmyRenderer.js';
 import { MissiveRenderer }  from './world/MissiveRenderer.js';
 import { WorkerRenderer }   from './world/WorkerRenderer.js';
@@ -94,6 +95,10 @@ export class Game {
     this._world.addChild(this._mapRenderer.container);
     this._reportLoading(85);
     await this._yieldFrame();
+
+    // Road overlay (drawn on top of terrain, below structures).
+    this._roadRenderer = new RoadRenderer();
+    this._world.addChild(this._roadRenderer.container);
 
     // Castle structures (drawn on top of terrain)
     this._setLoadingStatus('建造城池與村落...');
@@ -197,6 +202,15 @@ export class Game {
       this._structureRenderer.rebuild();
     }
 
+    // Cached road-tile Set (rebuilt whenever roads change; passed to Player every frame).
+    this._builtRoadTileSet = new Set();
+
+    // Restore built roads from save data.
+    if (savedState) {
+      this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
+      this._builtRoadTileSet = this._gameUI.getBuiltRoadTileSet();
+    }
+
     // Rebuild map structures whenever the player captures a new settlement.
     this._gameUI.onCaptureSettlement = () => this._structureRenderer.rebuild();
 
@@ -205,6 +219,12 @@ export class Game {
 
     // Rebuild map structures whenever the player builds a new port.
     this._gameUI.onPortBuilt = () => this._structureRenderer.rebuild();
+
+    // Rebuild road overlay whenever a road is completed or demolished.
+    this._gameUI.onRoadBuilt = () => {
+      this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
+      this._builtRoadTileSet = this._gameUI.getBuiltRoadTileSet();
+    };
 
     // Advance in-game days when resting at an inn.
     this._gameUI.onAdvanceDays = (n) => {
@@ -242,7 +262,7 @@ export class Game {
 
   _update(dt) {
     const dir = this._input.getDirection();
-    this._player.update(dt, dir.x, dir.y, this._mapData);
+    this._player.update(dt, dir.x, dir.y, this._mapData, this._builtRoadTileSet);
 
     this._camera.follow(this._player.x, this._player.y);
     this._camera.update(dt);
