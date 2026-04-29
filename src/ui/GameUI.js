@@ -1,6 +1,6 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
-import { TRAIT_RULER, PLAYER_NATION_ID }   from '../systems/NationSystem.js';
+import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID }   from '../systems/NationSystem.js';
 import {
   RELATION_LEVELS,
   PERSONALITY_COLORS,
@@ -128,6 +128,17 @@ const CONSTR_ROAD_DEMO_HOURS_PER_TILE = 0.5;
  */
 const CONSTR_PHASE_HOURS = { '白天': 10, '黃昏': 2 };
 
+/** Base plunder gold for a castle (added to economy level × PLUNDER_ECONOMY_CASTLE). */
+const PLUNDER_BASE_CASTLE   = 80;
+/** Gold multiplier per economy level when plundering a castle. */
+const PLUNDER_ECONOMY_CASTLE = 25;
+/** Base plunder gold for a village (added to economy level × PLUNDER_ECONOMY_VILLAGE). */
+const PLUNDER_BASE_VILLAGE   = 30;
+/** Gold multiplier per economy level when plundering a village. */
+const PLUNDER_ECONOMY_VILLAGE = 15;
+/** Resource quantity awarded per resource type when plundering. */
+const PLUNDER_RESOURCE_QTY   = 8;
+
 /**
  * Buildable building catalogue (types that can be constructed by the player).
  * Excludes government buildings (palace / chief_house).
@@ -203,6 +214,9 @@ export class GameUI {
     /** Active construction sub-tab: '建築' | '道路' | '港口' */
     this._constructionTab = '建築';
 
+    /** Currently active minimap layer: 'terrain' | 'territory' */
+    this._minimapLayer = 'terrain';
+
     /** The settlement the player is currently standing on, or null. */
     this._nearbySettlement = null;
 
@@ -239,6 +253,13 @@ export class GameUI {
      * @type {Set<string>}
      */
     this._capturedSettlements = new Set();
+
+    /**
+     * Set of settlement keys the player has liberated (released as neutral).
+     * Keys are formatted as "castle:<idx>" or "village:<idx>".
+     * @type {Set<string>}
+     */
+    this._liberatedSettlements = new Set();
 
     /** Id of the unit whose move-target panel is currently open, or null. */
     this._movingUnitId = null;
@@ -499,6 +520,10 @@ export class GameUI {
           <span id="ui-minimap-title">🗺️ 王國地圖</span>
           <button id="ui-minimap-close">✕</button>
         </div>
+        <div id="ui-minimap-tabs">
+          <button class="mm-tab-btn active" data-layer="terrain">地形</button>
+          <button class="mm-tab-btn" data-layer="territory">領土</button>
+        </div>
         <div id="ui-minimap-canvas-wrap">
           <canvas id="ui-minimap-canvas"></canvas>
         </div>
@@ -509,10 +534,10 @@ export class GameUI {
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#2E7D32"></span>森林</div>
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8D9A5A"></span>丘陵</div>
           <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#546E7A"></span>山地</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8D8D8D"></span>城堡</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#C8A96E"></span>村落</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#8B6914"></span>港口</div>
-          <div class="mm-legend-item"><span class="mm-legend-swatch" style="background:#FFD700"></span>玩家位置</div>
+          <div class="mm-legend-item mm-legend-icon">🏰 城堡</div>
+          <div class="mm-legend-item mm-legend-icon">🏘️ 村落</div>
+          <div class="mm-legend-item mm-legend-icon">⚓ 港口</div>
+          <div class="mm-legend-item mm-legend-icon">🌟 玩家位置</div>
         </div>
       </div>
     `;
@@ -587,6 +612,16 @@ export class GameUI {
       if (e.target.id === 'ui-minimap-overlay') this._closeMinimap();
     });
     document.getElementById('ui-minimap-close').addEventListener('click', () => this._closeMinimap());
+
+    // Minimap layer tabs
+    document.getElementById('ui-minimap-tabs').addEventListener('click', (e) => {
+      const btn = e.target.closest('.mm-tab-btn');
+      if (!btn) return;
+      document.querySelectorAll('.mm-tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      this._minimapLayer = btn.dataset.layer;
+      this._redrawMinimap();
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -882,10 +917,27 @@ export class GameUI {
     canvas.style.width  = `${Math.round(MAP_WIDTH  * SCALE * displayScale)}px`;
     canvas.style.height = `${Math.round(MAP_HEIGHT * SCALE * displayScale)}px`;
 
-    const ctx  = canvas.getContext('2d');
+    // Sync tab button UI to current layer state
+    document.querySelectorAll('.mm-tab-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.layer === this._minimapLayer);
+    });
+
+    this._redrawMinimap();
+    document.getElementById('ui-minimap-overlay').classList.add('visible');
+  }
+
+  /**
+   * (Re)draw the minimap canvas for the currently active layer.
+   * Called when layer changes or when the minimap is opened.
+   */
+  _redrawMinimap() {
+    if (!this._mapData) return;
+    const SCALE = 2;
+    const canvas = document.getElementById('ui-minimap-canvas');
+    const ctx = canvas.getContext('2d');
     const COLORS = GameUI._MINIMAP_COLORS;
 
-    // Draw terrain tiles
+    // --- Base terrain layer ---
     for (let ty = 0; ty < MAP_HEIGHT; ty++) {
       for (let tx = 0; tx < MAP_WIDTH; tx++) {
         const terrain = this._mapData.tiles[ty * MAP_WIDTH + tx];
@@ -894,10 +946,120 @@ export class GameUI {
       }
     }
 
-    // Draw player position marker
-    this._drawMinimapPlayer(ctx, SCALE);
+    // --- Territory overlay layer ---
+    if (this._minimapLayer === 'territory' && this.nationSystem) {
+      this._drawMinimapTerritoryOverlay(ctx, SCALE);
+    }
 
-    document.getElementById('ui-minimap-overlay').classList.add('visible');
+    // --- Settlement icons ---
+    this._drawMinimapSettlements(ctx, SCALE);
+
+    // --- Player marker ---
+    this._drawMinimapPlayer(ctx, SCALE);
+  }
+
+  /**
+   * Draw semi-transparent colored blobs for each nation's controlled territory,
+   * plus a small nation name label.
+   */
+  _drawMinimapTerritoryOverlay(ctx, scale) {
+    if (!this.nationSystem) return;
+    const { castleSettlements, villageSettlements, nations } = this.nationSystem;
+    const pk = this.getPlayerNation();
+
+    /** Font size (px) for the territory nation-name labels. */
+    const TERRITORY_LABEL_FONT_SIZE = 7;
+
+    // Collect all settlements with their controlling color
+    const allSettlements = [
+      ...castleSettlements.map((s, i) => ({ s, tilePos: this._mapData.castles[i], size: 4 })),
+      ...villageSettlements.map((s, i) => ({ s, tilePos: this._mapData.villages[i], size: 2 })),
+    ];
+
+    for (const { s, tilePos, size } of allSettlements) {
+      if (!tilePos) continue;
+      let color;
+      if (s.controllingNationId === PLAYER_NATION_ID) {
+        color = pk.color;
+      } else if (s.controllingNationId === NEUTRAL_NATION_ID) {
+        color = '#FFFFFF';
+      } else {
+        const nation = nations[s.controllingNationId];
+        color = nation ? nation.color : '#9E9E9E';
+      }
+
+      // Draw a blurred/soft color blob covering the settlement footprint + a halo
+      const radius = (size * scale) + scale * 3;
+      const cx = (tilePos.x + size / 2) * scale;
+      const cy = (tilePos.y + size / 2) * scale;
+
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+      grad.addColorStop(0, color + 'AA');
+      grad.addColorStop(0.5, color + '55');
+      grad.addColorStop(1, color + '00');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Small label for the controlling nation
+      let label;
+      if (s.controllingNationId === PLAYER_NATION_ID) {
+        label = pk.name;
+      } else if (s.controllingNationId === NEUTRAL_NATION_ID) {
+        label = '中立';
+      } else {
+        const nation = nations[s.controllingNationId];
+        label = nation ? nation.name : '';
+      }
+      if (label) {
+        const lx = cx;
+        const ly = cy + size * scale + scale * 3;
+        ctx.font = `bold ${TERRITORY_LABEL_FONT_SIZE}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        // Outline for readability
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.lineWidth = 2.5;
+        ctx.strokeText(label, lx, ly);
+        ctx.fillStyle = color;
+        ctx.fillText(label, lx, ly);
+      }
+    }
+  }
+
+  /**
+   * Draw emoji-style icons for castles, villages, and ports on the minimap.
+   * Uses a small font to stamp recognisable glyphs at each structure centre.
+   */
+  _drawMinimapSettlements(ctx, scale) {
+    if (!this._mapData) return;
+    /** Multiplier applied to `scale` to derive the icon font size in canvas pixels. */
+    const ICON_SCALE_MULTIPLIER = 4;
+    const iconSize = Math.max(7, scale * ICON_SCALE_MULTIPLIER); // font size in canvas pixels
+    ctx.font = `${iconSize}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const drawIcon = (tileX, tileY, structSize, emoji) => {
+      const cx = (tileX + structSize / 2) * scale;
+      const cy = (tileY + structSize / 2) * scale;
+      // Dark shadow for contrast on any background
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillText(emoji, cx + 0.5, cy + 0.5);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(emoji, cx, cy);
+    };
+
+    for (const { x, y } of this._mapData.castles) {
+      drawIcon(x, y, 4, '🏰');
+    }
+    for (const { x, y } of this._mapData.villages) {
+      drawIcon(x, y, 2, '🏘️');
+    }
+    for (const { x, y } of this._mapData.ports) {
+      drawIcon(x, y, 1, '⚓');
+    }
   }
 
   _drawMinimapPlayer(ctx, scale) {
@@ -1549,10 +1711,13 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const isPlayer  = settlement.controllingNationId < 0;
+    const isPlayer  = settlement.controllingNationId === PLAYER_NATION_ID;
+    const isNeutral = settlement.controllingNationId === NEUTRAL_NATION_ID;
     const nation    = isPlayer
       ? this.getPlayerNation()
-      : this.nationSystem.getNation(settlement);
+      : isNeutral
+        ? { name: '中立', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } }
+        : this.nationSystem.getNation(settlement);
     const ruler     = settlement.ruler;
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
@@ -2301,7 +2466,7 @@ export class GameUI {
 
     let subtitle = '';
     if (s.type === 'castle' && this.nationSystem) {
-      const nation = s.controllingNationId < 0
+      const nation = s.controllingNationId === PLAYER_NATION_ID
         ? this.getPlayerNation()
         : this.nationSystem.getNation(s);
       subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
@@ -2323,19 +2488,28 @@ export class GameUI {
   _renderLocationGate(settlement) {
     let nation = null;
     if (this.nationSystem) {
-      nation = settlement.controllingNationId < 0
-        ? this.getPlayerNation()
-        : this.nationSystem.getNation(settlement);
+      if (settlement.controllingNationId === PLAYER_NATION_ID) {
+        nation = this.getPlayerNation();
+      } else if (settlement.controllingNationId === NEUTRAL_NATION_ID) {
+        nation = { name: '中立', emblem: '🏳' };
+      } else {
+        nation = this.nationSystem.getNation(settlement);
+      }
     }
     const nationName = nation ? nation.name : settlement.name;
 
-    const isPlayerOwned = settlement.controllingNationId < 0;
-    const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : '🛡️⚔️🛡️';
+    const isPlayerOwned = settlement.controllingNationId === PLAYER_NATION_ID;
+    const isNeutral     = settlement.controllingNationId === NEUTRAL_NATION_ID;
+    const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : isNeutral ? '🏳🕊️🏳' : '🛡️⚔️🛡️';
     const gateMsg = isPlayerOwned
       ? `兩名身著你方盔甲的士兵立正行禮。<br>
            「<em>主公歸來，城門大開！</em>」<br>
            「<em>請入內視察 ${nationName}。</em>」`
-      : `兩名身著銀甲的守衛持槍攔下了你。<br>
+      : isNeutral
+        ? `一名手持白旗的使者在城門前迎候。<br>
+           「<em>歡迎旅人，此地已宣告中立。</em>」<br>
+           「<em>城門對所有人開放，請自由入城。</em>」`
+        : `兩名身著銀甲的守衛持槍攔下了你。<br>
            「<em>停！這裡是 ${nationName} 的城門。</em>」<br>
            「<em>說明來意，方可入城。</em>」`;
 
@@ -4533,6 +4707,7 @@ export class GameUI {
       finished:         false,
       result:           null,
       diplomacyApplied: false,
+      plundered:        false,
     };
 
     const overlay = document.getElementById('battle-scene-overlay');
@@ -4598,20 +4773,43 @@ export class GameUI {
         retreat: { icon: '🏃', label: '撤退',     cls: 'btl-result-retreat'},
       };
       const r = resultMeta[result] ?? resultMeta.retreat;
-      const alreadyCaptured = result === 'victory' && this.isPlayerSettlement(settlement);
-      const captureBtn = result === 'victory' && !alreadyCaptured
-        ? `<button id="btn-battle-capture" class="btn-battle-capture">🏴 佔領 ${settlement.name}</button>`
-        : result === 'victory' && alreadyCaptured
-          ? `<div class="btl-captured-badge">🏴 已佔領</div>`
-          : '';
+      const alreadyCaptured  = result === 'victory' && this.isPlayerSettlement(settlement);
+      const alreadyLiberated = result === 'victory' && settlement.controllingNationId === NEUTRAL_NATION_ID;
+      const alreadyPlundered = result === 'victory' && state.plundered;
+
+      let victoryActions = '';
+      if (result === 'victory') {
+        if (alreadyCaptured) {
+          victoryActions = `<div class="btl-captured-badge">🏴 已佔領</div>`;
+        } else if (alreadyLiberated) {
+          victoryActions = `<div class="btl-liberated-badge">🏳 已解放</div>`;
+        } else if (alreadyPlundered) {
+          victoryActions = `<div class="btl-captured-badge">💰 已掠奪</div>`;
+        } else {
+          victoryActions = `
+            <button id="btn-battle-capture"  class="btn-battle-capture">🏴 佔領</button>
+            <button id="btn-battle-plunder"  class="btn-battle-plunder">💰 掠奪</button>
+            <button id="btn-battle-liberate" class="btn-battle-liberate">🕊 解放</button>`;
+        }
+      }
+
       actionsEl.innerHTML = `
         <div class="btl-result ${r.cls}">${r.icon} ${r.label}</div>
-        ${captureBtn}
+        ${victoryActions}
         <button id="btn-battle-exit" class="btn-battle-exit">離開戰場</button>`;
-      if (result === 'victory' && !alreadyCaptured) {
+
+      if (result === 'victory' && !alreadyCaptured && !alreadyLiberated && !alreadyPlundered) {
         actionsEl.querySelector('#btn-battle-capture').addEventListener('click', () => {
           this._captureSettlement(settlement);
-          this._renderBattleScene(); // re-render to flip button → badge
+          this._renderBattleScene(); // re-render to flip buttons → badge
+        });
+        actionsEl.querySelector('#btn-battle-plunder').addEventListener('click', () => {
+          this._plunderSettlement(settlement);
+          this._renderBattleScene(); // re-render to show plunder badge
+        });
+        actionsEl.querySelector('#btn-battle-liberate').addEventListener('click', () => {
+          this._liberateSettlement(settlement);
+          this._renderBattleScene(); // re-render to flip buttons → badge
         });
       }
       actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
@@ -4778,6 +4976,7 @@ export class GameUI {
       army:                 this.army.getState(),
       playerKingdom:        { ...this._playerKingdom },
       capturedSettlements:  [...this._capturedSettlements],
+      liberatedSettlements: [...this._liberatedSettlements],
       tavernState:          Object.fromEntries(this._tavernState),
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
@@ -4797,7 +4996,12 @@ export class GameUI {
     if (Array.isArray(state.capturedSettlements)) {
       this._capturedSettlements = new Set(state.capturedSettlements);
       this._playerSettlementCount = this._capturedSettlements.size;
-      // Apply playerOwned flag to Settlement objects so StructureRenderer
+    }
+    if (Array.isArray(state.liberatedSettlements)) {
+      this._liberatedSettlements = new Set(state.liberatedSettlements);
+    }
+    if (Array.isArray(state.capturedSettlements) || Array.isArray(state.liberatedSettlements)) {
+      // Apply playerOwned / neutral flags to Settlement objects so StructureRenderer
       // and all UI code can read ownership directly from the settlement.
       this._syncSettlementOwnership();
     }
@@ -4846,6 +5050,7 @@ export class GameUI {
   /**
    * Iterate `_capturedSettlements` and set ownership on the matching
    * Settlement objects in NationSystem. Clears ownership on all others.
+   * Also restores `NEUTRAL_NATION_ID` for liberated settlements.
    * Safe to call multiple times (idempotent).
    */
   _syncSettlementOwnership() {
@@ -4856,7 +5061,14 @@ export class GameUI {
     ];
     allSettlements.forEach(s => {
       const key = this._settlementKey(s);
-      this._setSettlementOwnership(s, key !== '' && this._capturedSettlements.has(key));
+      if (key !== '' && this._capturedSettlements.has(key)) {
+        this._setSettlementOwnership(s, true);
+      } else if (key !== '' && this._liberatedSettlements.has(key)) {
+        s.playerOwned = false;
+        s.controllingNationId = NEUTRAL_NATION_ID;
+      } else {
+        this._setSettlementOwnership(s, false);
+      }
     });
   }
 
@@ -4900,6 +5112,9 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
+    // If previously liberated, remove from that set first.
+    this._liberatedSettlements.delete(key);
+
     this._setSettlementOwnership(settlement, true);
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
@@ -4942,6 +5157,70 @@ export class GameUI {
         // Refresh diplomacy panel immediately if it is open.
         if (this._activePanel === 'nations') this._renderNations();
       }
+    }
+  }
+
+  /**
+   * Plunder a settlement after victory: award gold and resources without annexing it.
+   * The settlement remains under its original nation's control.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _plunderSettlement(settlement) {
+    // Mark the current battle as plundered so the UI shows the badge on re-render.
+    if (this._battleState) this._battleState.plundered = true;
+
+    const iconMap = {
+      '木材': '🪵', '農產': '🌾', '礦石': '⛏️', '絲綢': '🧵',
+      '煤炭': '🪨', '草藥': '🌿', '魚獲': '🐟', '皮毛': '🦊',
+      '食鹽': '🧂', '陶器': '🏺',
+    };
+
+    // Award plunder gold (slightly more than capture since you're explicitly looting).
+    const goldReward = settlement.type === 'castle'
+      ? PLUNDER_BASE_CASTLE   + settlement.economyLevel * PLUNDER_ECONOMY_CASTLE
+      : PLUNDER_BASE_VILLAGE  + settlement.economyLevel * PLUNDER_ECONOMY_VILLAGE;
+    this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: goldReward });
+
+    // Award resources (more than capture since this is pure plunder).
+    settlement.resources.forEach(res => {
+      this.inventory.addItem({
+        name: res, type: 'loot', icon: iconMap[res] ?? '📦', quantity: PLUNDER_RESOURCE_QTY,
+      });
+    });
+
+    this._addInboxMessage('💰', `掠奪了 ${settlement.name}，獲得金幣 ${goldReward} 枚及物資。`);
+
+    // Notify map to rebuild (garrison may have changed).
+    if (typeof this.onCaptureSettlement === 'function') {
+      this.onCaptureSettlement();
+    }
+  }
+
+  /**
+   * Liberate a settlement after victory: release it as a neutral city.
+   * The settlement is freed from its original nation's control and flies a white flag.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _liberateSettlement(settlement) {
+    const key = this._settlementKey(settlement);
+    if (!key) return;
+
+    // Remove from captured set if it was previously captured.
+    if (this._capturedSettlements.has(key)) {
+      this._capturedSettlements.delete(key);
+      this._playerSettlementCount = this._capturedSettlements.size;
+    }
+
+    // Mark as liberated (neutral).
+    this._liberatedSettlements.add(key);
+    settlement.playerOwned = false;
+    settlement.controllingNationId = NEUTRAL_NATION_ID;
+
+    this._addInboxMessage('🕊', `解放了 ${settlement.name}，該地區恢復中立，升起白旗。`);
+
+    // Notify map to rebuild so the white flag is shown immediately.
+    if (typeof this.onCaptureSettlement === 'function') {
+      this.onCaptureSettlement();
     }
   }
 

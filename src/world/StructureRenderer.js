@@ -1,6 +1,7 @@
 import { Container, Graphics } from 'pixi.js';
 import { TILE_SIZE } from './constants.js';
 import { drawCastleBuilding, drawVillageBuilding, drawPortBuilding } from './TileDrawer.js';
+import { PLAYER_NATION_ID, NEUTRAL_NATION_ID } from '../systems/NationSystem.js';
 
 /** Convert a CSS hex colour string (e.g. '#C62828') to a numeric value. */
 function _hexToNum(color) {
@@ -39,8 +40,11 @@ export class StructureRenderer {
 
     /** Return the nation info to use for rendering a settlement. */
     const _nation = (settlement) => {
-      if (settlement?.controllingNationId < 0 && this._getPlayerNation) {
+      if (settlement?.controllingNationId === PLAYER_NATION_ID && this._getPlayerNation) {
         return this._getPlayerNation();
+      }
+      if (settlement?.controllingNationId === NEUTRAL_NATION_ID) {
+        return { color: '#FFFFFF', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } };
       }
       return nationSystem ? nationSystem.getNation(settlement) : { color: '#9E9E9E', flagApp: null };
     };
