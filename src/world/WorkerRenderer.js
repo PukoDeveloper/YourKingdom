@@ -1,4 +1,5 @@
 import { Container, Graphics } from 'pixi.js';
+import { drawCharGraphics } from '../systems/AppearanceSystem.js';
 
 // ---------------------------------------------------------------------------
 // Visual constants
@@ -104,17 +105,24 @@ export class WorkerRenderer {
    * Build a single worker-token Graphics object for `worker`.
    * The token is centred at (0, 0); `sync` positions it via `.x / .y`.
    *
-   * @param {{ id: string, type: string, bodyColor?: number|null }} worker
+   * @param {{ id: string, type: string, appearance?: object|null, bodyColor?: number|null }} worker
    * @returns {Graphics}
    */
   _buildToken(worker) {
-    // Use the unit's body color when available, otherwise fall back to type default.
-    const color = worker.bodyColor ?? TYPE_COLOR[worker.type] ?? DEFAULT_COLOR;
     const g = new Graphics();
 
     // ── Drop shadow ──────────────────────────────────────────────────────────
     g.ellipse(0, TOKEN_RADIUS * 0.6, TOKEN_RADIUS + 2, 3)
       .fill({ color: 0x000000, alpha: 0.20 });
+
+    if (worker.appearance) {
+      // Use the unit's full character appearance when available.
+      drawCharGraphics(g, TOKEN_RADIUS, worker.appearance);
+      return g;
+    }
+
+    // Fall back to type-colored circle with icon symbol.
+    const color = worker.bodyColor ?? TYPE_COLOR[worker.type] ?? DEFAULT_COLOR;
 
     // ── Body circle ──────────────────────────────────────────────────────────
     g.circle(0, 0, TOKEN_RADIUS)

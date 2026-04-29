@@ -45,6 +45,7 @@ import {
   getUnitMoveSpeed,
   renderTraitBadgesHTML,
 } from '../systems/CharacterSystem.js';
+import { buildPath } from '../world/NpcPathfinder.js';
 
 /** Display labels for FLAG_STRIPE_STYLES (same order). */
 const _STRIPE_STYLE_LABELS = ['無', '橫紋', '縱紋', '斜紋', '十字', '箭形', '三色橫', '三色縱', '斜十字', '邊框'];
@@ -71,6 +72,40 @@ const DEFAULT_KINGDOM = {
 
 /** Default appearance indices used when no player is available. */
 const DEFAULT_APPEARANCE_INDICES = { bodyColorIdx: 0, headgearIdx: 0, armorColorIdx: 0, markColorIdx: 0, bodyShapeIdx: 0, faceAccIdx: 0 };
+
+/**
+ * Compute the world-pixel position at fraction `t` (0→1) along a waypoint path.
+ * Returns the last waypoint when t >= 1.
+ * @param {{ x: number, y: number }[]} path
+ * @param {number} t  Fraction in [0, 1]
+ * @returns {{ x: number, y: number }}
+ */
+function _positionAlongPath(path, t) {
+  if (!path || path.length < 2) return path?.[0] ?? { x: 0, y: 0 };
+  let totalLen = 0;
+  const segs = [];
+  for (let i = 1; i < path.length; i++) {
+    const dx = path[i].x - path[i - 1].x;
+    const dy = path[i].y - path[i - 1].y;
+    const d  = Math.sqrt(dx * dx + dy * dy);
+    segs.push(d);
+    totalLen += d;
+  }
+  if (totalLen === 0) return path[0];
+  const target = Math.min(t, 1) * totalLen;
+  let acc = 0;
+  for (let i = 0; i < segs.length; i++) {
+    if (acc + segs[i] >= target) {
+      const segT = segs[i] > 0 ? (target - acc) / segs[i] : 0;
+      return {
+        x: path[i].x + (path[i + 1].x - path[i].x) * segT,
+        y: path[i].y + (path[i + 1].y - path[i].y) * segT,
+      };
+    }
+    acc += segs[i];
+  }
+  return path[path.length - 1];
+}
 
 /** Terrain themes applied to the battle scene background. */
 const _BATTLE_THEMES = {
@@ -458,6 +493,21 @@ export class GameUI {
      * @type {Map<string, number[]>}
      */
     this._buildingWorkers = new Map();
+
+    /**
+     * Unit IDs currently serving as messengers for in-transit missives.
+     * Prevents double-assignment while a letter is being carried.
+     * Cleared automatically when the missive is resolved.
+     * @type {Set<number>}
+     */
+    this._messengerUnitIds = new Set();
+
+    /**
+     * The army unit tentatively selected as messenger in the letter-dispatch UI.
+     * Set during _renderSendLetter and consumed when the letter is actually sent.
+     * @type {import('../systems/Army.js').Unit|null}
+     */
+    this._pendingMessengerUnit = null;
 
     if (savedState) {
       this.loadState(savedState);
@@ -2629,6 +2679,28 @@ export class GameUI {
         }
         const fromIsPlayer = fromSett.controllingNationId === PLAYER_NATION_ID;
         const toIsPlayer   = toSett.controllingNationId   === PLAYER_NATION_ID;
+
+        if (route.isImport) {
+          // Import route: foreign → player.  Break if destination is no longer player-owned.
+          if (!toIsPlayer) {
+            brokenRoutes.push({ routeId, name: `${route.fromName} → ${route.toName}` });
+            continue;
+          }
+          // Break if the source nation is now at war with the player.
+          if (fromSett.controllingNationId >= 0 && this.diplomacySystem) {
+            const atWar = this.diplomacySystem.isAtWar(_PLAYER_NATION_ID_UI, fromSett.controllingNationId);
+            if (atWar) {
+              brokenRoutes.push({ routeId, name: `${route.fromName} → ${route.toName}` });
+              continue;
+            }
+          }
+          // Import routes require no worker assignment – the foreign merchants handle it.
+          const routeIncome = route.dailyGold ?? 0;
+          totalTradeGold += routeIncome;
+          continue;
+        }
+
+        // Export route: player → other.
         // Break if from-settlement is no longer player-owned
         if (!fromIsPlayer) {
           brokenRoutes.push({ routeId, name: `${route.fromName} → ${route.toName}` });
@@ -4091,12 +4163,14 @@ export class GameUI {
     for (const id of this._assignedRulers.values()) ids.add(id);
     for (const arr of this._tradeRouteWorkers.values()) arr.forEach(id => ids.add(id));
     for (const arr of this._buildingWorkers.values()) arr.forEach(id => ids.add(id));
+    for (const id of this._messengerUnitIds) ids.add(id);
     return ids;
   }
 
   /**
    * Return caravan position objects for active trade routes that have 2 workers.
-   * Caravans oscillate between origin and destination over a 60-second cycle.
+   * Caravans oscillate between origin and destination over a 60-second cycle,
+   * following the A* path stored on the route (computed when the route was created).
    *
    * @returns {Array<{ id: string, type: string, worldX: number, worldY: number,
    *                   workerUnits: import('../systems/Army.js').Unit[] }>}
@@ -4113,32 +4187,48 @@ export class GameUI {
       const toSett   = this._getSettlementByKey(route.toKey);
       if (!fromSett || !toSett) continue;
 
-      const fromCenter = this._getSettlementCenter(fromSett);
-      const toCenter   = this._getSettlementCenter(toSett);
-
-      const fromX = (fromCenter.tx + 0.5) * TILE_SIZE;
-      const fromY = (fromCenter.ty + 0.5) * TILE_SIZE;
-      const toX   = (toCenter.tx + 0.5) * TILE_SIZE;
-      const toY   = (toCenter.ty + 0.5) * TILE_SIZE;
-
       // Oscillate back and forth; cycle length: 60 s
       const CYCLE_MS = 60_000;
       const cyclePos = (now % CYCLE_MS) / CYCLE_MS; // 0..1
       // Triangle wave: 0→1→0
       const t = cyclePos < 0.5 ? cyclePos * 2 : (1 - cyclePos) * 2;
-      // Speed bonus from 天生運動員 workers shortens effective cycle.
+      // Speed bonus from worker stats shortens effective cycle.
       const speedMult = 1.0 + workers.reduce((s, u) => s + (getUnitMoveSpeed(u) - 5) / 20, 0);
-      const animationSpeedMult = speedMult;
-      const adjT = Math.min(1, t * animationSpeedMult);
+      const adjT = Math.min(1, t * speedMult);
+
+      // Lazily compute A* path for the route so caravans follow terrain.
+      if (!route._path && this._mapData) {
+        const fromCenter = this._getSettlementCenter(fromSett);
+        const toCenter   = this._getSettlementCenter(toSett);
+        const fromPx = { x: (fromCenter.tx + 0.5) * TILE_SIZE, y: (fromCenter.ty + 0.5) * TILE_SIZE };
+        const toPx   = { x: (toCenter.tx   + 0.5) * TILE_SIZE, y: (toCenter.ty   + 0.5) * TILE_SIZE };
+        route._path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+      }
+
+      let worldX, worldY;
+      if (route._path && route._path.length >= 2) {
+        const pos = _positionAlongPath(route._path, adjT);
+        worldX = pos.x;
+        worldY = pos.y;
+      } else {
+        const fromCenter = this._getSettlementCenter(fromSett);
+        const toCenter   = this._getSettlementCenter(toSett);
+        const fromX = (fromCenter.tx + 0.5) * TILE_SIZE;
+        const fromY = (fromCenter.ty + 0.5) * TILE_SIZE;
+        const toX   = (toCenter.tx + 0.5) * TILE_SIZE;
+        const toY   = (toCenter.ty + 0.5) * TILE_SIZE;
+        worldX = fromX + (toX - fromX) * adjT;
+        worldY = fromY + (toY - fromY) * adjT;
+      }
 
       caravans.push({
         id:          `caravan:${routeId}`,
         type:        'trade',
-        worldX:      fromX + (toX - fromX) * adjT,
-        worldY:      fromY + (toY - fromY) * adjT,
+        worldX,
+        worldY,
         workerUnits: workers,
-        // Pass representative unit (first worker) body color for renderer
-        bodyColor:   workers[0].appearance?.bodyColor ?? 0x4fc3f7,
+        // Pass the representative unit's full appearance for the renderer.
+        appearance:  workers[0].appearance ?? null,
       });
     }
     return caravans;
@@ -4263,6 +4353,20 @@ export class GameUI {
     );
     const canJointWar = !atWar && relVal >= 20 && potentialTargets.length > 0;
 
+    // Trade route proposal: check if already have an import route from this settlement
+    const settlKey       = this._settlementKey(settlement);
+    const alreadyImporting = settlKey
+      ? [...this._tradeRoutes.values()].some(r => r.fromKey === settlKey && r.isImport)
+      : false;
+    const canTrade = !atWar && !alreadyImporting && relVal >= TRADE_MIN_FOREIGN_RELATION;
+    const tradeDesc = alreadyImporting
+      ? '進口貿易路線已建立'
+      : atWar
+        ? '戰爭狀態下無法提議'
+        : relVal >= TRADE_MIN_FOREIGN_RELATION
+          ? `向對方提議開放商路，進口其資源（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）`
+          : `關係值過低（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）`;
+
     const pactBadge = (active, label) => active
       ? `<span class="gov-pact-badge gov-pact-active">${label} 有效</span>`
       : '';
@@ -4301,6 +4405,14 @@ export class GameUI {
             </div>
             <span class="gdp-arrow">${canMpt ? '›' : '🔒'}</span>
           </div>
+          <div class="gov-diplo-proposal-card${canTrade ? '' : ' disabled'}" id="diplo-trade-route" role="button" tabindex="${canTrade ? 0 : -1}">
+            <span class="gdp-icon">🛤</span>
+            <div class="gdp-info">
+              <div class="gdp-name">提議建立貿易路線</div>
+              <div class="gdp-desc">${tradeDesc}</div>
+            </div>
+            <span class="gdp-arrow">${canTrade ? '›' : (alreadyImporting ? '✅' : '🔒')}</span>
+          </div>
         </div>
       </div>
     `;
@@ -4314,9 +4426,10 @@ export class GameUI {
       });
     };
 
-    bindCard('diplo-nap',       () => this._renderNapProposal(building, settlement));
-    bindCard('diplo-joint-war', () => this._renderJointWarProposal(building, settlement));
-    bindCard('diplo-mpt',       () => this._renderMutualProtectionProposal(building, settlement));
+    bindCard('diplo-nap',          () => this._renderNapProposal(building, settlement));
+    bindCard('diplo-joint-war',    () => this._renderJointWarProposal(building, settlement));
+    bindCard('diplo-mpt',          () => this._renderMutualProtectionProposal(building, settlement));
+    bindCard('diplo-trade-route',  () => this._renderForeignTradeProposal(building, settlement));
   }
 
   // -------------------------------------------------------------------------
@@ -4337,9 +4450,14 @@ export class GameUI {
     const fromKey = this._settlementKey(settlement);
     if (!fromKey) return;
 
-    // Routes originating from this settlement
+    // Routes originating from this settlement (exports)
     const myRoutes = [...this._tradeRoutes.entries()]
-      .filter(([, r]) => r.fromKey === fromKey)
+      .filter(([, r]) => r.fromKey === fromKey && !r.isImport)
+      .map(([id, r]) => ({ id, ...r }));
+
+    // Import routes arriving at this settlement (foreign merchants coming here)
+    const importRoutes = [...this._tradeRoutes.entries()]
+      .filter(([, r]) => r.toKey === fromKey && r.isImport)
       .map(([id, r]) => ({ id, ...r }));
 
     // Helper: render the 2-slot worker assignment row for a route
@@ -4383,7 +4501,20 @@ export class GameUI {
             ${renderRouteWorkerSlots(r.id)}
           </div>`;
         }).join('')
-      : '<div class="tr-empty">尚無對外貿易路線</div>';
+      : '<div class="tr-empty">尚無對外出口路線</div>';
+
+    // Import routes (foreign merchants coming to this settlement)
+    const importHTML = importRoutes.length > 0
+      ? importRoutes.map(r => `
+          <div class="tr-route-card" style="border-color:#64b5f6">
+            <div class="tr-route-row">
+              <span class="tr-route-dest" style="color:#64b5f6">← ${r.fromName}</span>
+              <span class="tr-route-goods">${(r.resources ?? []).join('、') || '—'}</span>
+              <span class="tr-route-gold">+${r.dailyGold} 🪙/日</span>
+              <button class="tr-route-del" data-route-id="${r.id}" title="取消路線">✕</button>
+            </div>
+          </div>`).join('')
+      : '';
 
     // All other settlements as potential destinations
     const allSettlements = [
@@ -4411,7 +4542,7 @@ export class GameUI {
         const tile = s.type === 'castle' ? this._mapData.castles[tIdx] : this._mapData.villages[tIdx];
         if (tile) { const dx = tile.x - sTile.x, dy = tile.y - sTile.y; dist = Math.round(Math.sqrt(dx*dx + dy*dy)); }
       }
-      const alreadyConnected = this._tradeRoutes.has(`${fromKey}→${k}`);
+      const alreadyConnected = this._tradeRoutes.has(`${fromKey}→${k}`) || this._tradeRoutes.has(`${k}→${fromKey}`);
       const { ok, reason }   = this._canEstablishTradeWith(s);
       // Determine label by ownership
       let typeLabel = '', typeColor = '#9e9e9e';
@@ -4422,14 +4553,14 @@ export class GameUI {
     }).sort((a, b) => a.dist - b.dist);
 
     const candidatesHTML = candidates.map(c => {
-      const gold = Math.max(1, c.s.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
-      const res  = (c.s.resources ?? []).join('、') || '—';
+      const gold   = Math.max(1, c.s.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
+      const demand = this._getSettlementDemand(c.k, c.s);
       return `
         <div class="tr-cand-row${c.ok && !c.alreadyConnected ? '' : ' tr-cand-locked'}">
           <span class="tr-cand-type" style="color:${c.typeColor}">${c.typeLabel}</span>
           <div class="tr-cand-info">
             <span class="tr-cand-name">${c.s.name}</span>
-            <span class="tr-cand-detail">資源：${res}　距離：${c.dist}</span>
+            <span class="tr-cand-detail">需求：${demand}　距離：${c.dist}</span>
             ${!c.ok && !c.alreadyConnected ? `<span class="tr-cand-reason">${c.reason}</span>` : ''}
           </div>
           <button class="tr-cand-btn${c.alreadyConnected ? ' connected' : ''}${c.ok && !c.alreadyConnected ? '' : ' disabled'}"
@@ -4443,10 +4574,11 @@ export class GameUI {
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">🛤 貿易路線管理</div>
-      <div class="tr-worker-note">⚠ 每條路線需指派 2 名人員方可產生收益。</div>
-      <div class="tr-section-title">現有路線</div>
+      <div class="tr-worker-note">💡 建立路線時需指派 2 名人員；進口路線由外國商隊負責。</div>
+      ${importRoutes.length > 0 ? `<div class="tr-section-title">進口路線（外國商隊來此）</div><div class="tr-route-list">${importHTML}</div>` : ''}
+      <div class="tr-section-title">現有出口路線</div>
       <div class="tr-route-list">${existingHTML}</div>
-      <div class="tr-section-title">可建立路線</div>
+      <div class="tr-section-title">可建立出口路線</div>
       <div class="tr-candidates">${candidatesHTML || '<div class="tr-empty">無可用目標</div>'}</div>
     `;
 
@@ -4485,16 +4617,101 @@ export class GameUI {
       });
     });
 
-    // Add route buttons
+    // Add route buttons — open worker picker first; route is only saved after 2 workers are confirmed.
     content.querySelectorAll('.tr-cand-btn:not(.disabled):not(.connected)').forEach(btn => {
       btn.addEventListener('click', () => {
         const toKey  = btn.dataset.toKey;
         const toSett = this._getSettlementByKey(toKey);
         if (!toSett) return;
-        this._establishTrade(settlement, toSett);
-        this._renderTradeRoutePanel(building, settlement);
+        this._openNewRouteWorkerPanel(building, settlement, toSett);
       });
     });
+  }
+
+  /**
+   * Worker-picker shown when the player wants to create a new export trade route.
+   * The route is only stored once 2 workers are confirmed; clicking back cancels.
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement  Player-owned origin.
+   * @param {import('../systems/NationSystem.js').Settlement} toSettlement    Target settlement.
+   */
+  _openNewRouteWorkerPanel(building, fromSettlement, toSettlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const assignedAll   = this._getAllAssignedUnitIds();
+    const allUnits      = [];
+    for (const squad of this.army.getSquads()) {
+      for (const m of squad.members) allUnits.push(m);
+    }
+
+    // Track selected unit IDs locally (toggled by the player).
+    const selected = new Set();
+
+    const render = () => {
+      const unitRows = allUnits.map(unit => {
+        const isBusy      = assignedAll.has(unit.id);
+        const isSel       = selected.has(unit.id);
+        const traitBadges = renderTraitBadgesHTML(unit.traits.slice(0, 3), PERSONALITY_COLORS);
+        const bonus       = getTradeBonus(unit) > 0 ? `🛤 +${Math.round(getTradeBonus(unit) * 100)}%` : '';
+        return `
+          <div class="assign-worker-row${isSel ? ' assigned-here' : ''}${isBusy ? ' assigned-elsewhere' : ''}">
+            <span class="awr-name">${unit.name}</span>
+            <span class="awr-speed">🏃${unit.stats?.moveSpeed ?? 5}</span>
+            <span class="awr-traits">${traitBadges}</span>
+            ${bonus ? `<span class="awr-bonus">${bonus}</span>` : ''}
+            ${isBusy ? '<span class="awr-conflict">已派遣他處</span>' : ''}
+            ${!isBusy ? `<button class="btn-buy awr-assign${isSel ? ' awr-desel' : ''}" data-unit-id="${unit.id}">
+              ${isSel ? '取消' : '選擇'}
+            </button>` : ''}
+          </div>`;
+      }).join('');
+
+      const ready    = selected.size >= 2;
+      const fromKey  = this._settlementKey(fromSettlement);
+      const toKey    = this._settlementKey(toSettlement);
+      const routeId  = `${fromKey}→${toKey}`;
+      const dailyGold = Math.max(1, toSettlement.economyLevel * TRADE_INCOME_PER_ECONOMY_LEVEL);
+
+      content.innerHTML = `
+        <button class="fac-back-btn" id="nrw-back">← 返回</button>
+        <div class="fac-title">👤 指派路線人員</div>
+        <div class="tr-worker-note">目標：${fromSettlement.name} → ${toSettlement.name}，每日 +${dailyGold}🪙<br>
+          請選擇 2 名人員負責此路線（已選：${selected.size} / 2）</div>
+        <div class="assign-worker-list">${unitRows}</div>
+        <button class="btn-buy treaty-send-btn${ready ? '' : ' disabled'}" id="nrw-confirm" ${ready ? '' : 'disabled'}>
+          🛤 建立路線（${selected.size}/2 人）
+        </button>
+      `;
+
+      document.getElementById('nrw-back')?.addEventListener('click', () => {
+        this._renderTradeRoutePanel(building, fromSettlement);
+      });
+
+      document.getElementById('nrw-confirm')?.addEventListener('click', () => {
+        if (selected.size < 2) return;
+        this._establishTrade(fromSettlement, toSettlement);
+        if (this._tradeRoutes.has(routeId)) {
+          this._tradeRouteWorkers.set(routeId, [...selected].slice(0, 2));
+        }
+        this._renderTradeRoutePanel(building, fromSettlement);
+      });
+
+      content.querySelectorAll('.awr-assign').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const unitId = Number(btn.dataset.unitId);
+          if (selected.has(unitId)) {
+            selected.delete(unitId);
+          } else if (selected.size < 2) {
+            selected.add(unitId);
+          }
+          render();
+        });
+      });
+    };
+
+    render();
   }
 
   /**
@@ -4653,6 +4870,156 @@ export class GameUI {
     });
   }
 
+  /**
+   * Foreign trade route proposal screen.
+   * Shown when the player asks a foreign government to open a trade route.
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement  Foreign settlement.
+   */
+  _renderForeignTradeProposal(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+    const relVal     = this.diplomacySystem.getPlayerRelation(nationId);
+    const relStr     = relVal >= 0 ? `+${relVal}` : `${relVal}`;
+
+    const settlKey      = this._settlementKey(settlement);
+    const foreignDemand = settlKey ? this._getSettlementDemand(settlKey, settlement) : null;
+
+    // Check if player can supply the foreign nation's demanded resource.
+    const playerCanSupply = foreignDemand
+      ? [...this._capturedSettlements].some(pk => {
+          const ps = this._getSettlementByKey(pk);
+          return ps && (ps.resources ?? []).includes(foreignDemand);
+        })
+      : false;
+
+    const resources  = (settlement.resources ?? []).join('、') || '無';
+    const economyStr = '⭐'.repeat(Math.max(1, settlement.economyLevel ?? 1));
+    const dailyGold  = Math.max(1, (settlement.economyLevel ?? 1) * TRADE_INCOME_PER_ECONOMY_LEVEL);
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">🛤 提議貿易路線</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          你向 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}）提議建立貿易路線。<br>
+          若對方同意，${nationName} 的商隊將前往你最近的城市通商，你可從中獲取物資與收益。
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">對方出口資源</span>
+          <span>${resources}</span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">對方經濟水平</span>
+          <span>${economyStr}</span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">預計每日收益</span>
+          <span>+${dailyGold} 🪙</span>
+        </div>
+        ${foreignDemand ? `
+        <div class="treaty-row">
+          <span class="treaty-label">對方目前需求</span>
+          <span style="color:${playerCanSupply ? '#66bb6a' : '#ef6c00'}">
+            ${foreignDemand} ${playerCanSupply ? '（你可供應 +成功率）' : '（你無法供應）'}
+          </span>
+        </div>` : ''}
+        <div class="treaty-note">統治者將根據雙方關係（${relStr}）${playerCanSupply ? '及你能供應其需求，' : ''}評估是否同意。</div>
+        <button class="btn-buy treaty-send-btn" id="diplo-trade-confirm">🛤 提出貿易請求</button>
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, settlement);
+    });
+
+    document.getElementById('diplo-trade-confirm')?.addEventListener('click', () => {
+      const accepted = this.diplomacySystem.evaluateDirectDiploProposal(nationId, 'trade_route', {
+        demandMet: playerCanSupply,
+      });
+      if (accepted) {
+        const ok = this._establishImportTrade(settlement);
+        if (ok) {
+          this.diplomacySystem.modifyPlayerRelation(nationId, 5);
+          this._addInboxMessage('🛤', `${nationName} 同意建立進口貿易路線！商隊將前往你的城市，每日 +${dailyGold} 🪙，帶來：${resources || '各類物資'}。關係 +5。`);
+          this._toast(`✅ ${nationName} 同意建立貿易路線！`);
+        } else {
+          this._addInboxMessage('🛤', `${nationName} 同意了，但你尚未佔領任何城市，無法接待商隊。`);
+          this._toast('❌ 你尚未佔領任何城市，商隊無法前往！');
+        }
+      } else {
+        const relDelta = -(1 + Math.floor(Math.random() * 3));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._addInboxMessage('❌', `${nationName} 拒絕了貿易路線提案，關係 ${relDelta}。`);
+        this._toast(`❌ ${nationName} 拒絕了提案。`);
+      }
+      this._renderGovBuilding(building, settlement);
+    });
+  }
+
+  /**
+   * Establish an import trade route from a foreign settlement to the nearest
+   * player-owned settlement.
+   * @param {import('../systems/NationSystem.js').Settlement} fromSettlement  Foreign settlement.
+   * @returns {boolean}  true if the route was created (or already exists).
+   */
+  _establishImportTrade(fromSettlement) {
+    if (!this.nationSystem || !this._mapData) return false;
+
+    const fromKey = this._settlementKey(fromSettlement);
+    if (!fromKey) return false;
+
+    // If an import route from this settlement already exists, treat as success.
+    if ([...this._tradeRoutes.values()].some(r => r.fromKey === fromKey && r.isImport)) return true;
+
+    // Find nearest player-controlled settlement.
+    const isCastleSrc = fromSettlement.type === 'castle';
+    const srcIdx      = (isCastleSrc ? this.nationSystem.castleSettlements : this.nationSystem.villageSettlements).indexOf(fromSettlement);
+    const srcTile     = srcIdx >= 0 ? (isCastleSrc ? this._mapData.castles : this._mapData.villages)[srcIdx] : null;
+
+    let nearestSett = null;
+    let minDist = Infinity;
+
+    const _check = (arr, mapArr, typeLabel) => {
+      arr.forEach((ps, i) => {
+        if (!this._capturedSettlements.has(`${typeLabel}:${i}`)) return;
+        const tile = mapArr[i];
+        if (!tile || !srcTile) return;
+        const dx = tile.x - srcTile.x;
+        const dy = tile.y - srcTile.y;
+        const d  = Math.sqrt(dx * dx + dy * dy);
+        if (d < minDist) { minDist = d; nearestSett = ps; }
+      });
+    };
+    _check(this.nationSystem.castleSettlements, this._mapData.castles, 'castle');
+    _check(this.nationSystem.villageSettlements, this._mapData.villages, 'village');
+
+    if (!nearestSett) return false;
+
+    const toKey = this._settlementKey(nearestSett);
+    if (!toKey) return false;
+
+    const routeId   = `${fromKey}→${toKey}`;
+    const resources = [...(fromSettlement.resources ?? [])];
+    const dailyGold = Math.max(1, (fromSettlement.economyLevel ?? 1) * TRADE_INCOME_PER_ECONOMY_LEVEL);
+
+    this._tradeRoutes.set(routeId, {
+      fromKey,
+      fromName: fromSettlement.name,
+      toKey,
+      toName:   nearestSett.name,
+      resources,
+      dailyGold,
+      isImport: true,
+    });
+    return true;
+  }
+
   // -------------------------------------------------------------------------
   // Construction system – helpers
   // -------------------------------------------------------------------------
@@ -4789,13 +5156,13 @@ export class GameUI {
         for (let wi = 0; wi < state.buildingQueue.length; wi++) {
           const unit = assignedBuildWorkers[wi];
           workers.push({
-            id:        `building:${key}:${wi}`,
-            type:      'building',
-            worldX:    (center.tx + 0.5) * TILE_SIZE,
-            worldY:    (center.ty + 0.5) * TILE_SIZE,
-            // Include unit appearance so renderer can show the character's color
-            bodyColor: unit?.appearance?.bodyColor ?? null,
-            unitId:    unit?.id ?? null,
+            id:         `building:${key}:${wi}`,
+            type:       'building',
+            worldX:     (center.tx + 0.5) * TILE_SIZE,
+            worldY:     (center.ty + 0.5) * TILE_SIZE,
+            // Pass full unit appearance so the renderer can draw the character.
+            appearance: unit?.appearance ?? null,
+            unitId:     unit?.id ?? null,
           });
         }
       }
@@ -4833,7 +5200,7 @@ export class GameUI {
           type:      road.isDemo ? 'demolish' : 'road',
           worldX:    fromX + (toX - fromX) * progress,
           worldY:    fromY + (toY - fromY) * progress,
-          bodyColor: repUnit?.appearance?.bodyColor ?? null,
+          appearance: repUnit?.appearance ?? null,
           unitId:    repUnit?.id ?? null,
         });
       }
@@ -5301,16 +5668,83 @@ export class GameUI {
   // -------------------------------------------------------------------------
 
   /**
-   * Show the letter type selector.
+   * Show the messenger-picker step, then the letter type selector.
+   * The player must assign an available army unit as the messenger before
+   * choosing the letter type.
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _renderSendLetter(settlement) {
+    // Reset any previously selected messenger.
+    this._pendingMessengerUnit = null;
+    this._renderMessengerPicker(settlement);
+  }
+
+  /**
+   * Render the messenger assignment screen.
+   * Shows all army units and lets the player pick one as the courier.
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderMessengerPicker(settlement) {
     const content = document.getElementById('location-content');
     if (!content) return;
+
+    const assignedAll = this._getAllAssignedUnitIds();
+    const allUnits    = [];
+    for (const squad of this.army.getSquads()) {
+      for (const m of squad.members) allUnits.push(m);
+    }
+
+    const unitRows = allUnits.map(unit => {
+      const isBusy    = assignedAll.has(unit.id);
+      const traitBadges = renderTraitBadgesHTML(unit.traits.slice(0, 3), PERSONALITY_COLORS);
+      return `
+        <div class="assign-worker-row${isBusy ? ' assigned-elsewhere' : ''}">
+          <span class="awr-name">${unit.name}</span>
+          <span class="awr-speed">🏃${unit.stats?.moveSpeed ?? 5}</span>
+          <span class="awr-traits">${traitBadges}</span>
+          ${isBusy ? '<span class="awr-conflict">已派遣他處</span>' : ''}
+          <button class="btn-buy awr-assign${isBusy ? ' disabled' : ''}" data-unit-id="${unit.id}"
+                  ${isBusy ? 'disabled' : ''}>選為信使</button>
+        </div>`;
+    }).join('');
 
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">📨 派送信件</div>
+      <div class="letter-intro">請先指派一名人員擔任此次信使，信使在送達期間不可執行其他任務。</div>
+      <div class="assign-worker-list">${unitRows || '<div class="ui-empty">尚無可用士兵</div>'}</div>
+    `;
+
+    this._attachFacilityBack(settlement);
+
+    content.querySelectorAll('.awr-assign:not(.disabled)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const unit   = allUnits.find(u => u.id === unitId);
+        if (!unit) return;
+        this._pendingMessengerUnit = unit;
+        this._renderSendLetterTypes(settlement);
+      });
+    });
+  }
+
+  /**
+   * Show the letter type selector (after messenger is chosen).
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _renderSendLetterTypes(settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const messenger = this._pendingMessengerUnit;
+    const messengerInfo = messenger
+      ? `<div class="letter-messenger-badge">✉ 信使：<strong>${messenger.name}</strong>（🏃${messenger.stats?.moveSpeed ?? 5}）</div>`
+      : '';
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="letter-back-to-picker">← 重新選擇信使</button>
+      <div class="fac-title">📨 派送信件</div>
+      ${messengerInfo}
       <div class="letter-intro">選擇要派送的信件類型</div>
       <div class="letter-type-list">
         <div class="letter-type-card" id="letter-type-peace" role="button" tabindex="0">
@@ -5348,7 +5782,10 @@ export class GameUI {
       </div>
     `;
 
-    this._attachFacilityBack(settlement);
+    document.getElementById('letter-back-to-picker')?.addEventListener('click', () => {
+      this._pendingMessengerUnit = null;
+      this._renderMessengerPicker(settlement);
+    });
 
     const bind = (id, fn) => {
       const el = document.getElementById(id);
@@ -5359,6 +5796,34 @@ export class GameUI {
     bind('letter-type-condemn', () => this._renderCondemnComposer(settlement));
     bind('letter-type-gift',    () => this._renderGiftComposer(settlement));
     bind('letter-type-war',     () => this._renderWarDeclarationComposer(settlement));
+  }
+
+  /**
+   * Lock the pending messenger unit and return messenger dispatch params.
+   * Adds the unit to `_messengerUnitIds` so it cannot be double-assigned.
+   * @returns {{ messengerUnitId: number|null, messengerAppearance: object|null, messengerMoveSpeed: number }}
+   */
+  _consumeMessengerUnit() {
+    const unit = this._pendingMessengerUnit;
+    this._pendingMessengerUnit = null;
+    if (!unit) return { messengerUnitId: null, messengerAppearance: null, messengerMoveSpeed: 5 };
+    this._messengerUnitIds.add(unit.id);
+    return {
+      messengerUnitId:      unit.id,
+      messengerAppearance:  unit.appearance ?? null,
+      messengerMoveSpeed:   unit.stats?.moveSpeed ?? 5,
+    };
+  }
+
+  /**
+   * Release a messenger unit when the missive is delivered (or cancelled).
+   * Called from Game.js whenever updateMissives() resolves a missive.
+   * @param {object} missive  The resolved missive object (must carry `messengerUnitId`).
+   */
+  onMissiveDelivered(missive) {
+    if (missive?.messengerUnitId != null) {
+      this._messengerUnitIds.delete(missive.messengerUnitId);
+    }
   }
 
   /**
@@ -5501,6 +5966,7 @@ export class GameUI {
         receiverNationId: targetId,
         fromSettlement:   fromSettlement,
         terms,
+        ...this._consumeMessengerUnit(),
       });
 
       if (ok) {
@@ -5549,7 +6015,7 @@ export class GameUI {
       const targetId = Number(document.getElementById('condemn-nation-select')?.value ?? -1);
       if (targetId < 0) { this._toast('請選擇目標國家'); return; }
 
-      const ok = this.diplomacySystem.sendCondemnationLetter({ receiverNationId: targetId, fromSettlement });
+      const ok = this.diplomacySystem.sendCondemnationLetter({ receiverNationId: targetId, fromSettlement, ...this._consumeMessengerUnit() });
       if (ok) {
         const nation = this.nationSystem.nations[targetId];
         this._addInboxMessage('📢', `已派出信使前往 ${nation?.name ?? '對方'}送達譴責信。`);
@@ -5606,7 +6072,7 @@ export class GameUI {
       this._spendGold(goldInput);
       this._refreshGoldDisplay();
 
-      const ok = this.diplomacySystem.sendGiftLetter({ receiverNationId: targetId, fromSettlement, goldAmount: goldInput });
+      const ok = this.diplomacySystem.sendGiftLetter({ receiverNationId: targetId, fromSettlement, goldAmount: goldInput, ...this._consumeMessengerUnit() });
       if (ok) {
         const nation = this.nationSystem.nations[targetId];
         this._addInboxMessage('🎁', `已派出信使攜帶 🪙${goldInput} 前往 ${nation?.name ?? '對方'}。`);
@@ -5669,7 +6135,7 @@ export class GameUI {
       const reason   = document.getElementById('war-decl-reason-select')?.value ?? '';
       if (targetId < 0) { this._toast('請選擇宣戰對象'); return; }
 
-      const ok = this.diplomacySystem.sendWarDeclaration({ receiverNationId: targetId, fromSettlement, reason });
+      const ok = this.diplomacySystem.sendWarDeclaration({ receiverNationId: targetId, fromSettlement, reason, ...this._consumeMessengerUnit() });
       if (ok) {
         const nation = this.nationSystem.nations[targetId];
         const reasonStr = reason ? `（理由：${reason}）` : '（無理由）';
@@ -6315,7 +6781,11 @@ export class GameUI {
       satisfactionMap:      Object.fromEntries(this._satisfactionMap),
       inbox:                [...this._inbox],
       constructionState,
-      tradeRoutes:          [...this._tradeRoutes.entries()],
+      tradeRoutes:          [...this._tradeRoutes.entries()].map(([k, v]) => {
+        // Strip computed/cached fields that should not be persisted.
+        const { _path, _pathDists, _pathLen, ...rest } = v;
+        return [k, rest];
+      }),
       festivalCooldowns:     Object.fromEntries(this._festivalCooldowns),
       assignedRulers:       [...this._assignedRulers.entries()],
       tradeRouteWorkers:    [...this._tradeRouteWorkers.entries()],

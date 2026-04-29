@@ -292,6 +292,9 @@ export class Game {
     if (this._diplomacySystem) {
       const missiveResults = this._diplomacySystem.updateMissives(dt);
       missiveResults.forEach(result => {
+        // Always free the messenger unit when a missive resolves.
+        this._gameUI.onMissiveDelivered(result.missive);
+
         if (result.type === 'player_offer') {
           this._gameUI.onPeaceOfferReceived(result.missive);
         } else if (result.type === 'npc_response') {

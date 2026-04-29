@@ -61,17 +61,22 @@ const MISSIVE_SPEED_PX = 180;
 /** Speed multiplier on FOREST tiles (mirrors Player.js FOREST_SPEED_MULT). */
 const MARCH_FOREST_SPEED_MULT = 0.4;
 
+/** Speed multiplier on HILL tiles (mirrors Player.js HILL_SPEED_MULT). */
+const MARCH_HILL_SPEED_MULT = 0.65;
+
 /**
  * Terrain-aware speed multiplier at a world-pixel position.
+ * Mirrors the terrain rules the player follows (FOREST 0.4×, HILL 0.65×).
  * @param {import('../world/MapData.js').MapData} mapData
  * @param {number} wx  World-pixel X
  * @param {number} wy  World-pixel Y
  * @returns {number}
  */
 function _marchSpeedMult(mapData, wx, wy) {
-  return mapData.getTerrainAtWorld(wx, wy) === TERRAIN.FOREST
-    ? MARCH_FOREST_SPEED_MULT
-    : 1.0;
+  const terrain = mapData.getTerrainAtWorld(wx, wy);
+  if (terrain === TERRAIN.FOREST) return MARCH_FOREST_SPEED_MULT;
+  if (terrain === TERRAIN.HILL)   return MARCH_HILL_SPEED_MULT;
+  return 1.0;
 }
 
 /**
@@ -1656,6 +1661,19 @@ export class DiplomacySystem {
       return Math.random() < Math.max(0.05, Math.min(0.90, chance));
     }
 
+    if (type === 'trade_route') {
+      // Base chance 55 %, scaled by relation (range ±100 → ±0.5 adjustment).
+      let chance = 0.55 + rel / 200;
+      if (p === PERSONALITY_GENTLE)   chance += 0.10;
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.05;
+      if (p === PERSONALITY_CUNNING)  chance += 0.10; // cunning rulers value economic gain
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.20;
+      if (p === PERSONALITY_ARROGANT) chance -= 0.15;
+      // Demand bonus: player can supply what the foreign settlement needs
+      if (data.demandMet) chance += 0.20;
+      return Math.random() < Math.max(0.05, Math.min(0.90, chance));
+    }
+
     return false;
   }
 
@@ -1738,7 +1756,7 @@ export class DiplomacySystem {
    * @param {{ senderNationId: number, receiverNationId: number, fromSettlement?: object|null, fromPx?: object|null, terms: object }} opts
    * @returns {boolean}  true if the missive was successfully queued.
    */
-  sendPeaceTreaty({ senderNationId, receiverNationId, fromSettlement = null, fromPx: explicitFromPx = null, terms }) {
+  sendPeaceTreaty({ senderNationId, receiverNationId, fromSettlement = null, fromPx: explicitFromPx = null, terms, messengerUnitId = null, messengerAppearance = null, messengerMoveSpeed = 5 }) {
     const fromPx = explicitFromPx ?? (fromSettlement ? this._getSettlementPx(fromSettlement) : null);
     if (!fromPx) return false;
 
@@ -1762,6 +1780,9 @@ export class DiplomacySystem {
       worldY:           path[0].y,
       _path:            path,
       _pathSegIdx:      0,
+      messengerUnitId,
+      messengerAppearance,
+      messengerMoveSpeed,
     });
     return true;
   }
@@ -1771,7 +1792,7 @@ export class DiplomacySystem {
    * @param {{ receiverNationId: number, fromSettlement: object }} opts
    * @returns {boolean}
    */
-  sendCondemnationLetter({ receiverNationId, fromSettlement }) {
+  sendCondemnationLetter({ receiverNationId, fromSettlement, messengerUnitId = null, messengerAppearance = null, messengerMoveSpeed = 5 }) {
     const fromPx = this._getSettlementPx(fromSettlement);
     if (!fromPx) return false;
     const castle = this._mapData.castles[receiverNationId];
@@ -1788,6 +1809,9 @@ export class DiplomacySystem {
       worldY:           path[0].y,
       _path:            path,
       _pathSegIdx:      0,
+      messengerUnitId,
+      messengerAppearance,
+      messengerMoveSpeed,
     });
     return true;
   }
@@ -1797,7 +1821,7 @@ export class DiplomacySystem {
    * @param {{ receiverNationId: number, fromSettlement: object, goldAmount: number }} opts
    * @returns {boolean}
    */
-  sendGiftLetter({ receiverNationId, fromSettlement, goldAmount }) {
+  sendGiftLetter({ receiverNationId, fromSettlement, goldAmount, messengerUnitId = null, messengerAppearance = null, messengerMoveSpeed = 5 }) {
     const fromPx = this._getSettlementPx(fromSettlement);
     if (!fromPx) return false;
     const castle = this._mapData.castles[receiverNationId];
@@ -1815,6 +1839,9 @@ export class DiplomacySystem {
       worldY:           path[0].y,
       _path:            path,
       _pathSegIdx:      0,
+      messengerUnitId,
+      messengerAppearance,
+      messengerMoveSpeed,
     });
     return true;
   }
@@ -1825,7 +1852,7 @@ export class DiplomacySystem {
    * @param {{ receiverNationId: number, fromSettlement: object, reason: string }} opts
    * @returns {boolean}
    */
-  sendWarDeclaration({ receiverNationId, fromSettlement, reason = '' }) {
+  sendWarDeclaration({ receiverNationId, fromSettlement, reason = '', messengerUnitId = null, messengerAppearance = null, messengerMoveSpeed = 5 }) {
     const fromPx = this._getSettlementPx(fromSettlement);
     if (!fromPx) return false;
     const castle = this._mapData.castles[receiverNationId];
@@ -1843,6 +1870,9 @@ export class DiplomacySystem {
       worldY:           path[0].y,
       _path:            path,
       _pathSegIdx:      0,
+      messengerUnitId,
+      messengerAppearance,
+      messengerMoveSpeed,
     });
     return true;
   }
@@ -1988,7 +2018,11 @@ export class DiplomacySystem {
       const path = m._path;
       if (!path || path.length < 2) { resolved.push(m); continue; }
 
-      let rem = MISSIVE_SPEED_PX * dt;
+      // Scale movement speed by terrain at current position + messenger move speed.
+      const terrainMult  = this._mapData ? _marchSpeedMult(this._mapData, m.worldX, m.worldY) : 1.0;
+      const unitSpeed    = m.messengerMoveSpeed ?? 5;  // default moveSpeed = 5
+      const speedScale   = terrainMult * (unitSpeed / 5);
+      let rem = MISSIVE_SPEED_PX * speedScale * dt;
       while (rem > 0 && m._pathSegIdx < path.length - 1) {
         const next = path[m._pathSegIdx + 1];
         const dx   = next.x - m.worldX;
