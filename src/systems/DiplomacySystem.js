@@ -1656,6 +1656,19 @@ export class DiplomacySystem {
       return Math.random() < Math.max(0.05, Math.min(0.90, chance));
     }
 
+    if (type === 'trade_route') {
+      // Base chance 55 %, scaled by relation (range ±100 → ±0.5 adjustment).
+      let chance = 0.55 + rel / 200;
+      if (p === PERSONALITY_GENTLE)   chance += 0.10;
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.05;
+      if (p === PERSONALITY_CUNNING)  chance += 0.10; // cunning rulers value economic gain
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.20;
+      if (p === PERSONALITY_ARROGANT) chance -= 0.15;
+      // Demand bonus: player can supply what the foreign settlement needs
+      if (data.demandMet) chance += 0.20;
+      return Math.random() < Math.max(0.05, Math.min(0.90, chance));
+    }
+
     return false;
   }
 

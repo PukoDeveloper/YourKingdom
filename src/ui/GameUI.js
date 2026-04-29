@@ -4263,6 +4263,20 @@ export class GameUI {
     );
     const canJointWar = !atWar && relVal >= 20 && potentialTargets.length > 0;
 
+    // Trade route proposal: check if already have an import route from this settlement
+    const settlKey       = this._settlementKey(settlement);
+    const alreadyImporting = settlKey
+      ? [...this._tradeRoutes.values()].some(r => r.fromKey === settlKey && r.isImport)
+      : false;
+    const canTrade = !atWar && !alreadyImporting && relVal >= TRADE_MIN_FOREIGN_RELATION;
+    const tradeDesc = alreadyImporting
+      ? '進口貿易路線已建立'
+      : atWar
+        ? '戰爭狀態下無法提議'
+        : relVal >= TRADE_MIN_FOREIGN_RELATION
+          ? `向對方提議開放商路，進口其資源（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）`
+          : `關係值過低（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）`;
+
     const pactBadge = (active, label) => active
       ? `<span class="gov-pact-badge gov-pact-active">${label} 有效</span>`
       : '';
@@ -4301,6 +4315,14 @@ export class GameUI {
             </div>
             <span class="gdp-arrow">${canMpt ? '›' : '🔒'}</span>
           </div>
+          <div class="gov-diplo-proposal-card${canTrade ? '' : ' disabled'}" id="diplo-trade-route" role="button" tabindex="${canTrade ? 0 : -1}">
+            <span class="gdp-icon">🛤</span>
+            <div class="gdp-info">
+              <div class="gdp-name">提議建立貿易路線</div>
+              <div class="gdp-desc">${tradeDesc}</div>
+            </div>
+            <span class="gdp-arrow">${canTrade ? '›' : (alreadyImporting ? '✅' : '🔒')}</span>
+          </div>
         </div>
       </div>
     `;
@@ -4314,9 +4336,10 @@ export class GameUI {
       });
     };
 
-    bindCard('diplo-nap',       () => this._renderNapProposal(building, settlement));
-    bindCard('diplo-joint-war', () => this._renderJointWarProposal(building, settlement));
-    bindCard('diplo-mpt',       () => this._renderMutualProtectionProposal(building, settlement));
+    bindCard('diplo-nap',          () => this._renderNapProposal(building, settlement));
+    bindCard('diplo-joint-war',    () => this._renderJointWarProposal(building, settlement));
+    bindCard('diplo-mpt',          () => this._renderMutualProtectionProposal(building, settlement));
+    bindCard('diplo-trade-route',  () => this._renderForeignTradeProposal(building, settlement));
   }
 
   // -------------------------------------------------------------------------
