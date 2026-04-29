@@ -390,24 +390,24 @@ export class Game {
       // Only show when the player is NOT inside a settlement tile.
       // Note: bridges target an adjacent water tile because the player cannot stand on water.
       const MAP_BUILDABLE_TERRAINS = new Set([TERRAIN.FOREST, TERRAIN.MOUNTAIN]);
-      if (!hit && MAP_BUILDABLE_TERRAINS.has(t)) {
-        this._gameUI.setNearbyBuildableTerrain(tileX, tileY, t);
-      } else if (!hit) {
-        // Check orthogonally adjacent tiles for water so the player can build a bridge
-        // while standing on the bank next to a river or lake.
-        const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
-        let bridgeTile = null;
-        for (const [dx, dy] of ADJACENT_OFFSETS) {
-          if (this._mapData.getTerrain(tileX + dx, tileY + dy) === TERRAIN.WATER) {
-            bridgeTile = { tx: tileX + dx, ty: tileY + dy };
-            break;
+      let nearbyBuildTile = null;
+      if (!hit) {
+        if (MAP_BUILDABLE_TERRAINS.has(t)) {
+          nearbyBuildTile = { tx: tileX, ty: tileY, terrainType: t };
+        } else {
+          // Check orthogonally adjacent tiles for water so the player can build a bridge
+          // while standing on the bank next to a river or lake.
+          const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+          for (const [dx, dy] of ADJACENT_OFFSETS) {
+            if (this._mapData.getTerrain(tileX + dx, tileY + dy) === TERRAIN.WATER) {
+              nearbyBuildTile = { tx: tileX + dx, ty: tileY + dy, terrainType: TERRAIN.WATER };
+              break;
+            }
           }
         }
-        if (bridgeTile) {
-          this._gameUI.setNearbyBuildableTerrain(bridgeTile.tx, bridgeTile.ty, TERRAIN.WATER);
-        } else {
-          this._gameUI.setNearbyBuildableTerrain(null, null, null);
-        }
+      }
+      if (nearbyBuildTile) {
+        this._gameUI.setNearbyBuildableTerrain(nearbyBuildTile.tx, nearbyBuildTile.ty, nearbyBuildTile.terrainType);
       } else {
         this._gameUI.setNearbyBuildableTerrain(null, null, null);
       }
