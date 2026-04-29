@@ -1493,9 +1493,75 @@
         color: #e2c97e;
       }
 
-      /* =====================================================================
-         Settlement detail overlay
-         ===================================================================== */
+      /* Specialty trait badges (天生運動員, 一絲不苟, etc.) */
+      .trait-tag.trait-specialty {
+        background: rgba(66,165,245,0.15);
+        border-color: rgba(66,165,245,0.45);
+        color: #90caf9;
+      }
+
+      /* Combat trait badges (勇猛, 策略家, 銅牆鐵壁) */
+      .trait-tag.trait-combat {
+        background: rgba(239,83,80,0.15);
+        border-color: rgba(239,83,80,0.45);
+        color: #ef9a9a;
+      }
+
+      /* Gov building – replace ruler button */
+      .gov-replace-ruler-btn {
+        margin-left: auto;
+        font-size: 11px;
+        padding: 4px 10px;
+        white-space: nowrap;
+      }
+
+      /* Gov building – assigned badge next to ruler name */
+      .gov-ruler-assigned-badge {
+        font-size: 10px;
+        color: #66bb6a;
+        border: 1px solid rgba(102,187,106,0.5);
+        border-radius: 4px;
+        padding: 0 4px;
+        margin-left: 4px;
+      }
+
+      /* Replace ruler panel */
+      .ruler-replace-panel { display: flex; flex-direction: column; gap: 8px; }
+      .ruler-replace-note {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 12px;
+        color: rgba(255,255,255,0.65);
+        line-height: 1.6;
+      }
+      .ruler-candidate-list { display: flex; flex-direction: column; gap: 6px; }
+      .ruler-candidate-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 10px 12px;
+        transition: background 0.15s;
+      }
+      .ruler-candidate-row.ruler-candidate-active {
+        border-color: rgba(102,187,106,0.5);
+        background: rgba(102,187,106,0.08);
+      }
+      .ruler-candidate-info { flex: 1; }
+      .ruler-candidate-name { color: #e2c97e; font-size: 13px; font-weight: 600; }
+      .ruler-candidate-role { color: rgba(255,255,255,0.45); font-size: 11px; margin-left: 5px; }
+      .ruler-candidate-traits { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 3px; }
+      .ruler-candidate-effects { margin-top: 3px; font-size: 11px; display: flex; gap: 6px; }
+      .ruler-effect-hint { font-weight: 600; }
+      .ruler-candidate-stats { color: rgba(255,255,255,0.45); font-size: 11px; margin-top: 3px; }
+      .ruler-assign-btn { font-size: 11px; padding: 4px 10px; white-space: nowrap; }
+      .ruler-no-candidates { color: rgba(255,255,255,0.4); font-size: 12px; text-align: center; padding: 16px 0; }
+
+
       #ui-settlement-detail-overlay {
         position: fixed;
         inset: 0;
@@ -3254,7 +3320,149 @@
         cursor: default;
       }
 
-      /* Demand resource row in settlement detail overlay */
+      /* Trade route worker assignment */
+      .tr-worker-note {
+        font-size: 11px;
+        color: #ffa726;
+        padding: 4px 2px 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .tr-route-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 8px;
+        padding: 7px 10px;
+        margin-bottom: 8px;
+      }
+      .tr-route-workers {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 6px;
+        padding-top: 5px;
+        border-top: 1px solid rgba(255,255,255,0.07);
+      }
+      .tr-workers-label {
+        font-size: 11px;
+        color: rgba(255,255,255,0.55);
+        flex-shrink: 0;
+      }
+      .tr-worker-slot {
+        font-size: 11px;
+        padding: 3px 7px;
+        border-radius: 5px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .tr-worker-filled {
+        background: rgba(129,199,132,0.12);
+        border: 1px solid rgba(129,199,132,0.3);
+        color: #a5d6a7;
+      }
+      .tr-worker-empty {
+        background: rgba(255,255,255,0.04);
+        border: 1px dashed rgba(255,255,255,0.2);
+        color: rgba(255,255,255,0.35);
+      }
+      .tr-worker-remove {
+        background: none;
+        border: none;
+        color: rgba(229,57,53,0.7);
+        cursor: pointer;
+        font-size: 11px;
+        padding: 0 2px;
+        line-height: 1;
+      }
+      .tr-worker-speed { color: rgba(255,255,255,0.4); font-size: 10px; }
+      .tr-active-badge {
+        background: rgba(129,199,132,0.18);
+        border: 1px solid rgba(129,199,132,0.4);
+        color: #81c784;
+        border-radius: 4px;
+        font-size: 10px;
+        padding: 1px 5px;
+        margin-left: 3px;
+      }
+      .tr-inactive-badge {
+        background: rgba(255,167,38,0.12);
+        border: 1px solid rgba(255,167,38,0.35);
+        color: #ffa726;
+        border-radius: 4px;
+        font-size: 10px;
+        padding: 1px 5px;
+        margin-left: 3px;
+      }
+
+      /* Construction worker slots */
+      .cw-slots {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin: 6px 0;
+      }
+      .cw-slot {
+        font-size: 11px;
+        padding: 4px 8px;
+        border-radius: 5px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .cw-filled {
+        background: rgba(100,181,246,0.1);
+        border: 1px solid rgba(100,181,246,0.3);
+        color: #90caf9;
+      }
+      .cw-empty {
+        background: rgba(255,255,255,0.04);
+        border: 1px dashed rgba(255,255,255,0.2);
+        color: rgba(255,255,255,0.35);
+      }
+      .cw-remove {
+        background: none;
+        border: none;
+        color: rgba(229,57,53,0.7);
+        cursor: pointer;
+        font-size: 11px;
+        padding: 0 2px;
+        line-height: 1;
+      }
+      .cw-assign-btn { margin-bottom: 10px; }
+      .constr-queue-row.paused { opacity: 0.45; }
+
+      /* Assign worker panel */
+      .assign-worker-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+      .assign-worker-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 7px;
+        padding: 6px 10px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      }
+      .assign-worker-row.assigned-here {
+        border-color: rgba(129,199,132,0.4);
+        background: rgba(129,199,132,0.06);
+      }
+      .assign-worker-row.assigned-elsewhere { opacity: 0.5; }
+      .awr-name { flex: 1; color: #eee; font-size: 12px; font-weight: 600; }
+      .awr-speed { font-size: 11px; color: rgba(255,255,255,0.4); flex-shrink: 0; }
+      .awr-traits { display: flex; gap: 3px; flex-wrap: wrap; flex: 2; }
+      .awr-bonus { font-size: 11px; color: #66bb6a; flex-shrink: 0; }
+      .awr-conflict { font-size: 11px; color: #ef9a9a; flex-shrink: 0; }
+      .awr-assign, .awr-remove {
+        padding: 4px 10px;
+        border-radius: 5px;
+        font-size: 11px;
+        flex-shrink: 0;
+      }
+
+
       .sd-demand-val { font-size: 13px; }
       .sd-demand-val.unmet { color: #ef6c00; }
       .sd-demand-val.met   { color: #66bb6a; }

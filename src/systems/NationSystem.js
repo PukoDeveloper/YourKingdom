@@ -15,6 +15,7 @@ import { Unit } from './Army.js';
 import { FLAG_STRIPE_STYLES, FLAG_STRIPE_COLORS } from './AppearanceSystem.js';
 import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 import { BuildingSystem } from './BuildingSystem.js';
+import { generateRandomTraits } from './CharacterSystem.js';
 
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
@@ -214,15 +215,19 @@ export class NationSystem {
       const personality = _pick(ALL_PERSONALITIES, h(12));
       const castleName  = _pick(CASTLE_NAME_PREFIXES, h(13)) + _pick(CASTLE_NAME_SUFFIXES, h(14));
 
+      // Traits: personality is guaranteed for NPC diplomacy AI; additional traits
+      // are drawn from the unified random pool (same as player army recruits).
+      const extraTraits = generateRandomTraits(c.x * 7 + c.y * 13 + seed, [TRAIT_RULER, personality]);
       const ruler = new Unit({
         id:     -(i + 1),       // negative IDs mark NPC rulers
         name:   rulerName,
         role:   rulerRole,
-        traits: [TRAIT_RULER, personality],
+        traits: [TRAIT_RULER, personality, ...extraTraits],
         stats: {
           attack:  Math.floor(8  + h(8)  * 12),
           defense: Math.floor(8  + h(9)  * 12),
           morale:  Math.floor(60 + h(10) * 40),
+          moveSpeed: 3 + Math.floor((h(11) % 1.0) * 6),
         },
       });
 
@@ -248,15 +253,18 @@ export class NationSystem {
       const rulerRole  = _pick(VILLAGE_TITLES, h(7));
       const nationId   = this._nearestCastleNation(v.x, v.y, castles);
 
+      // Traits: village rulers use the unified random pool (no forced personality).
+      const vExtraTraits = generateRandomTraits(v.x * 7 + v.y * 13 + seed + 500, [TRAIT_RULER]);
       const ruler = new Unit({
         id:     -(1000 + i + 1),
         name:   rulerName,
         role:   rulerRole,
-        traits: [TRAIT_RULER],
+        traits: [TRAIT_RULER, ...vExtraTraits],
         stats: {
           attack:  Math.floor(3 + h(8) * 7),
           defense: Math.floor(3 + h(9) * 7),
           morale:  Math.floor(40 + h(10) * 40),
+          moveSpeed: 3 + Math.floor((h(11) % 1.0) * 6),
         },
       });
 

@@ -318,9 +318,11 @@ export class Game {
       this._missiveRenderer.sync(this._diplomacySystem.getPendingMissives());
     }
 
-    // Construction worker tokens.
+    // Construction worker tokens + trade caravan tokens.
     if (this._gameUI && this._workerRenderer) {
-      this._workerRenderer.sync(this._gameUI.getConstructionWorkers());
+      const workers  = this._gameUI.getConstructionWorkers();
+      const caravans = this._gameUI.getTradeCaravans();
+      this._workerRenderer.sync([...workers, ...caravans]);
     }
 
     // HUD: terrain name (+ nation when inside a settlement)
