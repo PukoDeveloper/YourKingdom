@@ -151,6 +151,19 @@ const NPC_NPC_PEACE_ACCEPT_CHANCE = 0.4;
 const JOINT_WAR_HOSTILITY_THRESHOLD = -30;
 
 /**
+ * Minimum / maximum NPC-NPC relation for a spontaneous NAP proposal.
+ * Must be hostile enough to need reassurance but not yet at war.
+ */
+const NAP_PROPOSAL_REL_MIN = -50;
+const NAP_PROPOSAL_REL_MAX =  20;
+
+/** Minimum NPC-NPC relation for a spontaneous MPP proposal. */
+const MPP_PROPOSAL_REL_MIN = 45;
+
+/** Minimum player-relation threshold for an NPC to propose a trade route. */
+const TRADE_ROUTE_MIN_RELATION = -10;
+
+/**
  * Nation id of the player – mirrors PLAYER_NATION_ID from NationSystem.js.
  * Defined here to avoid a circular import.
  */
@@ -1655,6 +1668,79 @@ export class DiplomacySystem {
     const napDecisions   = this._drainWorkerDecisions('nap_proposal');
     const mppDecisions   = this._drainWorkerDecisions('mpp_proposal');
     const tradeDecisions = this._drainWorkerDecisions('trade_request');
+
+    // ── Inline fallback when the Web Worker is unavailable ──────────────────
+    // In environments without Web Worker support the arrays above are always
+    // empty, so NPC-NPC diplomatic events would never fire.  Evaluate each
+    // nation's diplomatic opportunities directly on the main thread instead.
+    if (!this._aiWorker) {
+      castleSettlements.forEach((s, id) => {
+        if (!s || s.controllingNationId !== id) return;
+        if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
+
+        const personality   = this._rulerPersonality(s);
+        const rulerTraits   = s.ruler?.traits ?? [];
+        const diplomatBonus = rulerTraits.includes('善交際') ? 0.20 : 0.0;
+
+        // NAP proposal: target the nation with the best (least hostile) relation
+        // in the "wary but not yet an enemy" band.
+        if (!napDecisions.some(d => d.nationId === id)) {
+          let napTargetId = -1, napBestRel = NAP_PROPOSAL_REL_MIN - 1;
+          nations.forEach((n, tid) => {
+            if (!n || tid === id) return;
+            if (this.isAtWar(id, tid) || this.hasNonAggressionPact(id, tid)) return;
+            const rel = this.getRelation(id, tid);
+            if (rel >= NAP_PROPOSAL_REL_MIN && rel < NAP_PROPOSAL_REL_MAX && rel > napBestRel) {
+              napBestRel = rel; napTargetId = tid;
+            }
+          });
+          if (napTargetId >= 0) {
+            let chance = 0.08 + diplomatBonus;
+            if (personality === PERSONALITY_GENTLE)   chance += 0.05;
+            if (personality === PERSONALITY_CAUTIOUS) chance += 0.03;
+            if (personality === PERSONALITY_WARLIKE)  chance -= 0.05;
+            if (Math.random() < Math.max(0, chance)) {
+              napDecisions.push({ nationId: id, targetNationId: napTargetId });
+            }
+          }
+        }
+
+        // MPP proposal: target the nation with the highest friendly relation.
+        if (!mppDecisions.some(d => d.nationId === id)) {
+          let mppTargetId = -1, mppBestRel = MPP_PROPOSAL_REL_MIN - 1;
+          nations.forEach((n, tid) => {
+            if (!n || tid === id) return;
+            if (this.hasMutualProtectionPact(id, tid)) return;
+            const rel = this.getRelation(id, tid);
+            if (rel >= MPP_PROPOSAL_REL_MIN && rel > mppBestRel) {
+              mppBestRel = rel; mppTargetId = tid;
+            }
+          });
+          if (mppTargetId >= 0) {
+            let chance = 0.06 + diplomatBonus;
+            if (personality === PERSONALITY_GENTLE)   chance += 0.08;
+            if (personality === PERSONALITY_CAUTIOUS) chance += 0.04;
+            if (personality === PERSONALITY_WARLIKE)  chance -= 0.06;
+            if (Math.random() < Math.max(0, chance)) {
+              mppDecisions.push({ nationId: id, targetNationId: mppTargetId });
+            }
+          }
+        }
+
+        // Trade route request to player.
+        if (!tradeDecisions.some(d => d.nationId === id) &&
+            !this.hasTradeRoute(id, _PLAYER_NATION_ID)) {
+          const relWithPlayer = this.getPlayerRelation(id);
+          if (relWithPlayer >= TRADE_ROUTE_MIN_RELATION) {
+            const cunningAdj = personality === PERSONALITY_CUNNING ? 0.03 : 0.0;
+            const chance = 0.05 + diplomatBonus + cunningAdj;
+            if (Math.random() < Math.max(0, chance)) {
+              tradeDecisions.push({ nationId: id });
+            }
+          }
+        }
+      });
+    }
 
     // ── NPC-NPC NAP proposals ───────────────────────────────────────────────
     napDecisions.forEach(d => {

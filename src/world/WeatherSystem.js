@@ -93,7 +93,7 @@ export class WeatherSystem {
       this._timer = this._randomDuration();
       // Reinitialise drops when entering a rain state so they aren't pre-placed
       if (this._state === WEATHER.RAIN || this._state === WEATHER.STORM) {
-        this._drops = Array.from({ length: DROP_COUNT }, () => this._newDrop(false));
+        for (const d of this._drops) Object.assign(d, this._newDrop(false));
       }
     }
 

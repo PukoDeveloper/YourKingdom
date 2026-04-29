@@ -1,5 +1,10 @@
 import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from './world/constants.js';
 
+/** Pre-computed constant: total map width in world pixels. */
+const MAP_PIXEL_W = MAP_WIDTH  * TILE_SIZE;
+/** Pre-computed constant: total map height in world pixels. */
+const MAP_PIXEL_H = MAP_HEIGHT * TILE_SIZE;
+
 /**
  * Tracks the camera position in world space and applies the resulting
  * transform to the world container each frame.
@@ -55,9 +60,6 @@ export class Camera {
    * @param {import('pixi.js').Container} worldContainer
    */
   apply(worldContainer) {
-    const mapPixelW = MAP_WIDTH  * TILE_SIZE;
-    const mapPixelH = MAP_HEIGHT * TILE_SIZE;
-
     const halfW = this.screenW / 2;
     const halfH = this.screenH / 2;
 
@@ -65,16 +67,16 @@ export class Camera {
     let cx = this.x;
     let cy = this.y;
 
-    if (mapPixelW > this.screenW) {
-      cx = Math.max(halfW, Math.min(mapPixelW - halfW, cx));
+    if (MAP_PIXEL_W > this.screenW) {
+      cx = Math.max(halfW, Math.min(MAP_PIXEL_W - halfW, cx));
     } else {
-      cx = mapPixelW / 2;
+      cx = MAP_PIXEL_W / 2;
     }
 
-    if (mapPixelH > this.screenH) {
-      cy = Math.max(halfH, Math.min(mapPixelH - halfH, cy));
+    if (MAP_PIXEL_H > this.screenH) {
+      cy = Math.max(halfH, Math.min(MAP_PIXEL_H - halfH, cy));
     } else {
-      cy = mapPixelH / 2;
+      cy = MAP_PIXEL_H / 2;
     }
 
     // Round to integer pixels to avoid sub-pixel rendering gaps between chunk sprites.
