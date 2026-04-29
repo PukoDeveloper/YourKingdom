@@ -76,6 +76,15 @@ const NPC_BUILD_COSTS = {
   [BLDG_MAGE]:      250,
 };
 
+/** Minimum gold required before a meticulous NPC considers building construction. */
+const METICULOUS_BUILD_THRESHOLD = 80;
+
+/** Minimum gold required before any NPC considers building construction. */
+const DEFAULT_BUILD_THRESHOLD = 120;
+
+/** Default build priority order (Tavern → General → Blacksmith → Inn → Mage). */
+const DEFAULT_BUILD_ORDER = Object.freeze([BLDG_TAVERN, BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_INN, BLDG_MAGE]);
+
 // ---------------------------------------------------------------------------
 // NPC trade routes
 // ---------------------------------------------------------------------------
@@ -91,6 +100,9 @@ const NPC_MARCH_SPEED_PX = 240;
 
 /** World pixels per second for peace messengers. */
 const MISSIVE_SPEED_PX = 180;
+
+/** Default messenger movement speed for missive dispatch. */
+const DEFAULT_MESSENGER_MOVE_SPEED = 5;
 
 /** Speed multiplier on FOREST tiles (mirrors Player.js FOREST_SPEED_MULT). */
 const MARCH_FOREST_SPEED_MULT = 0.4;
@@ -401,6 +413,13 @@ export class DiplomacySystem {
      * @type {Array<import('./npc-ai.worker.js').NpcDecision>}
      */
     this._pendingWorkerDecisions = [];
+
+    /**
+     * Map backing _pendingWorkerDecisions, keyed by nationId, for O(1) merges.
+     * Always kept in sync with _pendingWorkerDecisions.
+     * @type {Map<number, object>}
+     */
+    this._pendingWorkerDecisionsMap = new Map();
 
     /**
      * The NPC AI Web Worker instance.  null when Web Workers are unsupported.
@@ -874,13 +893,10 @@ export class DiplomacySystem {
           return;
         }
         if (Array.isArray(decisions)) {
-          // Merge new decisions; replace any existing decision for the same nation
-          // so stale data does not accumulate.
-          const nationsSeen = new Set(decisions.map(d => d.nationId));
-          this._pendingWorkerDecisions = [
-            ...this._pendingWorkerDecisions.filter(d => !nationsSeen.has(d.nationId)),
-            ...decisions,
-          ];
+          // Merge new decisions into the backing Map (O(1) per decision) then
+          // rebuild the array from it so _pendingWorkerDecisions stays consistent.
+          decisions.forEach(d => this._pendingWorkerDecisionsMap.set(d.nationId, d));
+          this._pendingWorkerDecisions = [...this._pendingWorkerDecisionsMap.values()];
         }
       };
       this._aiWorker.onerror = (e) => {
@@ -959,8 +975,8 @@ export class DiplomacySystem {
     if (!this._aiWorker) return;
     try {
       this._aiWorker.postMessage({ type: 'compute', state: this._buildWorkerSnapshot() });
-    } catch {
-      // Structured clone can fail for unusual state; swallow silently.
+    } catch (err) {
+      console.warn('[NpcAI] Failed to post snapshot to worker:', err);
     }
   }
 
@@ -971,8 +987,12 @@ export class DiplomacySystem {
    * @returns {Array<object>}
    */
   _drainWorkerDecisions(type) {
-    const matched = this._pendingWorkerDecisions.filter(d => d.type === type);
+    const matched   = this._pendingWorkerDecisions.filter(d => d.type === type);
     this._pendingWorkerDecisions = this._pendingWorkerDecisions.filter(d => d.type !== type);
+    // Keep the backing Map in sync.
+    if (this._pendingWorkerDecisionsMap) {
+      matched.forEach(d => this._pendingWorkerDecisionsMap.delete(d.nationId));
+    }
     return matched;
   }
 
@@ -1563,8 +1583,6 @@ export class DiplomacySystem {
       this._drainWorkerDecisions('build').map(d => [d.nationId, d]),
     );
 
-    const ALL_BUILD_TYPES = [BLDG_TAVERN, BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_INN, BLDG_MAGE];
-
     castleSettlements.forEach((s, id) => {
       if (!s || s.controllingNationId !== id) return;
 
@@ -1577,7 +1595,9 @@ export class DiplomacySystem {
       const gold        = this._npcGold.get(nationId) ?? 0;
 
       // 一絲不苟 (Meticulous) lowers the gold threshold before building.
-      const goldThreshold = rulerTraits.includes('一絲不苟') ? 80 : 120;
+      const goldThreshold = rulerTraits.includes('一絲不苟')
+        ? METICULOUS_BUILD_THRESHOLD
+        : DEFAULT_BUILD_THRESHOLD;
       if (gold < goldThreshold) return;
 
       let bType = null;
@@ -1593,14 +1613,14 @@ export class DiplomacySystem {
         }
       }
 
-      // Inline fallback.
+      // Inline fallback: build prioritised order without duplicates.
       if (!bType) {
-        // Priority order based on traits.
-        const order = [...ALL_BUILD_TYPES];
-        if (rulerTraits.includes('銅牆鐵壁')) order.unshift(BLDG_INN, BLDG_BLACKSMITH);
-        if (rulerTraits.includes('一絲不苟'))  order.unshift(BLDG_TAVERN, BLDG_GENERAL);
+        const prioritySet = new Set();
+        if (rulerTraits.includes('銅牆鐵壁')) { prioritySet.add(BLDG_INN); prioritySet.add(BLDG_BLACKSMITH); }
+        if (rulerTraits.includes('一絲不苟'))  { prioritySet.add(BLDG_TAVERN); prioritySet.add(BLDG_GENERAL); }
+        for (const t of DEFAULT_BUILD_ORDER) prioritySet.add(t);
 
-        for (const t of order) {
+        for (const t of prioritySet) {
           const cost = NPC_BUILD_COSTS[t] ?? 150;
           if (gold >= cost && !s.buildings.some(b => b.type === t)) {
             bType = t;
@@ -2362,7 +2382,7 @@ export class DiplomacySystem {
    * @param {{ senderNationId: number, fromSettlement?: object|null, fromPx?: object|null, messengerMoveSpeed?: number }} opts
    * @returns {boolean}  true if the missive was successfully queued.
    */
-  sendTradeRouteMissive({ senderNationId, fromSettlement = null, fromPx: explicitFromPx = null, messengerMoveSpeed = 5 }) {
+  sendTradeRouteMissive({ senderNationId, fromSettlement = null, fromPx: explicitFromPx = null, messengerMoveSpeed = DEFAULT_MESSENGER_MOVE_SPEED }) {
     const fromPx = explicitFromPx ?? (fromSettlement ? this._getSettlementPx(fromSettlement) : null);
     if (!fromPx) return false;
     const toPx = this._findNearestPlayerSettlement(fromPx);
@@ -2814,10 +2834,10 @@ export class DiplomacySystem {
           delta,
           message: `📢 ${s.ruler.name}（${s.ruler.role}）傲慢地譴責了你的行為，與 ${nationName} 的關係惡化 ${delta}。`,
         });
-      } else if (p === PERSONALITY_WARLIKE && roll < 0.2) {
-        // Warlike ruler threatens the player
+      } else if (p === PERSONALITY_WARLIKE) {
+        // Warlike ruler threatens the player.
         // 一絲不苟 (Meticulous) slightly dampens aggression (prefers economy first).
-        const warChance = rulerTraits.includes('一絲不苟') ? 0.12 : 0.2;
+        const warChance = rulerTraits.includes('一絲不苟') ? 0.12 : 0.20;
         if (roll < warChance) {
           const delta = -(Math.floor(Math.random() * 8) + 5); // -5 … -12
           this.modifyPlayerRelation(id, delta);

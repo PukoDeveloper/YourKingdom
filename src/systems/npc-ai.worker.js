@@ -94,6 +94,15 @@ const NPC_BUILD_COSTS = {
 /** Minimum player-relation threshold for NPCs to propose a trade route. */
 const TRADE_ROUTE_MIN_RELATION = -10;
 
+/** Minimum gold required before a meticulous NPC considers building construction. */
+const METICULOUS_BUILD_THRESHOLD = 80;
+
+/** Minimum gold required before any NPC considers building construction. */
+const DEFAULT_BUILD_THRESHOLD = 120;
+
+/** Default build priority order (Tavern → General → Blacksmith → Inn → Mage). */
+const DEFAULT_BUILD_ORDER = Object.freeze([BLDG_TAVERN, BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_INN, BLDG_MAGE]);
+
 /**
  * Minimum relation for an NPC–NPC NAP proposal.
  * Only nations that are somewhat hostile but not at war will propose it.
@@ -412,22 +421,26 @@ function _decideForNation(
 
   {
     // 一絲不苟 (Meticulous) rulers invest earlier (lower gold threshold).
-    const goldThreshold = rulerTraits.includes(TRAIT_METICULOUS) ? 80 : 120;
+    const goldThreshold = rulerTraits.includes(TRAIT_METICULOUS)
+      ? METICULOUS_BUILD_THRESHOLD
+      : DEFAULT_BUILD_THRESHOLD;
     if (gold >= goldThreshold) {
       const existingTypes = new Set(homeCastle.buildingTypes);
 
-      // Build order prioritised by traits.
-      // Default order: Tavern → General → Blacksmith → Inn → Mage.
-      const buildOrder = [BLDG_TAVERN, BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_INN, BLDG_MAGE];
-
-      // 銅牆鐵壁 (Shieldwall): favour defensive / recruitment buildings first.
+      // Build a prioritised order without duplicates based on active traits.
+      // Start with trait-specific priorities, then append remaining defaults.
+      const prioritySet = new Set();
       if (rulerTraits.includes(TRAIT_SHIELDWALL)) {
-        buildOrder.unshift(BLDG_INN, BLDG_BLACKSMITH);
+        prioritySet.add(BLDG_INN);
+        prioritySet.add(BLDG_BLACKSMITH);
       }
-      // 一絲不苟 (Meticulous): favour economic buildings first.
       if (rulerTraits.includes(TRAIT_METICULOUS)) {
-        buildOrder.unshift(BLDG_TAVERN, BLDG_GENERAL);
+        prioritySet.add(BLDG_TAVERN);
+        prioritySet.add(BLDG_GENERAL);
       }
+      // Append remaining types from the default order without repeating.
+      for (const t of DEFAULT_BUILD_ORDER) prioritySet.add(t);
+      const buildOrder = [...prioritySet];
 
       for (const bType of buildOrder) {
         if (existingTypes.has(bType)) continue;
