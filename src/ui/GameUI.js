@@ -4925,26 +4925,48 @@ export class GameUI {
     document.getElementById('battle-scene-vs').textContent =
       `敵 ${enemy.hp}/${enemy.maxHp}  ⚔  我 ${player.hp}/${player.maxHp}`;
 
-    // Enemy unit row (ruler icon + troop icons, faded when defeated)
-    const enemyAlive = Math.max(0, Math.ceil(enemy.troopCount * enemyPct / 100));
-    const enemyIcons = [
-      `<span class="btl-unit-enemy btl-leader${enemyPct === 0 ? ' btl-fallen' : ''}" title="${enemy.name} ${enemy.role}">👑</span>`,
-      ...Array.from({ length: enemy.troopCount }, (_, i) =>
-        `<span class="btl-unit-enemy${i < enemyAlive ? '' : ' btl-fallen'}">⚔</span>`
-      ),
-    ];
-    document.getElementById('battle-enemy-row').innerHTML =
-      `<div class="btl-row-label">敵軍陣列</div><div class="btl-unit-row">${enemyIcons.join('')}</div>`;
+    // Enemy unit row – build DOM structure once, then only toggle btl-fallen classes
+    const enemyRowEl  = document.getElementById('battle-enemy-row');
+    const playerRowEl = document.getElementById('battle-player-row');
 
-    // Player unit row (character avatars, faded when defeated)
-    const aliveCount   = Math.ceil(player.memberCount * playerPct / 100);
-    const memberIcons  = player.members.map((m, idx) => {
-      const alive    = idx < aliveCount;
-      const charHtml = m.appearance ? renderCharHTML(m.appearance, 28) : '👤';
-      return `<span class="btl-unit-player${alive ? '' : ' btl-fallen'}" title="${m.name}${alive ? '' : ' (陣亡)'}">${charHtml}</span>`;
+    if (!state._unitRowsRendered) {
+      const enemyIcons = [
+        `<span class="btl-unit-enemy btl-leader" data-btl-leader title="${enemy.name} ${enemy.role}">👑</span>`,
+        ...Array.from({ length: enemy.troopCount }, (_, i) =>
+          `<span class="btl-unit-enemy" data-btl-enemy-idx="${i}">⚔</span>`
+        ),
+      ];
+      enemyRowEl.innerHTML =
+        `<div class="btl-row-label">敵軍陣列</div><div class="btl-unit-row">${enemyIcons.join('')}</div>`;
+
+      const memberIcons = player.members.map((m, idx) => {
+        const charHtml = m.appearance ? renderCharHTML(m.appearance, 28) : '👤';
+        return `<span class="btl-unit-player" data-btl-player-idx="${idx}" title="${m.name}">${charHtml}</span>`;
+      });
+      playerRowEl.innerHTML =
+        `<div class="btl-unit-row">${memberIcons.join('')}</div><div class="btl-row-label">我方陣列</div>`;
+
+      state._unitRowsRendered = true;
+    }
+
+    // Update fallen state for enemy units
+    const enemyAlive = Math.max(0, Math.ceil(enemy.troopCount * enemyPct / 100));
+    const leaderEl = enemyRowEl.querySelector('[data-btl-leader]');
+    if (leaderEl) leaderEl.classList.toggle('btl-fallen', enemyPct === 0);
+    enemyRowEl.querySelectorAll('[data-btl-enemy-idx]').forEach(el => {
+      const i = parseInt(el.dataset.btlEnemyIdx, 10);
+      el.classList.toggle('btl-fallen', i >= enemyAlive);
     });
-    document.getElementById('battle-player-row').innerHTML =
-      `<div class="btl-unit-row">${memberIcons.join('')}</div><div class="btl-row-label">我方陣列</div>`;
+
+    // Update fallen state for player units
+    const aliveCount = Math.ceil(player.memberCount * playerPct / 100);
+    playerRowEl.querySelectorAll('[data-btl-player-idx]').forEach(el => {
+      const idx   = parseInt(el.dataset.btlPlayerIdx, 10);
+      const alive = idx < aliveCount;
+      el.classList.toggle('btl-fallen', !alive);
+      const m = player.members[idx];
+      if (m) el.title = m.name + (alive ? '' : ' (陣亡)');
+    });
 
     // Battle log (last 3 lines)
     document.getElementById('battle-scene-log').innerHTML =
@@ -5000,7 +5022,8 @@ export class GameUI {
         });
       }
       actionsEl.querySelector('#btn-battle-exit').addEventListener('click', () => this._closeBattleScene());
-    } else {
+    } else if (!state._actionsRendered) {
+      // Render command buttons only once – they don't change during active battle
       actionsEl.innerHTML = `
         <button class="btn-battle-cmd" id="btn-battle-attack">⚔ 進攻</button>
         <button class="btn-battle-cmd" id="btn-battle-defend">🛡 防守</button>
@@ -5008,6 +5031,7 @@ export class GameUI {
       actionsEl.querySelector('#btn-battle-attack').addEventListener('click', () => this._handleBattleCommand('attack'));
       actionsEl.querySelector('#btn-battle-defend').addEventListener('click', () => this._handleBattleCommand('defend'));
       actionsEl.querySelector('#btn-battle-retreat').addEventListener('click', () => this._handleBattleCommand('retreat'));
+      state._actionsRendered = true;
     }
   }
 
