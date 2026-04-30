@@ -978,10 +978,11 @@ export class DiplomacySystem {
     if (this._pathfinderWorker?.available) {
       this._pathfinderWorker.requestPath(fromPx, toPx, (result) => {
         if (result) {
+          // Replace the path and restart segment traversal.  worldX/worldY
+          // are intentionally NOT reset so the missive continues from its
+          // current position without teleporting backward.
           missive._path      = result;
           missive._pathSegIdx = 0;
-          missive.worldX     = result[0].x;
-          missive.worldY     = result[0].y;
         }
       });
     } else {
@@ -1412,10 +1413,11 @@ export class DiplomacySystem {
         // A* runs in the worker; update the march when the result arrives.
         this._pathfinderWorker.requestPath(fromPx, toPx, (result) => {
           if (result) {
+            // Replace the path and restart segment traversal.  worldX/worldY
+            // are intentionally NOT reset so the march continues from its
+            // current position without teleporting backward.
             march._path      = result;
             march._pathSegIdx = 0;
-            march.worldX     = result[0].x;
-            march.worldY     = result[0].y;
           }
         });
       } else {
