@@ -2499,6 +2499,18 @@ export class DiplomacySystem {
       return Math.random() < Math.max(0.03, Math.min(0.80, chance));
     }
 
+    if (type === 'connect_road') {
+      // Base chance 60 %, scaled by relation.
+      // Gentle / cautious rulers welcome connectivity; warlike / arrogant are more reserved.
+      let chance = 0.60 + rel / 200;
+      if (p === PERSONALITY_GENTLE)   chance += 0.15;
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.10;
+      if (p === PERSONALITY_CUNNING)  chance += 0.05; // cunning appreciates trade access
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.15;
+      if (p === PERSONALITY_ARROGANT) chance -= 0.10;
+      return Math.random() < Math.max(0.05, Math.min(0.90, chance));
+    }
+
     return false;
   }
 
