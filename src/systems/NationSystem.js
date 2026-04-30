@@ -11,7 +11,8 @@
  * it regenerates identically from the world seed on each load.
  */
 
-import { Unit } from './Army.js';
+import { Character } from '../characters/Character.js';
+import { Region } from '../regions/Region.js';
 import { FLAG_STRIPE_STYLES, FLAG_STRIPE_COLORS } from './AppearanceSystem.js';
 import { ALL_PERSONALITIES } from './DiplomacySystem.js';
 import { BuildingSystem } from './BuildingSystem.js';
@@ -117,50 +118,17 @@ function _pick(arr, seedVal) {
 // Settlement class
 // ---------------------------------------------------------------------------
 
-export class Settlement {
-  /**
-   * @param {{
-   *   type:         'castle'|'village',
-   *   name:         string,
-   *   nationId:     number,
-   *   population:   number,
-   *   economyLevel: number,
-   *   resources:    string[],
-   *   ruler:        Unit,
-   *   buildings:    import('./BuildingSystem.js').Building[]
-   * }} opts
-   */
-  constructor({ type, name, nationId, population, economyLevel, resources, ruler, buildings = [] }) {
-    /** @type {'castle'|'village'} */
-    this.type = type;
-    this.name = name;
-    /** Index into NationSystem.nations (≥ 0) – the founding/original nation. */
-    this.nationId = nationId;
-    /**
-     * The nation that currently controls this settlement.
-     * Initially equals `nationId`; changes to PLAYER_NATION_ID when the player captures it,
-     * or to another nation's id if future NPC conquest is implemented.
-     */
-    this.controllingNationId = nationId;
-    this.population = population;
-    /** 1 – 5 stars. */
-    this.economyLevel = economyLevel;
-    /** Array of resource names (usually 1–2). */
-    this.resources = resources;
-    /** The ruling Unit – same class as army members, but with TRAIT_RULER. */
-    this.ruler = ruler;
-    /**
-     * Buildings present in this settlement (government building first, then random ones).
-     * @type {import('./BuildingSystem.js').Building[]}
-     */
-    this.buildings = buildings;
-    /**
-     * True when the player has captured this settlement.
-     * Derived from `controllingNationId === PLAYER_NATION_ID`; kept in sync by GameUI.
-     */
-    this.playerOwned = false;
-  }
-}
+/**
+ * Settlement – legacy alias for Region, kept for backward compatibility.
+ *
+ * All new code should use Region directly.  NationSystem now creates Region
+ * instances (which carry all Settlement properties plus satisfaction,
+ * rulerId, and assignedCharacters).
+ *
+ * Existing consumers that import `Settlement` from this module continue to
+ * work because Region has the same public interface.
+ */
+export { Region as Settlement };
 
 // ---------------------------------------------------------------------------
 // NationSystem class
@@ -222,20 +190,24 @@ export class NationSystem {
       // Traits: personality is guaranteed for NPC diplomacy AI; additional traits
       // are drawn from the unified random pool (same as player army recruits).
       const extraTraits = generateRandomTraits(c.x * 7 + c.y * 13 + seed, [TRAIT_RULER, personality]);
-      const ruler = new Unit({
-        id:     -(i + 1),       // negative IDs mark NPC rulers
-        name:   rulerName,
-        role:   rulerRole,
-        traits: [TRAIT_RULER, personality, ...extraTraits],
+      // Castle ruler is a Character with isKing: true (they rule a nation).
+      const ruler = new Character({
+        id:           -(i + 1),   // negative IDs mark NPC rulers
+        name:         rulerName,
+        role:         rulerRole,
+        traits:       [TRAIT_RULER, personality, ...extraTraits],
         stats: {
-          attack:  Math.floor(8  + h(8)  * 12),
-          defense: Math.floor(8  + h(9)  * 12),
-          morale:  Math.floor(60 + h(10) * 40),
+          attack:    Math.floor(8  + h(8)  * 12),
+          defense:   Math.floor(8  + h(9)  * 12),
+          morale:    Math.floor(60 + h(10) * 40),
           moveSpeed: 3 + Math.floor((h(11) % 1.0) * 6),
         },
+        loyalNationId: i,
+        location:      { type: 'region', ref: `castle:${i}` },
+        isKing:        true,
       });
 
-      this.castleSettlements.push(new Settlement({
+      this.castleSettlements.push(new Region({
         type:         'castle',
         name:         castleName,
         nationId:     i,
@@ -259,23 +231,27 @@ export class NationSystem {
 
       // Traits: village rulers use the unified random pool (no forced personality).
       const vExtraTraits = generateRandomTraits(v.x * 7 + v.y * 13 + seed + 500, [TRAIT_RULER]);
-      const ruler = new Unit({
+      // Village rulers are Characters independent of any squad.
+      const ruler = new Character({
         id:     -(1000 + i + 1),
         name:   rulerName,
         role:   rulerRole,
         traits: [TRAIT_RULER, ...vExtraTraits],
         stats: {
-          attack:  Math.floor(3 + h(8) * 7),
-          defense: Math.floor(3 + h(9) * 7),
-          morale:  Math.floor(40 + h(10) * 40),
+          attack:    Math.floor(3 + h(8) * 7),
+          defense:   Math.floor(3 + h(9) * 7),
+          morale:    Math.floor(40 + h(10) * 40),
           moveSpeed: 3 + Math.floor((h(11) % 1.0) * 6),
         },
+        loyalNationId: nationId,
+        location:      { type: 'region', ref: `village:${i}` },
+        isKing:        false,
       });
 
       const villagePrefix = _pick(VILLAGE_NAME_PREFIXES, h(12));
       const villageSuffix = _pick(VILLAGE_SUFFIXES, h(11));
 
-      this.villageSettlements.push(new Settlement({
+      this.villageSettlements.push(new Region({
         type:         'village',
         name:         `${villagePrefix}${villageSuffix}`,
         nationId,
@@ -399,7 +375,7 @@ export class NationSystem {
  *
  * @param {'castle'|'village'} type   Settlement type.
  * @param {number}             index  Index in the corresponding settlements array.
- * @returns {Unit}
+ * @returns {Character}
  */
 export function generateNeutralRuler(type, index) {
   const isCastle = type === 'castle';
@@ -413,8 +389,9 @@ export function generateNeutralRuler(type, index) {
   const role    = _pick(titles, h(3));
 
   const extraTraits = generateRandomTraits(Math.floor(h(4) * 99991), [TRAIT_RULER]);
+  const settKey = `${isCastle ? 'castle' : 'village'}:${index}`;
 
-  return new Unit({
+  return new Character({
     // Castle neutral rulers: IDs -(3000…3999); village neutral rulers: -(4000…4999).
     // Both ranges are clear of world-seed ruler IDs (-(1)…-(9) for castles,
     // -(1001)…-(1xxx) for villages).
@@ -428,5 +405,8 @@ export function generateNeutralRuler(type, index) {
       morale:    Math.floor(40 + h(7) * 40),
       moveSpeed: 3 + Math.floor(h(8) * 6),
     },
+    loyalNationId: null,           // neutral rulers owe no allegiance
+    location:      { type: 'region', ref: settKey },
+    isKing:        false,
   });
 }

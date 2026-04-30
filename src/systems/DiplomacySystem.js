@@ -28,6 +28,7 @@ import { Building, BuildingSystem, BLDG_TAVERN,
          BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_INN } from './BuildingSystem.js';
 import { buildPath } from '../world/NpcPathfinder.js';
 import { getSpeedBonus, getUnitMoveSpeed } from './CharacterSystem.js';
+import { Army } from './Army.js';
 
 // ---------------------------------------------------------------------------
 // NPC AI constants
@@ -355,6 +356,14 @@ export class DiplomacySystem {
     this._npcArmies = new Map();
 
     /**
+     * Personal Army for each NPC king (nationId → Army).
+     * Each king can command up to 3 squads just like the player.
+     * These are separate from the settlement garrison armies in _npcArmies.
+     * @type {Map<number, import('./Army.js').Army>}
+     */
+    this._kingArmies = new Map();
+
+    /**
      * Active NPC army marches (armies moving toward a target settlement).
      * Each entry holds everything needed to advance, render, and resolve the march.
      * @type {Array<{
@@ -478,6 +487,17 @@ export class DiplomacySystem {
    */
   setPathfinderWorker(worker) {
     this._pathfinderWorker = worker;
+  }
+
+  /**
+   * Return the personal Army for the NPC king of a given nation.
+   * Kings can command up to 3 squads (same structure as the player's Army).
+   *
+   * @param {number} nationId
+   * @returns {import('./Army.js').Army|null}
+   */
+  getKingArmy(nationId) {
+    return this._kingArmies.get(nationId) ?? null;
   }
 
   // -------------------------------------------------------------------------
@@ -840,6 +860,22 @@ export class DiplomacySystem {
       if (!this._npcGold.has(id)) {
         const eco = castleSettlements[id]?.economyLevel ?? 3;
         this._npcGold.set(id, eco * 80);
+      }
+    });
+
+    // Personal Army for each NPC king (isKing: true, up to 3 squads).
+    // Kings share the same Army class as the player but are managed here.
+    nations.forEach((nation, id) => {
+      if (!this._kingArmies.has(id)) {
+        const kingChar = castleSettlements[id]?.ruler;
+        const kingName = kingChar?.name ?? nation.name;
+        const kingArmy = new Army(kingName);
+        // The king's Army starts empty (no hero unit – the king is represented
+        // by their Character, which lives on the Region as the ruler).
+        // Clear the default hero unit that Army() creates.
+        kingArmy.squads[0].members = [];
+        kingArmy.squads[0].captainId = null;
+        this._kingArmies.set(id, kingArmy);
       }
     });
 

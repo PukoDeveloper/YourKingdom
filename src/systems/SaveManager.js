@@ -11,10 +11,18 @@
  *   inventory: { nextId, items[] },
  *   army     : { nextUnitId, squads[] }
  * }
+ *
+ * Save format version 4 (current) adds:
+ * {
+ *   playerCharacter: object,   // Character.toJSON() snapshot for the player character
+ *   regionState: [             // per-region satisfaction and assigned character ids
+ *     { key: string, satisfaction: number, assignedCharacters: (number|string)[] }
+ *   ]
+ * }
  */
 
 const SAVE_KEY     = 'yk_save';
-const SAVE_VERSION = 3;
+const SAVE_VERSION = 4;
 
 export class SaveManager {
   /** @returns {boolean} true when a compatible save exists in localStorage */
@@ -49,6 +57,8 @@ export class SaveManager {
 
   /**
    * Retrieve the saved snapshot.
+   * Returns null when absent or from an older (incompatible) version so the
+   * game starts fresh.
    * @returns {object|null} parsed data or null if absent / incompatible
    */
   static load() {

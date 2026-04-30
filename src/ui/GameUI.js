@@ -1,6 +1,7 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
 import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID, generateNeutralRuler }   from '../systems/NationSystem.js';
+import { AssignmentSystem } from '../systems/AssignmentSystem.js';
 import {
   RELATION_LEVELS,
   PERSONALITY_COLORS,
@@ -406,7 +407,7 @@ export class GameUI {
    * @param {() => void} [onSave]  Called when the player presses the save button.
    * @param {import('../systems/NationSystem.js').NationSystem|null} [nationSystem]
    * @param {() => void} [onReset] Called when the player confirms a game reset.
-   * @param {import('../entities/Player.js').Player|null} [player]  Live Player instance.
+   * @param {import('../entities/PlayerEntity.js').PlayerEntity|null} [player]  Live PlayerEntity instance.
    * @param {import('../systems/DiplomacySystem.js').DiplomacySystem|null} [diplomacySystem]
    * @param {import('../world/DayNightCycle.js').DayNightCycle|null} [dayNightCycle]
    * @param {import('../world/MapData.js').MapData|null} [mapData]  Live MapData used for coastal checks.
@@ -415,6 +416,14 @@ export class GameUI {
   constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null, mapData = null, pathfinderWorker = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
+
+    /**
+     * Assignment system – coordinates assigning army members to regions,
+     * trade routes and construction sites.  Wraps the existing _assignedRulers,
+     * _tradeRouteWorkers and _buildingWorkers Maps.
+     * @type {AssignmentSystem}
+     */
+    this.assignmentSystem = new AssignmentSystem(this.army);
 
     /** @type {import('../systems/NationSystem.js').NationSystem|null} */
     this.nationSystem = nationSystem;
@@ -425,7 +434,7 @@ export class GameUI {
     /** @type {import('../world/DayNightCycle.js').DayNightCycle|null} */
     this._dayNightCycle = dayNightCycle;
 
-    /** @type {import('../entities/Player.js').Player|null} */
+    /** @type {import('../entities/PlayerEntity.js').PlayerEntity|null} */
     this.player = player;
 
     /** @type {import('../world/MapData.js').MapData|null} */
@@ -8976,6 +8985,13 @@ export class GameUI {
         }
       }
     }
+
+    // Sync the AssignmentSystem so it reflects the restored assignment Maps.
+    this.assignmentSystem.syncFromGameUI(
+      this._assignedRulers,
+      this._tradeRouteWorkers,
+      this._buildingWorkers,
+    );
   }
 
   /**
