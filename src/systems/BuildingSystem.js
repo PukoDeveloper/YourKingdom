@@ -215,6 +215,40 @@ export class BuildingSystem {
   }
 
   /**
+   * Compute the price a shop will PAY the player for a resource item.
+   *
+   * Sell prices are deliberately kept below buy prices at every settlement to
+   * prevent players from exploiting a single location for infinite gold.
+   *
+   * Multipliers (applied to item.basePrice):
+   *   – Demanded resource (settlement wants it):  0.60
+   *   – Normal resource (neither local nor demanded): 0.50
+   *   – Locally produced resource (abundant here):   0.30
+   *
+   * The cheapest possible BUY price for any item is basePrice × 0.7
+   * (minimum priceMult 0.7) × 0.7 (local discount) ≈ 0.49 × basePrice.
+   * Because demanded-resource sell price (0.60) exceeds that floor only for
+   * the local-discount case, which is not applicable to demanded resources,
+   * all sell prices remain strictly below the matching buy price.
+   *
+   * @param {CatalogItem} item
+   * @param {string[]}    localResources  Settlement's own resource names.
+   * @param {string}      [demandResource]  The resource currently demanded by this settlement.
+   * @returns {number} Price in gold the shop pays (minimum 1).
+   */
+  static computeSellPrice(item, localResources = [], demandResource = '') {
+    let mult;
+    if (item.name === demandResource) {
+      mult = 0.60; // settlement needs it – premium
+    } else if (localResources.includes(item.name)) {
+      mult = 0.30; // already abundant locally – depressed
+    } else {
+      mult = 0.50; // standard resale value
+    }
+    return Math.max(1, Math.round(item.basePrice * mult));
+  }
+
+  /**
    * Generate the recruit roster available at a tavern on a given day.
    * The result is deterministic: same inputs → same recruits.
    *
