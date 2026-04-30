@@ -37,6 +37,7 @@ import {
   BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_TAVERN, BLDG_INN,
   BUILDING_META,
   CATALOG_GENERAL, CATALOG_BLACKSMITH, CATALOG_MAGE, CATALOG_TAVERN_FOOD,
+  RESOURCE_BASE_PRICE,
 } from '../systems/BuildingSystem.js';
 import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
 import {
@@ -4323,9 +4324,12 @@ export class GameUI {
     if (!content) return;
 
     switch (building.type) {
-      case BLDG_GENERAL:
-        this._renderShop(building, settlement, this._buildGeneralCatalog(settlement));
+      case BLDG_GENERAL: {
+        const sKey      = this._settlementKey(settlement);
+        const demandRes = sKey ? this._getSettlementDemand(sKey, settlement) : '';
+        this._renderShop(building, settlement, this._buildGeneralCatalog(settlement), demandRes);
         break;
+      }
       case BLDG_BLACKSMITH:
         this._renderShop(building, settlement, CATALOG_BLACKSMITH);
         break;
@@ -4361,7 +4365,7 @@ export class GameUI {
       name:        res,
       icon:        resourceIcon[res] ?? '📦',
       type:        'loot',
-      basePrice:   10,
+      basePrice:   RESOURCE_BASE_PRICE,
       quantity:    5,
       description: `本地特產：${res}（折扣）`,
     }));
@@ -4404,8 +4408,10 @@ export class GameUI {
    * @param {import('../systems/BuildingSystem.js').Building} building
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    * @param {import('../systems/BuildingSystem.js').CatalogItem[]} catalog
+   * @param {string} [demandResource]  Resource currently demanded by this settlement.
+   *   When provided a "sell to shop" panel is shown for loot-type inventory items.
    */
-  _renderShop(building, settlement, catalog) {
+  _renderShop(building, settlement, catalog, demandResource = '') {
     const content = document.getElementById('location-content');
     if (!content) return;
 
@@ -4431,11 +4437,48 @@ export class GameUI {
         </div>`;
     }).join('');
 
+    // Build sell panel (only for General Store, i.e. when demandResource is provided)
+    const localResources = settlement.resources ?? [];
+
+    let sellHTML = '';
+    if (demandResource !== '') {
+      const sellableItems = this.inventory.getItems().filter(i => i.type === 'loot' && RESOURCE_TYPES.includes(i.name));
+      if (sellableItems.length === 0) {
+        sellHTML = `<div class="shop-sell-empty">（背包中無可販賣的物資）</div>`;
+      } else {
+        sellHTML = sellableItems.map(invItem => {
+          const sellPrice = BuildingSystem.computeSellPrice(invItem.name, RESOURCE_BASE_PRICE, localResources, demandResource);
+          const isDemand  = invItem.name === demandResource;
+          const isLocal   = localResources.includes(invItem.name);
+          const tag       = isDemand ? '🔥 需求' : isLocal ? '📦 本地' : '';
+          return `
+            <div class="shop-item-row" data-inv-id="${invItem.id}" data-sell-price="${sellPrice}">
+              <span class="sir-icon">${invItem.icon}</span>
+              <div class="sir-info">
+                <div class="sir-name">${invItem.name}${tag ? ` <span class="sir-stat">${tag}</span>` : ''}</div>
+                <div class="sir-desc">持有：×${invItem.quantity}</div>
+              </div>
+              <span class="sir-price">🪙${sellPrice}</span>
+              <button class="btn-sell" data-inv-id="${invItem.id}" data-sell-price="${sellPrice}">出售</button>
+            </div>`;
+        }).join('');
+      }
+    }
+
+    const demandNote = demandResource
+      ? `<div class="shop-demand-note">📋 本地需求：<strong>${demandResource}</strong>（高價收購）</div>`
+      : '';
+
     content.innerHTML = `
       ${this._facilityBackHTML(settlement)}
       <div class="fac-title">${building.icon} ${building.name}</div>
       ${this._goldBarHTML()}
+      <div class="shop-section-title">購買</div>
       <div class="shop-item-list">${itemsHTML}</div>
+      ${demandResource !== '' ? `
+      <div class="shop-section-title">出售物資</div>
+      ${demandNote}
+      <div class="shop-item-list shop-sell-list">${sellHTML}</div>` : ''}
     `;
 
     this._attachFacilityBack(settlement);
@@ -4462,6 +4505,23 @@ export class GameUI {
         });
         this._toast(`✅ 購買了 ${item.icon} ${item.name}（-${price} 🪙）`);
         this._refreshGoldDisplay();
+      });
+    });
+
+    // Sell buttons (General Store only)
+    content.querySelectorAll('.btn-sell').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const invId    = Number(btn.dataset.invId);
+        const sellPrice = Number(btn.dataset.sellPrice);
+        const invItem  = this.inventory.getItems().find(i => i.id === invId);
+        if (!invItem) return;
+
+        this.inventory.removeItem(invId, 1);
+        this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: sellPrice });
+        this._toast(`💰 出售了 ${invItem.icon} ${invItem.name}（+${sellPrice} 🪙）`);
+        this._refreshGoldDisplay();
+        // Re-render to update quantities
+        this._renderShop(building, settlement, catalog, demandResource);
       });
     });
   }

@@ -53,6 +53,9 @@ export const BUILDING_META = {
  * }} CatalogItem
  */
 
+/** Base price (gold) for all raw resource goods traded at 雜貨舖. */
+export const RESOURCE_BASE_PRICE = 10;
+
 /** Items sold by 雜貨舖 (local resources added dynamically at point of sale). */
 export const CATALOG_GENERAL = [
   { id: 'dry_ration',  name: '乾糧',   icon: '🍱', type: 'food',    basePrice:  5, quantity: 5, description: '補充行軍所需的體力。' },
@@ -160,6 +163,11 @@ const _RANDOM_POOL = [
   BLDG_INN,
 ];
 
+/** Sell-price multipliers (fraction of basePrice the shop pays the player). */
+const SELL_MULT_DEMAND = 0.60; // resource is currently demanded by this settlement
+const SELL_MULT_NORMAL = 0.50; // resource is neither demanded nor locally produced
+const SELL_MULT_LOCAL  = 0.30; // resource is already produced locally (abundant)
+
 export class BuildingSystem {
   /**
    * Generate the building list for a settlement (deterministic from seed).
@@ -212,6 +220,43 @@ export class BuildingSystem {
       price *= 0.7;
     }
     return Math.max(1, Math.round(price));
+  }
+
+  /**
+   * Compute the price a shop will PAY the player for a resource item.
+   *
+   * Sell prices are deliberately kept below buy prices at every settlement to
+   * prevent players from exploiting a single location for infinite gold.
+   *
+   * Multipliers (applied to basePrice):
+   *   – Demanded resource (settlement wants it):       SELL_MULT_DEMAND  (0.60)
+   *   – Normal resource (neither local nor demanded):  SELL_MULT_NORMAL  (0.50)
+   *   – Locally produced resource (abundant here):     SELL_MULT_LOCAL   (0.30)
+   *
+   * Anti-arbitrage guarantee: a resource cannot be both demanded AND locally
+   * produced at the same settlement (demand is always a resource not in
+   * settlement.resources).  The lowest possible BUY price at any shop is
+   * basePrice × 0.7 (min priceMult) × 0.7 (local discount) ≈ 0.49 × basePrice.
+   * The highest SELL price (SELL_MULT_DEMAND × basePrice, for a demanded resource)
+   * is always below that floor, so buying and immediately re-selling in the same
+   * location is never profitable.
+   *
+   * @param {string}   itemName        Name of the resource item.
+   * @param {number}   basePrice       Item's base price in gold.
+   * @param {string[]} localResources  Settlement's own resource names.
+   * @param {string}   [demandResource]  The resource currently demanded by this settlement.
+   * @returns {number} Price in gold the shop pays (minimum 1).
+   */
+  static computeSellPrice(itemName, basePrice, localResources = [], demandResource = '') {
+    let mult;
+    if (itemName === demandResource) {
+      mult = SELL_MULT_DEMAND; // settlement needs it – premium
+    } else if (localResources.includes(itemName)) {
+      mult = SELL_MULT_LOCAL;  // already abundant locally – depressed
+    } else {
+      mult = SELL_MULT_NORMAL; // standard resale value
+    }
+    return Math.max(1, Math.round(basePrice * mult));
   }
 
   /**

@@ -3575,6 +3575,24 @@
 
       /* ── Shop item rows ─────────────────────────────────────────── */
       .shop-item-list { display: flex; flex-direction: column; gap: 8px; }
+      .shop-section-title {
+        color: rgba(255,255,255,0.55);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin: 10px 0 4px;
+      }
+      .shop-demand-note {
+        font-size: 11px;
+        color: #ffb74d;
+        margin-bottom: 6px;
+      }
+      .shop-sell-empty {
+        color: rgba(255,255,255,0.3);
+        font-size: 12px;
+        padding: 8px 0;
+      }
       .shop-item-row {
         display: flex;
         align-items: center;
@@ -3613,6 +3631,21 @@
       }
       .btn-buy:hover { background: rgba(226,201,126,0.32); }
       .btn-buy:disabled { opacity: 0.4; cursor: not-allowed; }
+      .btn-sell {
+        padding: 6px 14px;
+        background: rgba(129,199,132,0.15);
+        border: 1.5px solid rgba(129,199,132,0.55);
+        border-radius: 8px;
+        color: #81c784;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.12s;
+        touch-action: manipulation;
+        white-space: nowrap;
+      }
+      .btn-sell:hover { background: rgba(129,199,132,0.28); }
 
       /* ── Inn screen ──────────────────────────────────────────────── */
       .inn-scene-art {
