@@ -350,6 +350,16 @@ const RESOURCE_TYPES = ['木材', '農產', '礦石', '絲綢', '煤炭', '草�
 /** Minimum diplomatic relation required for foreign-settlement trade. */
 const TRADE_MIN_FOREIGN_RELATION = -20;
 
+/** Relation penalty applied when the player cancels a foreign nation's import trade route. */
+const TRADE_CANCEL_RELATION_PENALTY = -15;
+
+/** Minimum relation required for the player to propose building a connecting road. */
+const CONNECT_ROAD_MIN_RELATION = 20;
+/** Relation gain when the foreign nation accepts a connecting road proposal. */
+const CONNECT_ROAD_RELATION_GAIN = 10;
+/** Gold cost the player pays to propose the road (token goodwill payment). */
+const CONNECT_ROAD_PROPOSAL_COST = 50;
+
 /** Base gold cost for a banquet (宴請) at a foreign settlement. */
 const BANQUET_BASE_COST = 30;
 /** Additional gold cost per economy level for a banquet. */
@@ -1287,6 +1297,7 @@ export class GameUI {
     const isMap   = item.type === 'map';
     const isGuide = item.type === 'guide';
     const usable  = !isMap && !isGuide && ['consumable', 'potion', 'utility'].includes(item.type);
+    const equipSlot = GameUI._getEquipSlot(item.type);
     const statsKeys = item.stats ? Object.keys(item.stats) : [];
     const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
 
@@ -1321,8 +1332,10 @@ export class GameUI {
         ${isMap   ? `<button class="btn-item-use" data-id="${item.id}">🗺️ 查看地圖</button>` : ''}
         ${isGuide ? `<button class="btn-item-use" data-id="${item.id}">📖 開啟指南</button>` : ''}
         ${usable  ? `<button class="btn-item-use" data-id="${item.id}">▶ 使用</button>` : ''}
+        ${equipSlot ? `<button class="btn-item-equip-char" data-id="${item.id}">⚔️ 裝備到人物…</button>` : ''}
         <button class="btn-item-discard" data-id="${item.id}">🗑 丟棄</button>
       </div>
+      ${equipSlot ? '<div class="id-char-picker" style="display:none"></div>' : ''}
     `;
 
     document.getElementById('ui-item-detail-overlay').classList.add('visible');
@@ -1345,6 +1358,13 @@ export class GameUI {
       this._renderBackpack();
     });
 
+    // "裝備到人物" button – show inline character picker
+    if (equipSlot) {
+      detailBody.querySelector('.btn-item-equip-char')?.addEventListener('click', () => {
+        this._showCharEquipPicker(detailBody.querySelector('.id-char-picker'), item, equipSlot);
+      });
+    }
+
     detailBody.querySelector('.btn-item-discard')?.addEventListener('click', () => {
       this.inventory.removeItem(item.id, item.quantity);
       this._toast(`已丟棄 ${item.name}`);
@@ -1357,9 +1377,61 @@ export class GameUI {
     document.getElementById('ui-item-detail-overlay').classList.remove('visible');
   }
 
-  // -------------------------------------------------------------------------
-  // Minimap overlay
-  // -------------------------------------------------------------------------
+  /**
+   * Show an inline character picker inside the item detail overlay so the
+   * player can choose which unit to equip the item on.
+   * @param {HTMLElement} pickerEl
+   * @param {object} item  Inventory item
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   */
+  _showCharEquipPicker(pickerEl, item, slotKey) {
+    const SLOT_LABEL = { weapon: '武器', armor: '裝備', accessory: '飾品' };
+    const allUnits = [];
+    for (const sq of this.army.getSquads()) {
+      for (const m of sq.members) allUnits.push({ unit: m, squad: sq });
+    }
+
+    const rowsHTML = allUnits.length === 0
+      ? `<div class="id-char-picker-empty">沒有可裝備的人物</div>`
+      : allUnits.map(({ unit, squad }) => {
+          const cur = unit.equipment?.[slotKey];
+          const curText = cur ? `（已裝備：${cur.name}）` : '';
+          return `
+            <div class="id-char-picker-item" data-unit-id="${unit.id}" data-squad-id="${squad.id}" role="button" tabindex="0">
+              <span class="id-char-picker-item-name">${unit.name}</span>
+              <span class="id-char-picker-item-slot">${curText}</span>
+            </div>`;
+        }).join('');
+
+    pickerEl.innerHTML = `
+      <div class="id-char-picker-header">
+        <span>選擇人物（${SLOT_LABEL[slotKey]}欄）</span>
+        <button class="btn-equip-picker-cancel">✕</button>
+      </div>
+      ${rowsHTML}`;
+    pickerEl.style.display = 'block';
+
+    pickerEl.querySelector('.btn-equip-picker-cancel').addEventListener('click', () => {
+      pickerEl.style.display = 'none';
+    });
+
+    pickerEl.querySelectorAll('.id-char-picker-item').forEach(row => {
+      const confirm = () => {
+        const unitId  = Number(row.dataset.unitId);
+        const squadId = Number(row.dataset.squadId);
+        const squad   = this.army.getSquads().find(s => s.id === squadId);
+        const unit    = squad?.members.find(m => m.id === unitId);
+        if (!unit) return;
+        this._equipItemToUnit(unit, slotKey, item);
+        this._closeItemDetail();
+        this._renderBackpack();
+      };
+      row.addEventListener('click', confirm);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirm(); } });
+    });
+  }
+
+
 
   /** Terrain colour palette for the minimap canvas. */
   static get _MINIMAP_COLORS() {
@@ -3447,6 +3519,16 @@ export class GameUI {
               const fromSett = this._getSettlementByKey(fromKey);
               const toSett   = this._getSettlementByKey(toKey);
               this._addInboxMessage('🛤️', `道路 ${fromSett?.name ?? fromKey} ↔ ${toSett?.name ?? toKey} 已建造完成！`);
+              // Apply relation bonus for connecting roads agreed with a foreign nation
+              if (road.connectRoadNationId !== null && road.connectRoadNationId !== undefined && this.diplomacySystem) {
+                const nid   = road.connectRoadNationId;
+                const bonus = road.connectRoadRelBonus ?? CONNECT_ROAD_RELATION_GAIN;
+                this.diplomacySystem.modifyPlayerRelation(nid, bonus);
+                this.diplomacySystem._addMemoryEntry(nid,
+                  `共建連結道路完成，關係 +${bonus}`, bonus);
+                const nationName = this.nationSystem?.nations?.[nid]?.name ?? `國家${nid}`;
+                this._addInboxMessage('🛣️', `連結道路建成！與 ${nationName} 的關係 +${bonus}。`);
+              }
               if (this.onRoadBuilt) this.onRoadBuilt();
             } else {
               // Demolition complete – just remove
@@ -3663,6 +3745,7 @@ export class GameUI {
         <div class="ud-stat"><span class="ud-stat-label">士氣</span><span class="ud-stat-val">${unit.stats.morale}</span></div>
         <div class="ud-stat"><span class="ud-stat-label">速度</span><span class="ud-stat-val">${unit.stats.moveSpeed ?? 5}</span></div>
       </div>
+      ${this._buildEquipSlotsHTML(unit)}
       ${captainBtn ? `<div class="ud-actions">${captainBtn}</div>` : ''}
       ${!isHero ? `
       <div class="ud-actions">
@@ -3679,6 +3762,9 @@ export class GameUI {
 
     const overlay = document.getElementById('ui-unit-detail-overlay');
     overlay.classList.add('visible');
+
+    // Attach equipment slot event handlers
+    this._attachEquipSlotHandlers(overlay, unit, squad);
 
     // Toggle active status
     overlay.querySelectorAll('.btn-toggle-active').forEach(btn => {
@@ -3738,8 +3824,185 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
-  // Unit acquisition
+  // Equipment slots helpers
   // -------------------------------------------------------------------------
+
+  /** Maps an item type string to the equipment slot key it belongs to. */
+  static _getEquipSlot(type) {
+    if (type === 'weapon') return 'weapon';
+    if (['helmet', 'chest', 'legs', 'boots'].includes(type)) return 'armor';
+    if (type === 'accessory') return 'accessory';
+    return null;
+  }
+
+  /** Returns a small string summarising equipment stats (e.g. "攻擊 +3"). */
+  static _equipStatsText(item) {
+    if (!item?.stats) return '';
+    const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
+    return Object.entries(item.stats)
+      .map(([k, v]) => `${STAT_LABEL[k] ?? k}${v >= 0 ? ' +' : ' '}${v}`)
+      .join(' ');
+  }
+
+  /**
+   * Build the HTML for the equipment-slots section shown inside the unit
+   * detail overlay.
+   * @param {import('../systems/Army.js').Unit} unit
+   * @returns {string}
+   */
+  _buildEquipSlotsHTML(unit) {
+    const SLOT_META = [
+      { key: 'weapon',    label: '武器', icon: '⚔️' },
+      { key: 'armor',     label: '裝備', icon: '🛡️' },
+      { key: 'accessory', label: '飾品', icon: '💍' },
+    ];
+    const slotsHTML = SLOT_META.map(({ key, label }) => {
+      const item = unit.equipment?.[key] ?? null;
+      const stats = GameUI._equipStatsText(item);
+      if (item) {
+        return `
+          <div class="ud-equip-slot ud-equip-slot-filled" data-slot="${key}">
+            <span class="ud-equip-slot-label">${label}</span>
+            <span class="ud-equip-slot-icon">${item.icon ?? '📦'}</span>
+            <span class="ud-equip-slot-name">${item.name}</span>
+            ${stats ? `<span class="ud-equip-slot-stats">${stats}</span>` : ''}
+            <button class="btn-unequip" data-slot="${key}">卸下</button>
+          </div>`;
+      }
+      return `
+        <div class="ud-equip-slot ud-equip-slot-empty" data-slot="${key}">
+          <span class="ud-equip-slot-label">${label}</span>
+          <span class="ud-equip-slot-empty-text">空</span>
+          <button class="btn-equip-slot" data-slot="${key}">裝備</button>
+        </div>`;
+    }).join('');
+    return `
+      <div class="ud-equip-section">
+        <div class="ud-section-title">裝備欄</div>
+        <div class="ud-equip-slots">${slotsHTML}</div>
+        <div class="ud-equip-picker" style="display:none"></div>
+      </div>`;
+  }
+
+  /**
+   * Attach event handlers for equip/unequip buttons inside the unit detail overlay.
+   * @param {HTMLElement} overlay
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {import('../systems/Army.js').Squad} squad
+   */
+  _attachEquipSlotHandlers(overlay, unit, squad) {
+    const picker = overlay.querySelector('.ud-equip-picker');
+
+    // Unequip button – returns item to backpack
+    overlay.querySelectorAll('.btn-unequip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const slotKey = btn.dataset.slot;
+        this._unequipItemFromUnit(unit, slotKey);
+        this._closeUnitDetail();
+        this._openUnitDetail(unit, squad);
+      });
+    });
+
+    // Equip button – opens inline picker for compatible backpack items
+    overlay.querySelectorAll('.btn-equip-slot').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const slotKey = btn.dataset.slot;
+        this._showEquipPicker(picker, unit, squad, slotKey);
+      });
+    });
+  }
+
+  /**
+   * Show the inline item picker inside the equipment section.
+   * @param {HTMLElement} pickerEl
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {import('../systems/Army.js').Squad} squad
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   */
+  _showEquipPicker(pickerEl, unit, squad, slotKey) {
+    const SLOT_TYPES = {
+      weapon:    ['weapon'],
+      armor:     ['helmet', 'chest', 'legs', 'boots'],
+      accessory: ['accessory'],
+    };
+    const SLOT_LABEL = { weapon: '武器', armor: '裝備', accessory: '飾品' };
+    const compatibleTypes = SLOT_TYPES[slotKey] ?? [];
+    const allItems = this.inventory.getItems();
+    const compatible = allItems.filter(i => compatibleTypes.includes(i.type));
+
+    const itemsHTML = compatible.length === 0
+      ? `<div class="ud-equip-picker-empty">背包中沒有可裝備的${SLOT_LABEL[slotKey]}</div>`
+      : compatible.map(it => {
+          const stats = GameUI._equipStatsText(it);
+          return `
+            <div class="ud-equip-picker-item" data-item-id="${it.id}" role="button" tabindex="0">
+              <span class="ud-equip-picker-item-icon">${it.icon}</span>
+              <span class="ud-equip-picker-item-name">${it.name}</span>
+              ${stats ? `<span class="ud-equip-picker-item-stats">${stats}</span>` : ''}
+            </div>`;
+        }).join('');
+
+    pickerEl.innerHTML = `
+      <div class="ud-equip-picker-header">
+        <span>選擇${SLOT_LABEL[slotKey]}</span>
+        <button class="btn-equip-picker-cancel">✕</button>
+      </div>
+      ${itemsHTML}`;
+    pickerEl.style.display = 'block';
+
+    pickerEl.querySelector('.btn-equip-picker-cancel').addEventListener('click', () => {
+      pickerEl.style.display = 'none';
+    });
+
+    pickerEl.querySelectorAll('.ud-equip-picker-item').forEach(row => {
+      const confirm = () => {
+        const item = allItems.find(i => i.id === Number(row.dataset.itemId));
+        if (!item) return;
+        this._equipItemToUnit(unit, slotKey, item);
+        this._closeUnitDetail();
+        this._openUnitDetail(unit, squad);
+      };
+      row.addEventListener('click', confirm);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirm(); } });
+    });
+  }
+
+  /**
+   * Equip an item from the backpack to the given slot on a unit.
+   * If the slot already has an item it is returned to the backpack first.
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   * @param {object} item  Inventory item object
+   */
+  _equipItemToUnit(unit, slotKey, item) {
+    // Return previously equipped item to backpack (preserve original stackable behaviour)
+    const existing = unit.equipment?.[slotKey] ?? null;
+    if (existing) {
+      this.inventory.addItem({ ...existing });
+    }
+    // Remove 1 unit of the new item from backpack
+    this.inventory.removeItem(item.id, 1);
+    // Store a snapshot (quantity always 1 – a single item occupies the slot)
+    const { quantity: _q, ...itemWithoutQty } = item;
+    unit.equipment[slotKey] = { ...itemWithoutQty, quantity: 1 };
+    this._toast(`${unit.name} 裝備了 ${item.icon} ${item.name}`);
+  }
+
+  /**
+   * Unequip an item from the given slot and return it to the backpack.
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   */
+  _unequipItemFromUnit(unit, slotKey) {
+    const item = unit.equipment?.[slotKey] ?? null;
+    if (!item) return;
+    unit.equipment[slotKey] = null;
+    // Return item to backpack, preserving original stackable behaviour
+    this.inventory.addItem({ ...item });
+    this._toast(`${unit.name} 卸下了 ${item.icon} ${item.name}`);
+  }
+
+
 
   /**
    * Call this when the player earns a new unit (e.g., after battle).
@@ -5186,6 +5449,23 @@ export class GameUI {
       ? `<span class="gov-pact-badge gov-pact-active">${label} 有效</span>`
       : '';
 
+    // Connecting road proposal: needs friendly relation and player to own at least one settlement
+    const playerHasSettlement = this.nationSystem && (
+      this.nationSystem.castleSettlements.some(s => s.controllingNationId === PLAYER_NATION_ID) ||
+      this.nationSystem.villageSettlements.some(s => s.controllingNationId === PLAYER_NATION_ID)
+    );
+    const canConnectRoad = !atWar && relVal >= CONNECT_ROAD_MIN_RELATION && playerHasSettlement
+                           && this._getGold() >= CONNECT_ROAD_PROPOSAL_COST;
+    const connectRoadDesc = atWar
+      ? '戰爭狀態下無法提議'
+      : !playerHasSettlement
+        ? '你尚未控制任何地區'
+        : relVal < CONNECT_ROAD_MIN_RELATION
+          ? `關係值過低（需 ≥ ${CONNECT_ROAD_MIN_RELATION}）`
+          : this._getGold() < CONNECT_ROAD_PROPOSAL_COST
+            ? `金幣不足（需 🪙${CONNECT_ROAD_PROPOSAL_COST}）`
+            : `花費 🪙${CONNECT_ROAD_PROPOSAL_COST} 提議共建連結道路，加深往來`;
+
     container.innerHTML = `
       <div class="gov-foreign-diplo-section">
         <div class="gov-foreign-diplo-title">🤝 外交提案</div>
@@ -5244,6 +5524,14 @@ export class GameUI {
             </div>
             <span class="gdp-arrow">${canTrade ? '›' : (alreadyImporting ? '✅' : '🔒')}</span>
           </div>
+          <div class="gov-diplo-proposal-card${canConnectRoad ? '' : ' disabled'}" id="diplo-connect-road" role="button" tabindex="${canConnectRoad ? 0 : -1}">
+            <span class="gdp-icon">🛣️</span>
+            <div class="gdp-info">
+              <div class="gdp-name">建立連結道路</div>
+              <div class="gdp-desc">${connectRoadDesc}</div>
+            </div>
+            <span class="gdp-arrow">${canConnectRoad ? '›' : '🔒'}</span>
+          </div>
         </div>
       </div>
     `;
@@ -5265,6 +5553,7 @@ export class GameUI {
     bindCard('diplo-joint-war',    () => this._renderJointWarProposal(building, settlement));
     bindCard('diplo-mpt',          () => this._renderMutualProtectionProposal(building, settlement));
     bindCard('diplo-trade-route',  () => this._renderForeignTradeProposal(building, settlement));
+    bindCard('diplo-connect-road', () => this._renderConnectingRoadProposal(building, settlement));
   }
 
   // -------------------------------------------------------------------------
@@ -5340,15 +5629,25 @@ export class GameUI {
 
     // Import routes (foreign merchants coming to this settlement)
     const importHTML = importRoutes.length > 0
-      ? importRoutes.map(r => `
+      ? importRoutes.map(r => {
+          const fromSett = this._getSettlementByKey(r.fromKey);
+          const isForeign = fromSett && fromSett.controllingNationId >= 0 &&
+                            fromSett.controllingNationId !== PLAYER_NATION_ID;
+          return `
           <div class="tr-route-card" style="border-color:#64b5f6">
             <div class="tr-route-row">
               <span class="tr-route-dest" style="color:#64b5f6">← ${r.fromName}</span>
               <span class="tr-route-goods">${(r.resources ?? []).join('、') || '—'}</span>
               <span class="tr-route-gold">+${r.dailyGold} 🪙/日</span>
-              <button class="tr-route-del" data-route-id="${r.id}" title="取消路線">✕</button>
+              ${isForeign
+                ? `<button class="tr-import-cancel" data-route-id="${r.id}"
+                     title="終止此外國進口路線（關係 ${TRADE_CANCEL_RELATION_PENALTY}）">終止</button>`
+                : `<button class="tr-route-del" data-route-id="${r.id}" title="取消路線">✕</button>`
+              }
             </div>
-          </div>`).join('')
+            ${isForeign ? `<div class="tr-import-warn">⚠ 終止後將影響與 ${fromSett.name} 所屬國的關係（${TRADE_CANCEL_RELATION_PENALTY}）</div>` : ''}
+          </div>`;
+        }).join('')
       : '';
 
     // All other settlements as potential destinations
@@ -5489,6 +5788,29 @@ export class GameUI {
         this._tradeRouteWorkers.delete(routeId);
         this._tradeRoutes.delete(routeId);
         this._addInboxMessage('🛤', `已取消 ${route.fromName} → ${route.toName} 的貿易路線。`);
+        this._renderTradeRoutePanel(building, settlement);
+      });
+    });
+
+    // Cancel foreign import route (with relation penalty)
+    content.querySelectorAll('.tr-import-cancel').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const routeId = btn.dataset.routeId;
+        const route   = this._tradeRoutes.get(routeId);
+        if (!route) return;
+        const fromSett = this._getSettlementByKey(route.fromKey);
+        const nationId = fromSett?.controllingNationId;
+        if (!window.confirm(`確定要終止來自 ${route.fromName} 的貿易路線？\n此舉將令對方不滿（關係 ${TRADE_CANCEL_RELATION_PENALTY}）。`)) return;
+        this._tradeRouteWorkers.delete(routeId);
+        this._tradeRoutes.delete(routeId);
+        // Apply relation penalty
+        if (this.diplomacySystem && nationId >= 0) {
+          this.diplomacySystem.modifyPlayerRelation(nationId, TRADE_CANCEL_RELATION_PENALTY);
+          this.diplomacySystem._addMemoryEntry(nationId,
+            `玩家單方面終止了與我國的貿易路線，關係 ${TRADE_CANCEL_RELATION_PENALTY}`,
+            TRADE_CANCEL_RELATION_PENALTY);
+        }
+        this._addInboxMessage('🛤', `已終止來自 ${route.fromName} 的進口路線（關係 ${TRADE_CANCEL_RELATION_PENALTY}）。`);
         this._renderTradeRoutePanel(building, settlement);
       });
     });
@@ -6262,6 +6584,182 @@ export class GameUI {
       isImport: true,
     });
     return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Connecting Road diplomatic proposal
+  // -------------------------------------------------------------------------
+
+  /**
+   * Render the connecting road proposal screen.
+   * The player pays a token fee (CONNECT_ROAD_PROPOSAL_COST) to propose
+   * building a road between their nearest settlement and the foreign nation's
+   * settlement.  If the NPC accepts, the road construction is started
+   * automatically and the relation improves.
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement  Foreign settlement.
+   */
+  _renderConnectingRoadProposal(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+    const relVal     = this.diplomacySystem.getPlayerRelation(nationId);
+    const relStr     = relVal >= 0 ? `+${relVal}` : `${relVal}`;
+    const gold       = this._getGold();
+
+    // Find the player-owned settlement closest to the foreign settlement.
+    const foreignSett = settlement;
+    const foreignIdx  = foreignSett.type === 'castle'
+      ? this.nationSystem.castleSettlements.indexOf(foreignSett)
+      : this.nationSystem.villageSettlements.indexOf(foreignSett);
+    const foreignTile = foreignSett.type === 'castle'
+      ? this._mapData?.castles[foreignIdx]
+      : this._mapData?.villages[foreignIdx];
+
+    let nearestPlayerSett = null, nearestDist = Infinity;
+    if (this.nationSystem && this._mapData) {
+      const check = (arr, mapArr, typeLabel) => {
+        arr.forEach((s, i) => {
+          if (!this._capturedSettlements.has(`${typeLabel}:${i}`)) return;
+          const tile = mapArr[i];
+          if (!tile || !foreignTile) return;
+          const d = Math.sqrt((tile.x - foreignTile.x) ** 2 + (tile.y - foreignTile.y) ** 2);
+          if (d < nearestDist) { nearestDist = d; nearestPlayerSett = s; }
+        });
+      };
+      check(this.nationSystem.castleSettlements, this._mapData.castles, 'castle');
+      check(this.nationSystem.villageSettlements, this._mapData.villages, 'village');
+    }
+
+    // Compute road path for preview
+    let roadPreviewHTML = '';
+    let roadResult = null;
+    if (nearestPlayerSett && this._mapData) {
+      roadResult = this._computeRoadPath(nearestPlayerSett, foreignSett);
+      if (roadResult.path) {
+        roadPreviewHTML = `
+          <div class="treaty-row">
+            <span class="treaty-label">路程</span>
+            <span>${roadResult.path.length} 格</span>
+          </div>
+          <div class="treaty-row">
+            <span class="treaty-label">預計工時</span>
+            <span>${roadResult.totalHours} 小時</span>
+          </div>
+          <div class="treaty-row">
+            <span class="treaty-label">建造費用</span>
+            <span>🪙${roadResult.totalCost + CONNECT_ROAD_PROPOSAL_COST}（含提案費 ${CONNECT_ROAD_PROPOSAL_COST}）</span>
+          </div>`;
+      } else if (roadResult.blockedByRiver) {
+        roadPreviewHTML = '<div class="treaty-note" style="color:#ef5350">🌊 被河流阻擋，需先建橋才能連通。</div>';
+      } else {
+        roadPreviewHTML = '<div class="treaty-note" style="color:#ef5350">⛰️ 無可行路線（山地阻擋）。</div>';
+      }
+    }
+
+    const totalCost = CONNECT_ROAD_PROPOSAL_COST + (roadResult?.totalCost ?? 0);
+    const canConfirm = nearestPlayerSett && roadResult?.path && gold >= totalCost;
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">🛣️ 提議建立連結道路</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          向 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}）提議在雙方地區之間修建連結道路。<br>
+          道路有助於商貿往來，可加深兩國友誼。
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">目前關係</span>
+          <span>${relStr}</span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">接受後關係</span>
+          <span style="color:#66bb6a">+${CONNECT_ROAD_RELATION_GAIN}（建成後）</span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">連接地區</span>
+          <span>${nearestPlayerSett ? nearestPlayerSett.name : '（尚無可用地區）'} ↔ ${settlement.name}</span>
+        </div>
+        ${roadPreviewHTML}
+        <div class="treaty-note">若對方同意，道路建設將立即啟動，建成後雙方關係改善 +${CONNECT_ROAD_RELATION_GAIN}。<br>
+          統治者的性格與雙方關係將影響接受意願。</div>
+        <button class="btn-buy treaty-send-btn${canConfirm ? '' : ' disabled'}" id="diplo-road-confirm"
+          ${canConfirm ? '' : 'disabled'}>
+          🛣️ 提交提案（花費 🪙${totalCost}）
+        </button>
+        ${!nearestPlayerSett ? '<div class="treaty-note" style="color:#ef9a9a">⚠ 你尚未佔領任何地區。</div>' : ''}
+        ${nearestPlayerSett && !roadResult?.path ? '' : ''}
+        ${gold < totalCost && canConfirm === false && nearestPlayerSett && roadResult?.path ? `<div class="treaty-note" style="color:#ef9a9a">⚠ 金幣不足（需 🪙${totalCost}，持有 🪙${gold}）。</div>` : ''}
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', () => {
+      this._renderGovBuilding(building, settlement);
+    });
+
+    document.getElementById('diplo-road-confirm')?.addEventListener('click', () => {
+      if (!nearestPlayerSett || !roadResult?.path) return;
+      if (this._getGold() < totalCost) { this._toast('💸 金幣不足！'); return; }
+
+      // Evaluate NPC acceptance
+      const accepted = this.diplomacySystem.evaluateDirectDiploProposal(nationId, 'connect_road', {});
+      if (!accepted) {
+        const relDelta = -(1 + Math.floor(Math.random() * 3));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._addInboxMessage('❌', `${nationName} 拒絕了連結道路提案，關係 ${relDelta}。`);
+        this._toast(`❌ ${nationName} 拒絕了提案。`);
+        this._renderGovBuilding(building, settlement);
+        return;
+      }
+
+      // Deduct cost
+      this._spendGold(totalCost);
+
+      // Start road construction
+      const fromKey = this._settlementKey(nearestPlayerSett);
+      const toKey   = this._settlementKey(foreignSett);
+      const rk      = this._roadKey(fromKey, toKey);
+      const tiles   = roadResult.path.length;
+
+      const fromState = this._getConstructionState(fromKey);
+      const toState   = this._getConstructionState(toKey);
+
+      // Only start if not already built or in progress
+      if (!fromState.builtRoads.has(rk) && !fromState.roads.has(rk)) {
+        fromState.roads.set(rk, {
+          targetKey:  toKey,
+          targetName: foreignSett.name,
+          tilesTotal: tiles,
+          totalHours: roadResult.totalHours,
+          hoursLeft:  roadResult.totalHours,
+          isDemo:     false,
+          path:       roadResult.path,
+          // Flag so completion can grant the relation bonus
+          connectRoadNationId: nationId,
+          connectRoadRelBonus: CONNECT_ROAD_RELATION_GAIN,
+        });
+        toState.roads.set(rk, {
+          targetKey:  fromKey,
+          targetName: nearestPlayerSett.name,
+          tilesTotal: tiles,
+          totalHours: roadResult.totalHours,
+          hoursLeft:  roadResult.totalHours,
+          isDemo:     false,
+          path:       roadResult.path,
+        });
+      }
+
+      this.diplomacySystem._addMemoryEntry(nationId,
+        `與玩家合作修建連結道路，關係 +${CONNECT_ROAD_RELATION_GAIN}（建成後）`, CONNECT_ROAD_RELATION_GAIN);
+      this._addInboxMessage('🛣️', `${nationName} 同意了！開始修建 ${nearestPlayerSett.name} ↔ ${foreignSett.name} 的連結道路（${tiles} 格），建成後關係 +${CONNECT_ROAD_RELATION_GAIN}。`);
+      this._toast(`✅ ${nationName} 同意建立連結道路！`);
+      this._renderGovBuilding(building, settlement);
+    });
   }
 
   // -------------------------------------------------------------------------

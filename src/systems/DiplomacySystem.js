@@ -142,6 +142,24 @@ const NPC_WAR_CASUALTY_COUNT = 2;
  */
 const NPC_ACTION_STAGGER_PERIOD = 2;
 
+/**
+ * Bonus added to a target settlement's weakness score when the evaluating
+ * nation is already at war with the target nation.  This ensures that
+ * warring nations attack their declared enemies more aggressively.
+ */
+const NPC_WAR_WEAKNESS_BONUS = 20;
+
+/**
+ * Base relation penalty applied to third-party nations when an NPC completes
+ * a conquest (captures a settlement).  Scales down with geographic distance.
+ * Lighter than the player's formula so that NPC-NPC wars don't destabilise
+ * the whole world too quickly.
+ *   basePenalty = -(5 + streak * 4), capped at -25
+ */
+const NPC_CONQUEST_FEAR_BASE = -5;
+const NPC_CONQUEST_FEAR_PER_STREAK = -4;
+const NPC_CONQUEST_FEAR_CAP = -25;
+
 /** Proportion of NPC gold offered in a spontaneous peace missive. */
 const NPC_PEACE_OFFER_GOLD_RATIO = 0.2;
 
@@ -429,6 +447,15 @@ export class DiplomacySystem {
      * @type {number}
      */
     this._playerConquestStreak = 0;
+
+    /**
+     * Per-NPC consecutive conquest streak counters.
+     * Key: nationId; Value: streak count.
+     * Used to scale the "expansion fear" penalty applied to third-party nations
+     * when an NPC rapidly expands.  Decays by 1 per in-game day.
+     * @type {Map<number, number>}
+     */
+    this._npcConquestStreaks = new Map();
 
     /**
      * Active trade routes between two parties.
@@ -821,6 +848,62 @@ export class DiplomacySystem {
       this._addMemoryEntry(
         nId,
         `${attackerDisplayName} 接連攻下 ${settlementName}（第 ${streak} 次征服），${streakLabel}，關係 ${delta}`,
+        delta,
+      );
+    });
+  }
+
+  /**
+   * Record that an NPC nation has captured a settlement and propagate a mild
+   * "expansion fear" penalty to surviving third-party nations.
+   *
+   * This mirrors recordConquest() for the player but uses lighter penalties
+   * (NPC_CONQUEST_FEAR_BASE / NPC_CONQUEST_FEAR_PER_STREAK) so NPC-NPC wars
+   * don't destabilise the whole world map too quickly.
+   *
+   * Effect summary:
+   *   basePenalty = NPC_CONQUEST_FEAR_BASE + streak * NPC_CONQUEST_FEAR_PER_STREAK
+   *                 capped at NPC_CONQUEST_FEAR_CAP
+   *   Each nation's delta = Math.round(basePenalty * distanceFactor)
+   *   applied to that nation's relation *with the attacker*.
+   *
+   * @param {number} attackerNationId  Id of the NPC that captured the settlement.
+   * @param {number} targetNationId    Id of the settlement's former owner.
+   * @param {string} settlementName    Human-readable settlement name.
+   */
+  _recordNpcConquest(attackerNationId, targetNationId, settlementName) {
+    const streak = (this._npcConquestStreaks.get(attackerNationId) ?? 0) + 1;
+    this._npcConquestStreaks.set(attackerNationId, streak);
+
+    const rawBase    = NPC_CONQUEST_FEAR_BASE + streak * NPC_CONQUEST_FEAR_PER_STREAK;
+    const basePenalty = Math.max(NPC_CONQUEST_FEAR_CAP, rawBase);
+
+    const attackerName = this.nationSystem.nations[attackerNationId]?.name ?? '鄰國';
+    const nations      = this.nationSystem.nations;
+
+    nations.forEach((nation, nId) => {
+      if (!nation) return;
+      if (this.nationSystem.isNationExtinct(nId)) return;
+      // Skip the attacker and the directly attacked nation.
+      if (nId === attackerNationId || nId === targetNationId) return;
+
+      // Scale penalty by geographic proximity to the conquest.
+      const distFactor = this._distanceFactor(nId, targetNationId);
+      const delta = Math.round(basePenalty * distFactor);
+      if (delta === 0) return;
+
+      // Modify the third nation's relation *with the attacker*.
+      if (nId === -1) {
+        // Player
+        this.modifyPlayerRelation(attackerNationId, delta);
+      } else {
+        this.modifyNpcRelation(nId, attackerNationId, delta);
+      }
+
+      const streakLabel = streak >= 4 ? '列國警惕' : '鄰國側目';
+      this._addMemoryEntry(
+        nId,
+        `${attackerName} 攻下 ${settlementName}（第 ${streak} 次擴張），${streakLabel}，關係 ${delta}`,
         delta,
       );
     });
@@ -1303,7 +1386,9 @@ export class DiplomacySystem {
 
       // Stagger: each nation only evaluates war on its own day offset to avoid
       // all nations launching attacks simultaneously.
-      if ((this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
+      // Exception: nations actively at war can act every day to press their campaigns.
+      const isActivelyAtWar = nations.some((_, tid) => tid !== id && this.isAtWar(id, tid));
+      if (!isActivelyAtWar && (this._currentDay % NPC_ACTION_STAGGER_PERIOD) !== (id % NPC_ACTION_STAGGER_PERIOD)) return;
 
       // Only one march at a time per nation.
       if (this._pendingMarches.some(m => m.attackerNationId === id)) return;
@@ -1354,12 +1439,16 @@ export class DiplomacySystem {
           // Respect non-aggression pacts: skip this target if a NAP is active.
           if (this.hasNonAggressionPact(id, tid)) return;
 
+          // Nations at war with the target get a weakness bonus – they are more
+          // motivated to press existing campaigns rather than scout new fronts.
+          const warBonus = this.isAtWar(id, tid) ? NPC_WAR_WEAKNESS_BONUS : 0;
+
           // Evaluate each castle controlled by the target nation.
           castleSettlements.forEach((ts, tidx) => {
             if (!ts || ts.controllingNationId !== tid) return;
             const defStr   = this._settlementGarrisonStrength('castle', tidx);
             const eco      = ts.economyLevel;
-            const weakness = Math.max(0, (1 - defStr / 30) * 60) + eco * 4;
+            const weakness = Math.max(0, (1 - defStr / 30) * 60) + eco * 4 + warBonus;
             if (weakness > bestWeakness) {
               bestWeakness = weakness;
               bestTarget = { nationId: tid, settlement: ts, type: 'castle', idx: tidx, defStr };
@@ -1371,7 +1460,7 @@ export class DiplomacySystem {
             if (!ts || ts.controllingNationId !== tid) return;
             const defStr   = this._settlementGarrisonStrength('village', tidx);
             const eco      = ts.economyLevel;
-            const weakness = Math.max(0, (1 - defStr / 10) * 50) + eco * 3;
+            const weakness = Math.max(0, (1 - defStr / 10) * 50) + eco * 3 + warBonus;
             if (weakness > bestWeakness) {
               bestWeakness = weakness;
               bestTarget = { nationId: tid, settlement: ts, type: 'village', idx: tidx, defStr };
@@ -1496,6 +1585,10 @@ export class DiplomacySystem {
       // Clear the defeated garrison.
       const defArmies = this._npcArmies.get(_defKey);
       if (defArmies) defArmies.forEach(sq => { sq.length = 0; });
+
+      // Propagate expansion fear to third-party nations so they grow hostile
+      // toward a rapidly-expanding NPC (mirrors recordConquest for the player).
+      this._recordNpcConquest(attackerNationId, targetNationId, _targetSettlement.name);
 
       // Check whether the defeated nation has been eliminated.
       if (this.nationSystem.isNationExtinct(targetNationId)) {
@@ -2499,6 +2592,18 @@ export class DiplomacySystem {
       return Math.random() < Math.max(0.03, Math.min(0.80, chance));
     }
 
+    if (type === 'connect_road') {
+      // Base chance 60 %, scaled by relation.
+      // Gentle / cautious rulers welcome connectivity; warlike / arrogant are more reserved.
+      let chance = 0.60 + rel / 200;
+      if (p === PERSONALITY_GENTLE)   chance += 0.15;
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.10;
+      if (p === PERSONALITY_CUNNING)  chance += 0.05; // cunning appreciates trade access
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.15;
+      if (p === PERSONALITY_ARROGANT) chance -= 0.10;
+      return Math.random() < Math.max(0.05, Math.min(0.90, chance));
+    }
+
     return false;
   }
 
@@ -3185,6 +3290,12 @@ export class DiplomacySystem {
     // reduces the world-wide fear bonus.
     if (this._playerConquestStreak > 0) {
       this._playerConquestStreak--;
+    }
+    // NPC conquest streaks also decay daily.
+    for (const [nId, streak] of this._npcConquestStreaks) {
+      if (streak > 0) {
+        this._npcConquestStreaks.set(nId, streak - 1);
+      }
     }
     // Re-compute surrender indices and schedule a fresh worker pass for next cycle.
     this._scheduleWorkerUpdate();

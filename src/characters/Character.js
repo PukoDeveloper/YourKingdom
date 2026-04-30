@@ -34,6 +34,7 @@ export class Character extends Unit {
    *   loyalNationId?: number,
    *   location?:      { type: string, ref: number|string }|null,
    *   isKing?:        boolean,
+   *   equipment?:     { weapon?: object|null, armor?: object|null, accessory?: object|null },
    * }} opts
    */
   constructor(opts) {
@@ -95,6 +96,11 @@ export class Character extends Unit {
       loyalNationId: this.loyalNationId,
       location:      this.location ? { ...this.location } : null,
       isKing:        this.isKing,
+      equipment: {
+        weapon:    this.equipment?.weapon    ? { ...this.equipment.weapon }    : null,
+        armor:     this.equipment?.armor     ? { ...this.equipment.armor }     : null,
+        accessory: this.equipment?.accessory ? { ...this.equipment.accessory } : null,
+      },
     };
   }
 
