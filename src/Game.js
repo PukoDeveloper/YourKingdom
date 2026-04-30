@@ -18,6 +18,7 @@ import { GameUI }           from './ui/GameUI.js';
 import { SaveManager }      from './systems/SaveManager.js';
 import { NationSystem, PLAYER_NATION_ID, NEUTRAL_NATION_ID }     from './systems/NationSystem.js';
 import { DiplomacySystem }  from './systems/DiplomacySystem.js';
+import { PathfinderWorker } from './world/PathfinderWorker.js';
 
 /** Auto-save interval in milliseconds. */
 const AUTO_SAVE_INTERVAL_MS = 60_000;
@@ -87,8 +88,13 @@ export class Game {
     // Nation system (deterministic from seed – no separate save state needed)
     this._nationSystem = new NationSystem(this._mapData);
 
+    // Pathfinding worker – offloads A* searches off the main thread.
+    this._pathfinderWorker = new PathfinderWorker();
+    this._pathfinderWorker.init(this._mapData.tiles);
+
     // Diplomacy system (initial relations derived from NationSystem; player deltas persisted)
     this._diplomacySystem = new DiplomacySystem(this._nationSystem, this._mapData);
+    this._diplomacySystem.setPathfinderWorker(this._pathfinderWorker);
     if (savedState?.diplomacy) {
       this._diplomacySystem.loadState(savedState.diplomacy);
     }
@@ -208,6 +214,7 @@ export class Game {
       this._diplomacySystem,
       this._dayNight,
       this._mapData,
+      this._pathfinderWorker,
     );
 
     // Rebuild structures now that GameUI is ready (restores player flags from save).

@@ -384,8 +384,9 @@ export class GameUI {
    * @param {import('../systems/DiplomacySystem.js').DiplomacySystem|null} [diplomacySystem]
    * @param {import('../world/DayNightCycle.js').DayNightCycle|null} [dayNightCycle]
    * @param {import('../world/MapData.js').MapData|null} [mapData]  Live MapData used for coastal checks.
+   * @param {import('../world/PathfinderWorker.js').PathfinderWorker|null} [pathfinderWorker]  Optional async pathfinder.
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null, mapData = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null, mapData = null, pathfinderWorker = null) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
 
@@ -403,6 +404,9 @@ export class GameUI {
 
     /** @type {import('../world/MapData.js').MapData|null} */
     this._mapData = mapData;
+
+    /** @type {import('../world/PathfinderWorker.js').PathfinderWorker|null} */
+    this._pathfinderWorker = pathfinderWorker;
 
     /** @type {'backpack'|'team'|'nations'|'settings'|null} */
     this._activePanel  = null;
@@ -4931,12 +4935,25 @@ export class GameUI {
       const adjT = Math.min(1, t * speedMult);
 
       // Lazily compute A* path for the route so caravans follow terrain.
-      if (!route._path && this._mapData) {
+      // When a pathfinder worker is available the search runs off the main
+      // thread; the route starts with a straight-line fallback and is
+      // updated with the A* result once the worker responds.
+      if (!route._path && !route._pathPending && this._mapData) {
         const fromCenter = this._getSettlementCenter(fromSett);
         const toCenter   = this._getSettlementCenter(toSett);
         const fromPx = { x: (fromCenter.tx + 0.5) * TILE_SIZE, y: (fromCenter.ty + 0.5) * TILE_SIZE };
         const toPx   = { x: (toCenter.tx   + 0.5) * TILE_SIZE, y: (toCenter.ty   + 0.5) * TILE_SIZE };
-        route._path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+
+        if (this._pathfinderWorker?.available) {
+          route._path       = [fromPx, toPx]; // straight-line fallback while A* runs
+          route._pathPending = true;
+          this._pathfinderWorker.requestPath(fromPx, toPx, (result) => {
+            route._pathPending = false;
+            if (result) route._path = result;
+          });
+        } else {
+          route._path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+        }
       }
 
       let worldX, worldY;
