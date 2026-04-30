@@ -456,10 +456,28 @@ export class DiplomacySystem {
      */
     this._aiWorker = null;
 
+    /**
+     * Optional pathfinding Web Worker wrapper.
+     * When set, A* searches are offloaded off the main thread.
+     * @type {import('../world/PathfinderWorker.js').PathfinderWorker|null}
+     */
+    this._pathfinderWorker = null;
+
     this._build(mapData);
     this._initSovereignty();
     this._initNpcState();
     this._initWorker();
+  }
+
+  /**
+   * Inject a PathfinderWorker so that A* path computation is offloaded to a
+   * Web Worker.  Call once after the worker has been initialised with terrain
+   * data; leave unset for synchronous fallback behaviour.
+   *
+   * @param {import('../world/PathfinderWorker.js').PathfinderWorker} worker
+   */
+  setPathfinderWorker(worker) {
+    this._pathfinderWorker = worker;
   }
 
   // -------------------------------------------------------------------------
@@ -936,6 +954,44 @@ export class DiplomacySystem {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Pathfinding helper
+  // -------------------------------------------------------------------------
+
+  /**
+   * Push `missive` (with a straight-line fallback `_path`) onto
+   * `_pendingMissives`, then asynchronously replace the path with the A*
+   * result when the pathfinder worker responds.  Falls back to a synchronous
+   * `buildPath()` call when no worker is available.
+   *
+   * @param {object} missive  Plain missive object **without** `_path` / `worldX` / `worldY`.
+   * @param {{ x: number, y: number }} fromPx
+   * @param {{ x: number, y: number }} toPx
+   */
+  _dispatchMissive(missive, fromPx, toPx) {
+    missive._path      = [fromPx, toPx]; // straight-line fallback
+    missive._pathSegIdx = 0;
+    missive.worldX     = fromPx.x;
+    missive.worldY     = fromPx.y;
+    this._pendingMissives.push(missive);
+
+    if (this._pathfinderWorker?.available) {
+      this._pathfinderWorker.requestPath(fromPx, toPx, (result) => {
+        if (result) {
+          missive._path      = result;
+          missive._pathSegIdx = 0;
+          missive.worldX     = result[0].x;
+          missive.worldY     = result[0].y;
+        }
+      });
+    } else {
+      const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+      missive._path  = path;
+      missive.worldX = path[0].x;
+      missive.worldY = path[0].y;
+    }
+  }
+
   /**
    * Serialise the current game state into a snapshot for the Web Worker.
    * Only includes data the worker needs; avoids transferring large objects.
@@ -1317,22 +1373,20 @@ export class DiplomacySystem {
       const attackerName = nations[id]?.name ?? s.name;
       const squadLabel   = _squadLabel(sendBoth);
 
-      // Pre-compute the A* path from the attacker's castle to the target.
+      // Compute the A* path from the attacker's castle to the target.
+      // When a pathfinder worker is available the search runs off the main
+      // thread; the march starts on a straight-line fallback path and is
+      // updated with the proper A* result once the worker responds.
       const fromPx = _marchCastlePx(this._mapData.castles[id]);
       const toPx   = bestTarget.type === 'castle'
         ? _marchCastlePx(this._mapData.castles[bestTarget.idx])
         : _marchVillagePx(this._mapData.villages[bestTarget.idx]);
 
-      let path;
-      if (fromPx && toPx) {
-        // A* path; fall back to a direct two-point line if pathfinder returns null
-        // (e.g. both endpoints happen to be surrounded by water — extremely rare).
-        path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-      } else {
+      if (!fromPx || !toPx) {
         return; // cannot determine positions – skip this march
       }
 
-      this._pendingMarches.push({
+      const march = {
         id:                this._marchNextId++,
         attackerNationId:  id,
         attackerCastleIdx: id, // castle index mirrors nation id (one home castle per nation)
@@ -1342,15 +1396,32 @@ export class DiplomacySystem {
         sendBoth,
         victory,
         atkLoss,
-        worldX:            path[0].x,
-        worldY:            path[0].y,
-        _path:             path,
+        worldX:            fromPx.x,
+        worldY:            fromPx.y,
+        _path:             [fromPx, toPx], // straight-line fallback until A* resolves
         _pathSegIdx:       0,
         _atkKey:           atkKey,
         _defKey:           `${bestTarget.type}:${bestTarget.idx}`,
         _attackerName:     attackerName,
         _targetSettlement: bestTarget.settlement,
-      });
+      };
+
+      this._pendingMarches.push(march);
+
+      if (this._pathfinderWorker?.available) {
+        // A* runs in the worker; update the march when the result arrives.
+        this._pathfinderWorker.requestPath(fromPx, toPx, (result) => {
+          if (result) {
+            march._path      = result;
+            march._pathSegIdx = 0;
+            march.worldX     = result[0].x;
+            march.worldY     = result[0].y;
+          }
+        });
+      } else {
+        // Synchronous fallback when no worker is available.
+        march._path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
+      }
 
       messages.push({
         message: `⚔ ${attackerName} 派出${squadLabel}向 ${nations[bestTarget.nationId]?.name ?? '鄰國'} 的 ${bestTarget.settlement.name} 進軍！`,
@@ -2470,21 +2541,16 @@ export class DiplomacySystem {
     }
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'peace',
       senderNationId,
       receiverNationId,
       terms,
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerUnitId,
       messengerAppearance,
       messengerMoveSpeed,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2500,20 +2566,15 @@ export class DiplomacySystem {
     const toPx = castle ? _marchCastlePx(castle) : null;
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'condemn',
       senderNationId:   _PLAYER_NATION_ID,
       receiverNationId,
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerUnitId,
       messengerAppearance,
       messengerMoveSpeed,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2529,21 +2590,16 @@ export class DiplomacySystem {
     const toPx = castle ? _marchCastlePx(castle) : null;
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'gift',
       senderNationId:   _PLAYER_NATION_ID,
       receiverNationId,
       goldAmount:       Math.max(0, goldAmount),
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerUnitId,
       messengerAppearance,
       messengerMoveSpeed,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2560,21 +2616,16 @@ export class DiplomacySystem {
     const toPx = castle ? _marchCastlePx(castle) : null;
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'war_declaration',
       senderNationId:   _PLAYER_NATION_ID,
       receiverNationId,
       reason,
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerUnitId,
       messengerAppearance,
       messengerMoveSpeed,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2591,18 +2642,13 @@ export class DiplomacySystem {
     const toPx = this._findNearestPlayerSettlement(fromPx);
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'trade_request',
       senderNationId,
       receiverNationId: _PLAYER_NATION_ID,
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerMoveSpeed,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2618,18 +2664,13 @@ export class DiplomacySystem {
     const toPx = this._findNearestPlayerSettlement(fromPx);
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'nap_proposal',
       senderNationId,
       receiverNationId: _PLAYER_NATION_ID,
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerMoveSpeed: DEFAULT_MESSENGER_MOVE_SPEED,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2645,18 +2686,13 @@ export class DiplomacySystem {
     const toPx = this._findNearestPlayerSettlement(fromPx);
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'mpp_proposal',
       senderNationId,
       receiverNationId: _PLAYER_NATION_ID,
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerMoveSpeed: DEFAULT_MESSENGER_MOVE_SPEED,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
@@ -2672,19 +2708,14 @@ export class DiplomacySystem {
     const toPx = this._findNearestPlayerSettlement(fromPx);
     if (!toPx) return false;
 
-    const path = buildPath(this._mapData, fromPx, toPx) ?? [fromPx, toPx];
-    this._pendingMissives.push({
+    this._dispatchMissive({
       id:               this._missiveNextId++,
       type:             'npc_gift',
       senderNationId,
       receiverNationId: _PLAYER_NATION_ID,
       goldAmount:       Math.max(1, Math.floor(goldAmount)),
-      worldX:           path[0].x,
-      worldY:           path[0].y,
-      _path:            path,
-      _pathSegIdx:      0,
       messengerMoveSpeed: DEFAULT_MESSENGER_MOVE_SPEED,
-    });
+    }, fromPx, toPx);
     return true;
   }
 
