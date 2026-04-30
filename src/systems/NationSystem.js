@@ -262,6 +262,75 @@ export class NationSystem {
         buildings:    BuildingSystem.generate('village', v.x, v.y, seed),
       }));
     });
+
+    // Guarantee every resource type has at least one producing settlement.
+    this._ensureResourceCoverage();
+  }
+
+  /**
+   * Guarantee that every entry in RESOURCES is produced by at least one
+   * settlement.  Called once at the end of _build().
+   *
+   * Algorithm (deterministic – iterates arrays in stable index order):
+   *  1. Count how many settlements produce each resource.
+   *  2. For each resource with count 0 ("missing"), find the settlement
+   *     whose resource(s) have the highest existing coverage (most redundant),
+   *     preferring villages (single-resource) over castles.
+   *  3. Replace that redundant resource with the missing one and update counts.
+   */
+  _ensureResourceCoverage() {
+    // Build a coverage count for each resource type.
+    const coverage = new Map(RESOURCES.map(r => [r, 0]));
+    const all = [...this.villageSettlements, ...this.castleSettlements];
+    for (const s of all) {
+      for (const r of s.resources) {
+        if (coverage.has(r)) coverage.set(r, coverage.get(r) + 1);
+      }
+    }
+
+    // Identify resource types that no settlement produces.
+    const missing = RESOURCES.filter(r => coverage.get(r) === 0);
+    if (missing.length === 0) return;
+
+    for (const missingRes of missing) {
+      // Find the best candidate: a settlement that has at least one resource
+      // whose coverage > 1 (so replacing it keeps that resource covered).
+      // Prefer the settlement where the most-redundant resource has the highest
+      // coverage count (most "safe" to reassign).
+      let chosen = null;
+      let chosenResIdx = -1;
+      let bestCoverage = 0;
+
+      for (const s of all) {
+        s.resources.forEach((r, i) => {
+          const cov = coverage.get(r) ?? 0;
+          if (cov > 1 && cov > bestCoverage) {
+            bestCoverage = cov;
+            chosen = s;
+            chosenResIdx = i;
+          }
+        });
+      }
+
+      // Last resort: pick the settlement with the single most-covered resource
+      // even if it drops that resource to 0.
+      if (!chosen) {
+        let maxCov = 0;
+        for (const s of all) {
+          s.resources.forEach((r, i) => {
+            const cov = coverage.get(r) ?? 0;
+            if (cov > maxCov) { maxCov = cov; chosen = s; chosenResIdx = i; }
+          });
+        }
+      }
+
+      if (!chosen || chosenResIdx < 0) continue;
+
+      const replaced = chosen.resources[chosenResIdx];
+      coverage.set(replaced, (coverage.get(replaced) ?? 1) - 1);
+      chosen.resources[chosenResIdx] = missingRes;
+      coverage.set(missingRes, 1);
+    }
   }
 
   /** Return the index of the castle (= nation id) closest to (vx, vy). */
