@@ -3520,7 +3520,7 @@ export class GameUI {
               const toSett   = this._getSettlementByKey(toKey);
               this._addInboxMessage('🛤️', `道路 ${fromSett?.name ?? fromKey} ↔ ${toSett?.name ?? toKey} 已建造完成！`);
               // Apply relation bonus for connecting roads agreed with a foreign nation
-              if (road.connectRoadNationId != null && this.diplomacySystem) {
+              if (road.connectRoadNationId !== null && road.connectRoadNationId !== undefined && this.diplomacySystem) {
                 const nid   = road.connectRoadNationId;
                 const bonus = road.connectRoadRelBonus ?? CONNECT_ROAD_RELATION_GAIN;
                 this.diplomacySystem.modifyPlayerRelation(nid, bonus);
