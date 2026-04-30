@@ -7,7 +7,8 @@ import { MapBuildingRenderer } from './world/MapBuildingRenderer.js';
 import { NpcArmyRenderer }  from './world/NpcArmyRenderer.js';
 import { MissiveRenderer }  from './world/MissiveRenderer.js';
 import { WorkerRenderer }   from './world/WorkerRenderer.js';
-import { Player }           from './entities/Player.js';
+import { PlayerEntity }     from './entities/PlayerEntity.js';
+import { NpcKingEntity }    from './entities/NpcKingEntity.js';
 import { Camera }           from './Camera.js';
 import { InputManager }     from './controls/InputManager.js';
 import { VirtualJoystick }  from './controls/VirtualJoystick.js';
@@ -88,6 +89,22 @@ export class Game {
     // Nation system (deterministic from seed – no separate save state needed)
     this._nationSystem = new NationSystem(this._mapData);
 
+    // Restore per-region satisfaction and assignedCharacters from save.
+    if (savedState?.regionState && Array.isArray(savedState.regionState)) {
+      const restoreRegions = (settlements, prefix) => {
+        savedState.regionState.forEach(entry => {
+          if (!entry.key.startsWith(`${prefix}:`)) return;
+          const idx = parseInt(entry.key.slice(prefix.length + 1), 10);
+          const region = settlements[idx];
+          if (!region) return;
+          if (typeof entry.satisfaction === 'number') region.satisfaction = entry.satisfaction;
+          if (Array.isArray(entry.assignedCharacters)) region.assignedCharacters = entry.assignedCharacters;
+        });
+      };
+      restoreRegions(this._nationSystem.castleSettlements, 'castle');
+      restoreRegions(this._nationSystem.villageSettlements, 'village');
+    }
+
     // Pathfinding worker – offloads A* searches off the main thread.
     this._pathfinderWorker = new PathfinderWorker();
     this._pathfinderWorker.init(this._mapData.tiles);
@@ -149,8 +166,18 @@ export class Game {
     const defaultY = (tileY + 0.5) * TILE_SIZE;
     const startX = savedState?.player?.x ?? defaultX;
     const startY = savedState?.player?.y ?? defaultY;
-    this._player = new Player(startX, startY, savedState?.playerAppearance ?? null);
+    this._player = new PlayerEntity(startX, startY, savedState?.playerAppearance ?? null);
     this._world.addChild(this._player.container);
+
+    // NPC king entities – one per NPC nation, stationed at their castle.
+    // Kings are created here but only added to the scene if you wish to show
+    // them on the map; for now they live as data objects with Pixi containers
+    // that can be added to the world when needed.
+    this._npcKings = this._mapData.castles.map((castle, i) => {
+      const region = this._nationSystem.castleSettlements[i];
+      if (!region?.ruler) return null;
+      return new NpcKingEntity(region.ruler, castle);
+    }).filter(Boolean);
 
     // -----------------------------------------------------------------------
     // Camera
@@ -525,12 +552,30 @@ export class Game {
 
   /** Collect full game state and persist it to localStorage. */
   save() {
+    // Collect per-region satisfaction and assignedCharacters for persistence.
+    const regionState = [];
+    const collectRegionState = (settlements, prefix) => {
+      settlements.forEach((region, i) => {
+        regionState.push({
+          key:                `${prefix}:${i}`,
+          satisfaction:       region.satisfaction ?? 0,
+          assignedCharacters: region.assignedCharacters ?? [],
+        });
+      });
+    };
+    if (this._nationSystem) {
+      collectRegionState(this._nationSystem.castleSettlements, 'castle');
+      collectRegionState(this._nationSystem.villageSettlements, 'village');
+    }
+
     const ok = SaveManager.save({
       seed:             this._seed,
       player:           { x: this._player.x, y: this._player.y },
       playerAppearance: this._player.getAppearanceState(),
+      playerCharacter:  this._player.character?.toJSON?.() ?? null,
       dayTime:          this._dayNight.time,
       diplomacy:        this._diplomacySystem.getState(),
+      regionState,
       ...this._gameUI.getState(),
     });
     this._gameUI.showToast(ok ? '遊戲已儲存 💾' : '儲存失敗 ✗');
