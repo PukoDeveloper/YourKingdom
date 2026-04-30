@@ -2048,7 +2048,7 @@ export class DiplomacySystem {
     const total = own.length;
     if (total === 0) return 100; // extinct nation
 
-    const lost   = own.filter(s => s.controllingNationId !== targetId).length;
+    const lost   = own.filter(s => s.controllingNationId !== targetId && s.controllingNationId >= 0).length;
     const lossRatio = lost / total;
 
     const avgEco = own.reduce((sum, s) => sum + s.economyLevel, 0) / total;
@@ -2198,6 +2198,7 @@ export class DiplomacySystem {
       if (s.nationId < 0) return;
       const ctrl = s.controllingNationId;
       if (ctrl === s.nationId) return; // no conflict
+      if (ctrl < 0) return; // player-owned or neutral – not an NPC war
       this.declareWar(s.nationId, ctrl);
     });
   }
@@ -2446,6 +2447,20 @@ export class DiplomacySystem {
       // Demand bonus: player can supply what the foreign settlement needs
       if (data.demandMet) chance += 0.20;
       return Math.random() < Math.max(0.05, Math.min(0.90, chance));
+    }
+
+    if (type === 'demand') {
+      // The NPC ruler will only comply if the player is significantly stronger.
+      // strengthRatio = playerStrength / (playerStrength + settlementStrength), in [0, 1].
+      const ratio = data.strengthRatio ?? 0;
+      let chance = ratio * 0.75; // pure strength ceiling is 75 %
+      if (p === PERSONALITY_ARROGANT) chance -= 0.25; // very proud – refuses easily
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.15; // rather fight than pay
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.05; // cautious – reluctantly complies
+      if (p === PERSONALITY_GENTLE)   chance += 0.10; // gentle – least confrontational
+      // Poor relations increase resistance
+      chance -= Math.max(0, -rel) / 400;
+      return Math.random() < Math.max(0.03, Math.min(0.80, chance));
     }
 
     return false;

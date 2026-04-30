@@ -1,6 +1,6 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
-import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID }   from '../systems/NationSystem.js';
+import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID, generateNeutralRuler }   from '../systems/NationSystem.js';
 import {
   RELATION_LEVELS,
   PERSONALITY_COLORS,
@@ -348,6 +348,32 @@ const DEMAND_ROTATION_INTERVAL = 10;
 const RESOURCE_TYPES = ['木材', '農產', '礦石', '絲綢', '煤炭', '草藥', '魚獲', '皮毛', '食鹽', '陶器'];
 /** Minimum diplomatic relation required for foreign-settlement trade. */
 const TRADE_MIN_FOREIGN_RELATION = -20;
+
+/** Base gold cost for a banquet (宴請) at a foreign settlement. */
+const BANQUET_BASE_COST = 30;
+/** Additional gold cost per economy level for a banquet. */
+const BANQUET_ECO_COST  = 10;
+/** Relation gain from a banquet, indexed by ruler personality. */
+const BANQUET_RELATION_GAIN = {
+  '溫和': 18, '謹慎': 12, '狡猾': 10, '好戰': 7, '傲慢': 5,
+};
+/** Default relation gain when ruler personality is unknown. */
+const BANQUET_RELATION_DEFAULT = 10;
+
+/**
+ * Gold tribute demanded per economy level in a 要求 (Demand) action.
+ * Total = economy × DEMAND_GOLD_PER_ECO + DEMAND_GOLD_BASE.
+ */
+const DEMAND_GOLD_PER_ECO = 20;
+const DEMAND_GOLD_BASE    = 20;
+
+/** Relation delta when a demand succeeds: player gains gold, nation is resentful. */
+const DEMAND_SUCCESS_REL_BASE     = 10;
+const DEMAND_SUCCESS_REL_VARIANCE = 8;
+
+/** Relation delta when a demand fails: nation is offended. */
+const DEMAND_FAILURE_REL_BASE     = 18;
+const DEMAND_FAILURE_REL_VARIANCE = 12;
 
 /**
  * Buildable building catalogue (types that can be constructed by the player).
@@ -2541,9 +2567,9 @@ export class GameUI {
         </div>`;
     }
 
-    // Ruler section – hidden for neutral (liberated) settlements
+    // Ruler section
     let rulerHTML = '';
-    if (!isNeutral && ruler) {
+    if (ruler) {
       const rulerTraitsHTML = renderTraitBadgesHTML(ruler.traits, PERSONALITY_COLORS);
       rulerHTML = `
         <div class="sd-ruler-section">
@@ -2591,7 +2617,7 @@ export class GameUI {
       neutralActionsHTML = `
         <div class="sd-neutral-section">
           <div class="sd-neutral-title">🏳 中立自治區</div>
-          <div class="sd-neutral-note">此地無國家統治，以自治方式運作。</div>
+          <div class="sd-neutral-note">此地宣告中立，由在地自治領袖管理。</div>
           ${tradeRouteInfo}
           <div class="sd-neutral-actions">
             <button class="btn-sd-suggest-rule" id="btn-sd-suggest-rule">
@@ -3893,6 +3919,8 @@ export class GameUI {
         </div>
         <div class="loc-gate-actions">
           <button class="btn-loc-enter" id="btn-city-enter">進城 →</button>
+          ${!isPlayerOwned && !isNeutral ? `<button class="btn-loc-banquet" id="btn-gate-banquet">🍷 宴請</button>` : ''}
+          ${!isPlayerOwned && !isNeutral ? `<button class="btn-loc-demand"  id="btn-gate-demand">⚖ 要求</button>` : ''}
           <button class="btn-loc-leave" id="btn-city-leave">離開</button>
         </div>
       </div>
@@ -3905,6 +3933,16 @@ export class GameUI {
     document.getElementById('btn-city-leave').addEventListener('click', () => {
       this._closeLocationScreen();
     });
+
+    if (!isPlayerOwned && !isNeutral) {
+      const backToGate = () => this._renderLocationGate(settlement);
+      document.getElementById('btn-gate-banquet')?.addEventListener('click', () => {
+        this._renderBanquetProposal(settlement, backToGate);
+      });
+      document.getElementById('btn-gate-demand')?.addEventListener('click', () => {
+        this._renderDemandProposal(settlement, backToGate);
+      });
+    }
   }
 
   /** Facility list for the current settlement. */
@@ -5118,6 +5156,23 @@ export class GameUI {
           ? `向對方提議開放商路，進口其資源（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）`
           : `關係值過低（需 ≥ ${TRADE_MIN_FOREIGN_RELATION}）`;
 
+    // Banquet (宴請): always available when not at war; costs gold
+    const banquetCost = BANQUET_BASE_COST + (settlement.economyLevel ?? 1) * BANQUET_ECO_COST;
+    const canBanquet  = !atWar && this._getGold() >= banquetCost;
+    const banquetDesc = atWar
+      ? '戰爭狀態下無法舉辦'
+      : this._getGold() < banquetCost
+        ? `金幣不足（需 🪙${banquetCost}）`
+        : `花費 🪙${banquetCost} 設宴款待，改善雙方關係`;
+
+    // Demand (要求): available when player has military strength
+    const playerStr = this._getPlayerStrength();
+    const canDemand = playerStr > 0;
+    const demandGold = DEMAND_GOLD_BASE + (settlement.economyLevel ?? 1) * DEMAND_GOLD_PER_ECO;
+    const demandDesc = playerStr > 0
+      ? `以軍事壓力索取 🪙${demandGold} 進貢（有風險）`
+      : '你沒有足夠的軍事力量發出要求';
+
     const pactBadge = (active, label) => active
       ? `<span class="gov-pact-badge gov-pact-active">${label} 有效</span>`
       : '';
@@ -5132,6 +5187,22 @@ export class GameUI {
         ${hasNap ? pactBadge(true, '☮ 互不侵犯條約') : ''}
         ${hasMpt ? pactBadge(true, '🛡 互保條約') : ''}
         <div class="gov-diplo-proposals">
+          <div class="gov-diplo-proposal-card${canBanquet ? '' : ' disabled'}" id="diplo-banquet" role="button" tabindex="${canBanquet ? 0 : -1}">
+            <span class="gdp-icon">🍷</span>
+            <div class="gdp-info">
+              <div class="gdp-name">宴請統治者</div>
+              <div class="gdp-desc">${banquetDesc}</div>
+            </div>
+            <span class="gdp-arrow">${canBanquet ? '›' : '🔒'}</span>
+          </div>
+          <div class="gov-diplo-proposal-card${canDemand ? '' : ' disabled'}" id="diplo-demand" role="button" tabindex="${canDemand ? 0 : -1}">
+            <span class="gdp-icon">⚖</span>
+            <div class="gdp-info">
+              <div class="gdp-name">要求進貢</div>
+              <div class="gdp-desc">${demandDesc}</div>
+            </div>
+            <span class="gdp-arrow">${canDemand ? '›' : '🔒'}</span>
+          </div>
           <div class="gov-diplo-proposal-card${canNap ? '' : ' disabled'}" id="diplo-nap" role="button" tabindex="${canNap ? 0 : -1}">
             <span class="gdp-icon">☮</span>
             <div class="gdp-info">
@@ -5168,6 +5239,8 @@ export class GameUI {
       </div>
     `;
 
+    const backFn = () => this._renderGovBuilding(building, settlement);
+
     const bindCard = (id, fn) => {
       const el = container.querySelector(`#${id}`);
       if (!el || el.classList.contains('disabled')) return;
@@ -5177,6 +5250,8 @@ export class GameUI {
       });
     };
 
+    bindCard('diplo-banquet',      () => this._renderBanquetProposal(settlement, backFn));
+    bindCard('diplo-demand',       () => this._renderDemandProposal(settlement, backFn));
     bindCard('diplo-nap',          () => this._renderNapProposal(building, settlement));
     bindCard('diplo-joint-war',    () => this._renderJointWarProposal(building, settlement));
     bindCard('diplo-mpt',          () => this._renderMutualProtectionProposal(building, settlement));
@@ -5524,6 +5599,171 @@ export class GameUI {
     };
 
     render();
+  }
+
+  /**
+   * Banquet (宴請) proposal screen.
+   * Player spends gold to hold a banquet for the foreign ruler, improving relations.
+   * Can be triggered from both the gate screen (backFn = re-render gate) and from
+   * the government building (backFn = re-render gov building).
+   *
+   * @param {import('../systems/NationSystem.js').Settlement} settlement  Foreign settlement.
+   * @param {function} backFn  Callback to navigate back.
+   */
+  _renderBanquetProposal(settlement, backFn) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+    const cost       = BANQUET_BASE_COST + (settlement.economyLevel ?? 1) * BANQUET_ECO_COST;
+
+    // Determine expected relation gain based on personality
+    const personality = ruler?.traits?.find(t => ALL_PERSONALITIES.includes(t)) ?? '謹慎';
+    const gain        = BANQUET_RELATION_GAIN[personality] ?? BANQUET_RELATION_DEFAULT;
+    const playerGold  = this._getGold();
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">🍷 宴請統治者</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          你打算設宴款待 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}），以宴席拉近雙方關係。<br>
+          佳餚美酒需要花費一筆金幣，但能有效改善外交氛圍。
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">宴請費用</span>
+          <span style="color:#ffd54f">🪙${cost}（持有：${playerGold}）</span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">預期關係改善</span>
+          <span style="color:#66bb6a">+${gain}（${ruler?.name ?? '統治者'} 個性：${personality}）</span>
+        </div>
+        <div class="treaty-note">統治者的個性決定他對宴請的接受程度；傲慢的統治者改善幅度較小，溫和的統治者則最為受用。</div>
+        <button class="btn-buy treaty-send-btn${playerGold < cost ? ' disabled' : ''}" id="diplo-banquet-confirm"
+          ${playerGold < cost ? 'disabled' : ''}>
+          🍷 確認宴請（花費 🪙${cost}）
+        </button>
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', backFn);
+
+    document.getElementById('diplo-banquet-confirm')?.addEventListener('click', () => {
+      if (!this._spendGold(cost)) {
+        this._toast('💸 金幣不足！');
+        return;
+      }
+      this.diplomacySystem.modifyPlayerRelation(nationId, gain);
+      this._refreshGoldDisplay();
+      this._addInboxMessage('🍷', `你在 ${nationName} 設宴款待 ${ruler?.name ?? '統治者'}，雙方關係改善 +${gain}。`);
+      this._toast(`🍷 宴請成功！與 ${nationName} 的關係 +${gain}`);
+      backFn();
+    });
+  }
+
+  /**
+   * Demand (要求) proposal screen.
+   * Player leverages military strength to demand a gold tribute from the foreign ruler.
+   * On success: player receives gold but the nation's relation drops (resentment).
+   * On failure: relation drops; warlike rulers may even declare war.
+   *
+   * @param {import('../systems/NationSystem.js').Settlement} settlement  Foreign settlement.
+   * @param {function} backFn  Callback to navigate back.
+   */
+  _renderDemandProposal(settlement, backFn) {
+    const content = document.getElementById('location-content');
+    if (!content || !this.diplomacySystem || !this.nationSystem) return;
+
+    const nationId   = settlement.nationId;
+    const nation     = this.nationSystem.nations[nationId];
+    const ruler      = settlement.ruler;
+    const nationName = nation?.name ?? settlement.name;
+    const demandGold = DEMAND_GOLD_BASE + (settlement.economyLevel ?? 1) * DEMAND_GOLD_PER_ECO;
+
+    // Rough success-chance indicator for the player (no guarantees)
+    const playerStr      = this._getPlayerStrength();
+    const settlementStr  = (settlement.economyLevel ?? 1) * ECONOMY_STRENGTH_MULTIPLIER
+                         + Math.floor((settlement.population ?? 0) / POPULATION_STRENGTH_DIVISOR);
+    const strengthRatio  = playerStr / (playerStr + settlementStr || 1);
+    const chanceLabel    = strengthRatio >= 0.65
+      ? '高'
+      : strengthRatio >= 0.40
+        ? '中'
+        : '低';
+
+    const personality = ruler?.traits?.find(t => ALL_PERSONALITIES.includes(t)) ?? '謹慎';
+    const atWar       = this.diplomacySystem.isAtWar(_PLAYER_NATION_ID_UI, nationId);
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="diplo-back">← 返回</button>
+      <div class="fac-title">⚖ 要求進貢</div>
+      <div class="treaty-form">
+        <div class="diplo-proposal-intro">
+          你以武力威懾，要求 <strong>${ruler?.name ?? '統治者'}</strong>（${nationName}）繳納進貢。<br>
+          若對方屈服，你將獲得一筆金幣；若對方拒絕，雙方關係將惡化，好戰的統治者甚至可能宣戰。
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">索取金幣</span>
+          <span style="color:#ffd54f">🪙${demandGold}</span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">成功機率</span>
+          <span style="color:${chanceLabel === '高' ? '#66bb6a' : chanceLabel === '中' ? '#ffa726' : '#ef6c00'}">
+            ${chanceLabel}（你的武力：${playerStr}）
+          </span>
+        </div>
+        <div class="treaty-row">
+          <span class="treaty-label">統治者個性</span>
+          <span>${personality}</span>
+        </div>
+        <div class="treaty-note">成功後雙方關係仍會下降（對方心存怨恨）；失敗則關係大幅惡化，好戰型統治者可能立即宣戰。</div>
+        <button class="btn-buy treaty-send-btn war-send-btn" id="diplo-demand-confirm">⚖ 提出要求</button>
+      </div>
+    `;
+
+    document.getElementById('diplo-back')?.addEventListener('click', backFn);
+
+    document.getElementById('diplo-demand-confirm')?.addEventListener('click', () => {
+      const accepted = this.diplomacySystem.evaluateDirectDiploProposal(nationId, 'demand', {
+        strengthRatio,
+      });
+
+      if (accepted) {
+        // Ruler complies – player gets gold, relation drops (resentment)
+        this._addGold(demandGold);
+        const relDelta = -(DEMAND_SUCCESS_REL_BASE + Math.floor(Math.random() * DEMAND_SUCCESS_REL_VARIANCE));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._refreshGoldDisplay();
+        this._addInboxMessage(
+          '⚖',
+          `${nationName} 屈服於你的要求，繳納了 🪙${demandGold} 進貢，但雙方關係惡化 ${relDelta}。`,
+        );
+        this._toast(`✅ ${nationName} 繳納了 🪙${demandGold} 進貢！`);
+      } else {
+        // Ruler refuses – stronger penalty; warlike personality may declare war
+        const relDelta = -(DEMAND_FAILURE_REL_BASE + Math.floor(Math.random() * DEMAND_FAILURE_REL_VARIANCE));
+        this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
+        this._addInboxMessage(
+          '❌',
+          `${nationName} 斷然拒絕了進貢要求，雙方關係惡化 ${relDelta}。`,
+        );
+        // Warlike rulers respond with immediate war declaration
+        if ((personality === '好戰' || personality === '傲慢') && !atWar) {
+          this.diplomacySystem.declareWar(_PLAYER_NATION_ID_UI, nationId);
+          this._addInboxMessage(
+            '⚔',
+            `${nationName} 的 ${ruler?.name ?? '統治者'} 大怒，宣佈對你開戰！`,
+          );
+          this._toast(`⚔ ${nationName} 宣戰！`);
+        } else {
+          this._toast(`❌ ${nationName} 拒絕了你的要求，關係 ${relDelta}。`);
+        }
+      }
+      backFn();
+    });
   }
 
   /**
@@ -8768,6 +9008,9 @@ export class GameUI {
       } else if (key !== '' && this._liberatedSettlements.has(key)) {
         s.playerOwned = false;
         s.controllingNationId = NEUTRAL_NATION_ID;
+        // Regenerate the independent neutral ruler (deterministic from key).
+        const [type, idxStr] = key.split(':');
+        s.ruler = generateNeutralRuler(type, parseInt(idxStr, 10));
       } else {
         this._setSettlementOwnership(s, false);
       }
@@ -8849,6 +9092,9 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
+    // Track whether this was a neutral (liberated) settlement before we mutate state.
+    const wasNeutral = this._liberatedSettlements.has(key);
+
     // If previously liberated, remove from that set first.
     this._liberatedSettlements.delete(key);
 
@@ -8901,12 +9147,15 @@ export class GameUI {
     }
 
     // Propagate conquest fear to all surrounding nations.
+    // For formerly-neutral settlements use NEUTRAL_NATION_ID so that no single
+    // nation is wrongly excluded from the fear penalty (neutral zones are not
+    // part of any nation's territory and cannot be "skipped" as their direct owner).
     if (this.diplomacySystem) {
       const pk = this.getPlayerNation();
       this.diplomacySystem.recordConquest({
         settlementName:      settlement.name,
         attackerDisplayName: pk.name,
-        targetNationId:      settlement.nationId,
+        targetNationId:      wasNeutral ? NEUTRAL_NATION_ID : settlement.nationId,
       });
       // Refresh diplomacy panel if it's open so players see the impact immediately.
       if (this._activePanel === 'nations') {
@@ -8977,6 +9226,11 @@ export class GameUI {
     this._liberatedSettlements.add(key);
     settlement.playerOwned = false;
     settlement.controllingNationId = NEUTRAL_NATION_ID;
+
+    // Generate a new independent self-governing ruler for this neutral settlement.
+    // The ruler is deterministic from the settlement key so save/load is not needed.
+    const [type, idxStr] = key.split(':');
+    settlement.ruler = generateNeutralRuler(type, parseInt(idxStr, 10));
 
     this._addInboxMessage('🕊', `解放了 ${settlement.name}，該地區恢復中立，升起白旗。`);
 
