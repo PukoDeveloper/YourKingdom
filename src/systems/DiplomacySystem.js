@@ -2449,6 +2449,20 @@ export class DiplomacySystem {
       return Math.random() < Math.max(0.05, Math.min(0.90, chance));
     }
 
+    if (type === 'demand') {
+      // The NPC ruler will only comply if the player is significantly stronger.
+      // strengthRatio = playerStrength / (playerStrength + settlementStrength), in [0, 1].
+      const ratio = data.strengthRatio ?? 0;
+      let chance = ratio * 0.75; // pure strength ceiling is 75 %
+      if (p === PERSONALITY_ARROGANT) chance -= 0.25; // very proud – refuses easily
+      if (p === PERSONALITY_WARLIKE)  chance -= 0.15; // rather fight than pay
+      if (p === PERSONALITY_CAUTIOUS) chance += 0.05; // cautious – reluctantly complies
+      if (p === PERSONALITY_GENTLE)   chance += 0.10; // gentle – least confrontational
+      // Poor relations increase resistance
+      chance -= Math.max(0, -rel) / 400;
+      return Math.random() < Math.max(0.03, Math.min(0.80, chance));
+    }
+
     return false;
   }
 
