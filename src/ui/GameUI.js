@@ -3955,15 +3955,16 @@ export class GameUI {
    * @param {object} item  Inventory item object
    */
   _equipItemToUnit(unit, slotKey, item) {
-    // Return previously equipped item to backpack
+    // Return previously equipped item to backpack (preserve original stackable behaviour)
     const existing = unit.equipment?.[slotKey] ?? null;
     if (existing) {
-      this.inventory.addItem({ ...existing, stackable: false });
+      this.inventory.addItem({ ...existing });
     }
     // Remove 1 unit of the new item from backpack
     this.inventory.removeItem(item.id, 1);
-    // Store a snapshot of the item in the equipment slot
-    unit.equipment[slotKey] = { ...item, quantity: 1 };
+    // Store a snapshot (quantity always 1 – a single item occupies the slot)
+    const { quantity: _q, ...itemWithoutQty } = item;
+    unit.equipment[slotKey] = { ...itemWithoutQty, quantity: 1 };
     this._toast(`${unit.name} 裝備了 ${item.icon} ${item.name}`);
   }
 
@@ -3976,7 +3977,8 @@ export class GameUI {
     const item = unit.equipment?.[slotKey] ?? null;
     if (!item) return;
     unit.equipment[slotKey] = null;
-    this.inventory.addItem({ ...item, stackable: false });
+    // Return item to backpack, preserving original stackable behaviour
+    this.inventory.addItem({ ...item });
     this._toast(`${unit.name} 卸下了 ${item.icon} ${item.name}`);
   }
 

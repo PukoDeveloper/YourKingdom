@@ -99,9 +99,9 @@ export class Unit {
      * @type {{ weapon: object|null, armor: object|null, accessory: object|null }}
      */
     this.equipment = {
-      weapon:    equipment?.weapon    ?? null,
-      armor:     equipment?.armor     ?? null,
-      accessory: equipment?.accessory ?? null,
+      weapon:    (equipment && typeof equipment === 'object') ? (equipment.weapon    ?? null) : null,
+      armor:     (equipment && typeof equipment === 'object') ? (equipment.armor     ?? null) : null,
+      accessory: (equipment && typeof equipment === 'object') ? (equipment.accessory ?? null) : null,
     };
   }
 
