@@ -76,6 +76,7 @@ export class Character extends Unit {
    * @returns {object}
    */
   toJSON() {
+    const a = this.appearance;
     return {
       id:           this.id,
       name:         this.name,
@@ -83,14 +84,14 @@ export class Character extends Unit {
       traits:       [...this.traits],
       stats:        { ...this.stats },
       active:       this.active,
-      appearance: {
-        bodyColorIdx:  this.appearance.bodyColorIdx,
-        headgearIdx:   this.appearance.headgearIdx,
-        armorColorIdx: this.appearance.armorColorIdx,
-        markColorIdx:  this.appearance.markColorIdx,
-        bodyShapeIdx:  this.appearance.bodyShapeIdx  ?? 0,
-        faceAccIdx:    this.appearance.faceAccIdx    ?? 0,
-      },
+      appearance: a ? {
+        bodyColorIdx:  a.bodyColorIdx,
+        headgearIdx:   a.headgearIdx,
+        armorColorIdx: a.armorColorIdx,
+        markColorIdx:  a.markColorIdx,
+        bodyShapeIdx:  a.bodyShapeIdx  ?? 0,
+        faceAccIdx:    a.faceAccIdx    ?? 0,
+      } : null,
       loyalNationId: this.loyalNationId,
       location:      this.location ? { ...this.location } : null,
       isKing:        this.isKing,

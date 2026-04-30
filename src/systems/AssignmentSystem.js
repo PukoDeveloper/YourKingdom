@@ -120,11 +120,13 @@ export class AssignmentSystem {
       this._recallFromSquad(existing, 'region');
     }
 
-    // Remove the unit from its current squad.
+    const location = { type: 'region', ref: regionKey };
+    // Update Character location before removing from squad (while still findable).
+    this._syncCharacterLocation(unitId, location);
+
     if (!this._removeFromSquad(unitId)) return false;
 
     this._regionRulers.set(regionKey, unitId);
-    this._syncCharacterLocation(unitId, { type: 'region', ref: regionKey });
     return true;
   }
 
@@ -142,11 +144,13 @@ export class AssignmentSystem {
     if (workers.length >= 2) return false;
     if (workers.includes(unitId)) return false;
 
+    const location = { type: 'trade', ref: routeId };
+    this._syncCharacterLocation(unitId, location);
+
     if (!this._removeFromSquad(unitId)) return false;
 
     workers.push(unitId);
     this._tradeWorkers.set(routeId, workers);
-    this._syncCharacterLocation(unitId, { type: 'trade', ref: routeId });
     return true;
   }
 
@@ -164,11 +168,13 @@ export class AssignmentSystem {
     if (workers.length >= 3) return false;
     if (workers.includes(unitId)) return false;
 
+    const location = { type: 'construction', ref: siteId };
+    this._syncCharacterLocation(unitId, location);
+
     if (!this._removeFromSquad(unitId)) return false;
 
     workers.push(unitId);
     this._constructionWorkers.set(siteId, workers);
-    this._syncCharacterLocation(unitId, { type: 'construction', ref: siteId });
     return true;
   }
 
