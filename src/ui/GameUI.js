@@ -4439,32 +4439,31 @@ export class GameUI {
 
     // Build sell panel (only for General Store, i.e. when demandResource is provided)
     const localResources = settlement.resources ?? [];
-    const sellableItems  = demandResource !== ''
-      ? this.inventory.getItems().filter(i => i.type === 'loot' && RESOURCE_TYPES.includes(i.name))
-      : [];
 
-    const sellHTML = demandResource !== '' ? (() => {
+    let sellHTML = '';
+    if (demandResource !== '') {
+      const sellableItems = this.inventory.getItems().filter(i => i.type === 'loot' && RESOURCE_TYPES.includes(i.name));
       if (sellableItems.length === 0) {
-        return `<div class="shop-sell-empty">（背包中無可販賣的物資）</div>`;
+        sellHTML = `<div class="shop-sell-empty">（背包中無可販賣的物資）</div>`;
+      } else {
+        sellHTML = sellableItems.map(invItem => {
+          const sellPrice = BuildingSystem.computeSellPrice(invItem.name, RESOURCE_BASE_PRICE, localResources, demandResource);
+          const isDemand  = invItem.name === demandResource;
+          const isLocal   = localResources.includes(invItem.name);
+          const tag       = isDemand ? '🔥 需求' : isLocal ? '📦 本地' : '';
+          return `
+            <div class="shop-item-row" data-inv-id="${invItem.id}" data-sell-price="${sellPrice}">
+              <span class="sir-icon">${invItem.icon}</span>
+              <div class="sir-info">
+                <div class="sir-name">${invItem.name}${tag ? ` <span class="sir-stat">${tag}</span>` : ''}</div>
+                <div class="sir-desc">持有：×${invItem.quantity}</div>
+              </div>
+              <span class="sir-price">🪙${sellPrice}</span>
+              <button class="btn-sell" data-inv-id="${invItem.id}" data-sell-price="${sellPrice}">出售</button>
+            </div>`;
+        }).join('');
       }
-      return sellableItems.map(invItem => {
-        const syntheticCatalogItem = { id: invItem.name, name: invItem.name, icon: invItem.icon, basePrice: RESOURCE_BASE_PRICE };
-        const sellPrice = BuildingSystem.computeSellPrice(syntheticCatalogItem, localResources, demandResource);
-        const isDemand  = invItem.name === demandResource;
-        const isLocal   = localResources.includes(invItem.name);
-        const tag       = isDemand ? '🔥 需求' : isLocal ? '📦 本地' : '';
-        return `
-          <div class="shop-item-row" data-inv-id="${invItem.id}" data-sell-price="${sellPrice}">
-            <span class="sir-icon">${invItem.icon}</span>
-            <div class="sir-info">
-              <div class="sir-name">${invItem.name}${tag ? ` <span class="sir-stat">${tag}</span>` : ''}</div>
-              <div class="sir-desc">持有：×${invItem.quantity}</div>
-            </div>
-            <span class="sir-price">🪙${sellPrice}</span>
-            <button class="btn-sell" data-inv-id="${invItem.id}" data-sell-price="${sellPrice}">出售</button>
-          </div>`;
-      }).join('');
-    })() : '';
+    }
 
     const demandNote = demandResource
       ? `<div class="shop-demand-note">📋 本地需求：<strong>${demandResource}</strong>（高價收購）</div>`
