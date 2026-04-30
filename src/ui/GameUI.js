@@ -1,6 +1,6 @@
 import { Inventory }                      from '../systems/Inventory.js';
 import { Army, MAX_MEMBERS, TRAIT_CAPTAIN } from '../systems/Army.js';
-import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID }   from '../systems/NationSystem.js';
+import { TRAIT_RULER, PLAYER_NATION_ID, NEUTRAL_NATION_ID, generateNeutralRuler }   from '../systems/NationSystem.js';
 import {
   RELATION_LEVELS,
   PERSONALITY_COLORS,
@@ -2541,9 +2541,9 @@ export class GameUI {
         </div>`;
     }
 
-    // Ruler section – hidden for neutral (liberated) settlements
+    // Ruler section
     let rulerHTML = '';
-    if (!isNeutral && ruler) {
+    if (ruler) {
       const rulerTraitsHTML = renderTraitBadgesHTML(ruler.traits, PERSONALITY_COLORS);
       rulerHTML = `
         <div class="sd-ruler-section">
@@ -2591,7 +2591,7 @@ export class GameUI {
       neutralActionsHTML = `
         <div class="sd-neutral-section">
           <div class="sd-neutral-title">🏳 中立自治區</div>
-          <div class="sd-neutral-note">此地無國家統治，以自治方式運作。</div>
+          <div class="sd-neutral-note">此地宣告中立，由在地自治領袖管理。</div>
           ${tradeRouteInfo}
           <div class="sd-neutral-actions">
             <button class="btn-sd-suggest-rule" id="btn-sd-suggest-rule">
@@ -8768,6 +8768,9 @@ export class GameUI {
       } else if (key !== '' && this._liberatedSettlements.has(key)) {
         s.playerOwned = false;
         s.controllingNationId = NEUTRAL_NATION_ID;
+        // Regenerate the independent neutral ruler (deterministic from key).
+        const [type, idxStr] = key.split(':');
+        s.ruler = generateNeutralRuler(type, parseInt(idxStr, 10));
       } else {
         this._setSettlementOwnership(s, false);
       }
@@ -8849,6 +8852,9 @@ export class GameUI {
     const key = this._settlementKey(settlement);
     if (!key || this._capturedSettlements.has(key)) return;
 
+    // Track whether this was a neutral (liberated) settlement before we mutate state.
+    const wasNeutral = this._liberatedSettlements.has(key);
+
     // If previously liberated, remove from that set first.
     this._liberatedSettlements.delete(key);
 
@@ -8901,12 +8907,15 @@ export class GameUI {
     }
 
     // Propagate conquest fear to all surrounding nations.
+    // For formerly-neutral settlements use NEUTRAL_NATION_ID so that no single
+    // nation is wrongly excluded from the fear penalty (neutral zones are not
+    // part of any nation's territory and cannot be "skipped" as their direct owner).
     if (this.diplomacySystem) {
       const pk = this.getPlayerNation();
       this.diplomacySystem.recordConquest({
         settlementName:      settlement.name,
         attackerDisplayName: pk.name,
-        targetNationId:      settlement.nationId,
+        targetNationId:      wasNeutral ? NEUTRAL_NATION_ID : settlement.nationId,
       });
       // Refresh diplomacy panel if it's open so players see the impact immediately.
       if (this._activePanel === 'nations') {
@@ -8977,6 +8986,11 @@ export class GameUI {
     this._liberatedSettlements.add(key);
     settlement.playerOwned = false;
     settlement.controllingNationId = NEUTRAL_NATION_ID;
+
+    // Generate a new independent self-governing ruler for this neutral settlement.
+    // The ruler is deterministic from the settlement key so save/load is not needed.
+    const [type, idxStr] = key.split(':');
+    settlement.ruler = generateNeutralRuler(type, parseInt(idxStr, 10));
 
     this._addInboxMessage('🕊', `解放了 ${settlement.name}，該地區恢復中立，升起白旗。`);
 

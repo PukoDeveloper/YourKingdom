@@ -20,6 +20,10 @@ import { generateRandomTraits } from './CharacterSystem.js';
 /** Trait constant shared with Army.js – marks a unit as a settlement ruler. */
 export const TRAIT_RULER = '統治者';
 
+/** Titles used for auto-generated neutral (liberated) settlement leaders. */
+const NEUTRAL_CASTLE_TITLES  = ['自治領袖', '議事長', '獨立領主', '自由議長', '民選君主'];
+const NEUTRAL_VILLAGE_TITLES = ['自治長', '鄉民代表', '村議長', '民選里正', '自治耆老'];
+
 /**
  * Special nation ID assigned to the player's kingdom.
  * Settlement.controllingNationId is set to this value when the player captures a settlement.
@@ -385,4 +389,44 @@ export class NationSystem {
     return ![...this.castleSettlements, ...this.villageSettlements]
       .some(s => s.controllingNationId === nationId);
   }
+}
+
+/**
+ * Generate a deterministic independent ruler for a neutral (liberated) settlement.
+ * The ruler is seeded from the settlement type and index so it is always the same
+ * for a given settlement regardless of when liberation occurs, which means no
+ * extra save/load state is required.
+ *
+ * @param {'castle'|'village'} type   Settlement type.
+ * @param {number}             index  Index in the corresponding settlements array.
+ * @returns {Unit}
+ */
+export function generateNeutralRuler(type, index) {
+  const isCastle = type === 'castle';
+  // Use a large, type-specific salt so neutral rulers never collide with
+  // the world-seed-generated nation rulers.
+  const salt = isCastle ? 1_000_000 : 2_000_000;
+  const h = (o) => _hash(index + salt, 0, o);
+
+  const name    = _pick(RULER_SURNAMES, h(1)) + _pick(RULER_GIVEN, h(2));
+  const titles  = isCastle ? NEUTRAL_CASTLE_TITLES : NEUTRAL_VILLAGE_TITLES;
+  const role    = _pick(titles, h(3));
+
+  const extraTraits = generateRandomTraits(Math.floor(h(4) * 99991), [TRAIT_RULER]);
+
+  return new Unit({
+    // Castle neutral rulers: IDs -(3000…3999); village neutral rulers: -(4000…4999).
+    // Both ranges are clear of world-seed ruler IDs (-(1)…-(9) for castles,
+    // -(1001)…-(1xxx) for villages).
+    id:     -(3000 + (isCastle ? 0 : 1000) + index),
+    name,
+    role,
+    traits: [TRAIT_RULER, ...extraTraits],
+    stats: {
+      attack:    Math.floor(3  + h(5) * 10),
+      defense:   Math.floor(3  + h(6) * 10),
+      morale:    Math.floor(40 + h(7) * 40),
+      moveSpeed: 3 + Math.floor(h(8) * 6),
+    },
+  });
 }

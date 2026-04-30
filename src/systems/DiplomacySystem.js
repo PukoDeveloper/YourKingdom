@@ -2048,7 +2048,7 @@ export class DiplomacySystem {
     const total = own.length;
     if (total === 0) return 100; // extinct nation
 
-    const lost   = own.filter(s => s.controllingNationId !== targetId).length;
+    const lost   = own.filter(s => s.controllingNationId !== targetId && s.controllingNationId >= 0).length;
     const lossRatio = lost / total;
 
     const avgEco = own.reduce((sum, s) => sum + s.economyLevel, 0) / total;
@@ -2198,6 +2198,7 @@ export class DiplomacySystem {
       if (s.nationId < 0) return;
       const ctrl = s.controllingNationId;
       if (ctrl === s.nationId) return; // no conflict
+      if (ctrl < 0) return; // player-owned or neutral – not an NPC war
       this.declareWar(s.nationId, ctrl);
     });
   }

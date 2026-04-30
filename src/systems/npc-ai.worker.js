@@ -251,8 +251,11 @@ function _decideForNation(
   const surrenderIdx = surrenderMap.get(id) ?? 0;
 
   // Compute territorial loss ratio.
+  // Only settlements captured by another NPC nation count as "lost"; neutral
+  // (liberated) and player-owned settlements are excluded so a nation is not
+  // falsely weakened by its own formerly-neutral territory.
   const ownAll  = settlements.filter(s => s.nationId === id);
-  const lostAll = ownAll.filter(s => s.controllingNationId !== id);
+  const lostAll = ownAll.filter(s => s.controllingNationId !== id && s.controllingNationId >= 0);
   const lossRatio = ownAll.length > 0 ? lostAll.length / ownAll.length : 0;
 
   // Wars this nation is involved in.
