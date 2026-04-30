@@ -7,11 +7,13 @@ import {
 } from './TileDrawer.js';
 
 /**
- * Compute the 4-bit water-neighbour mask for a bridge tile.
- *   bit 0 (1)  = North neighbour is WATER
- *   bit 1 (2)  = East  neighbour is WATER
- *   bit 2 (4)  = South neighbour is WATER
- *   bit 3 (8)  = West  neighbour is WATER
+ * Compute the 4-bit land-neighbour mask for a bridge tile.
+ * Each bit is set when the corresponding orthogonal neighbour is NOT water (i.e. land),
+ * so the drawn bridge arms extend toward land tiles and visually connect to them.
+ *   bit 0 (1)  = North neighbour is LAND
+ *   bit 1 (2)  = East  neighbour is LAND
+ *   bit 2 (4)  = South neighbour is LAND
+ *   bit 3 (8)  = West  neighbour is LAND
  *
  * @param {number} tx
  * @param {number} ty
@@ -28,7 +30,7 @@ function _bridgeNeighborMask(tx, ty, mapData) {
   ];
   let mask = 0;
   for (const [dx, dy, bit] of DIRS) {
-    if (mapData.getTerrain(tx + dx, ty + dy) === TERRAIN.WATER) mask |= bit;
+    if (mapData.getTerrain(tx + dx, ty + dy) !== TERRAIN.WATER) mask |= bit;
   }
   return mask !== 0 ? mask : 0b1010;
 }
