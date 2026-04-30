@@ -37,6 +37,7 @@ import {
   BLDG_GENERAL, BLDG_BLACKSMITH, BLDG_MAGE, BLDG_TAVERN, BLDG_INN,
   BUILDING_META,
   CATALOG_GENERAL, CATALOG_BLACKSMITH, CATALOG_MAGE, CATALOG_TAVERN_FOOD,
+  RESOURCE_BASE_PRICE,
 } from '../systems/BuildingSystem.js';
 import { TERRAIN, TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from '../world/constants.js';
 import {
@@ -4364,7 +4365,7 @@ export class GameUI {
       name:        res,
       icon:        resourceIcon[res] ?? '📦',
       type:        'loot',
-      basePrice:   10,
+      basePrice:   RESOURCE_BASE_PRICE,
       quantity:    5,
       description: `本地特產：${res}（折扣）`,
     }));
@@ -4447,7 +4448,7 @@ export class GameUI {
         return `<div class="shop-sell-empty">（背包中無可販賣的物資）</div>`;
       }
       return sellableItems.map(invItem => {
-        const syntheticCatalogItem = { id: invItem.name, name: invItem.name, icon: invItem.icon, basePrice: 10 };
+        const syntheticCatalogItem = { id: invItem.name, name: invItem.name, icon: invItem.icon, basePrice: RESOURCE_BASE_PRICE };
         const sellPrice = BuildingSystem.computeSellPrice(syntheticCatalogItem, localResources, demandResource);
         const isDemand  = invItem.name === demandResource;
         const isLocal   = localResources.includes(invItem.name);
@@ -4476,7 +4477,8 @@ export class GameUI {
       <div class="shop-section-title">購買</div>
       <div class="shop-item-list">${itemsHTML}</div>
       ${demandResource !== '' ? `
-      <div class="shop-section-title">出售物資 ${demandNote}</div>
+      <div class="shop-section-title">出售物資</div>
+      ${demandNote}
       <div class="shop-item-list shop-sell-list">${sellHTML}</div>` : ''}
     `;
 

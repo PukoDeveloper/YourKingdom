@@ -53,6 +53,9 @@ export const BUILDING_META = {
  * }} CatalogItem
  */
 
+/** Base price (gold) for all raw resource goods traded at 雜貨舖. */
+export const RESOURCE_BASE_PRICE = 10;
+
 /** Items sold by 雜貨舖 (local resources added dynamically at point of sale). */
 export const CATALOG_GENERAL = [
   { id: 'dry_ration',  name: '乾糧',   icon: '🍱', type: 'food',    basePrice:  5, quantity: 5, description: '補充行軍所需的體力。' },
@@ -221,15 +224,17 @@ export class BuildingSystem {
    * prevent players from exploiting a single location for infinite gold.
    *
    * Multipliers (applied to item.basePrice):
-   *   – Demanded resource (settlement wants it):  0.60
-   *   – Normal resource (neither local nor demanded): 0.50
-   *   – Locally produced resource (abundant here):   0.30
+   *   – Demanded resource (settlement wants it):       0.60
+   *   – Normal resource (neither local nor demanded):  0.50
+   *   – Locally produced resource (abundant here):     0.30
    *
-   * The cheapest possible BUY price for any item is basePrice × 0.7
-   * (minimum priceMult 0.7) × 0.7 (local discount) ≈ 0.49 × basePrice.
-   * Because demanded-resource sell price (0.60) exceeds that floor only for
-   * the local-discount case, which is not applicable to demanded resources,
-   * all sell prices remain strictly below the matching buy price.
+   * Anti-arbitrage guarantee: a resource cannot be both demanded AND locally
+   * produced at the same settlement (demand is always a resource not in
+   * settlement.resources).  The lowest possible BUY price at any shop is
+   * basePrice × 0.7 (min priceMult) × 0.7 (local discount) ≈ 0.49 × basePrice.
+   * The highest SELL price (0.60 × basePrice, for a demanded resource) is
+   * always below that floor, so buying and immediately re-selling in the same
+   * location is never profitable.
    *
    * @param {CatalogItem} item
    * @param {string[]}    localResources  Settlement's own resource names.
