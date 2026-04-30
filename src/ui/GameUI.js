@@ -1287,6 +1287,7 @@ export class GameUI {
     const isMap   = item.type === 'map';
     const isGuide = item.type === 'guide';
     const usable  = !isMap && !isGuide && ['consumable', 'potion', 'utility'].includes(item.type);
+    const equipSlot = GameUI._getEquipSlot(item.type);
     const statsKeys = item.stats ? Object.keys(item.stats) : [];
     const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
 
@@ -1321,8 +1322,10 @@ export class GameUI {
         ${isMap   ? `<button class="btn-item-use" data-id="${item.id}">🗺️ 查看地圖</button>` : ''}
         ${isGuide ? `<button class="btn-item-use" data-id="${item.id}">📖 開啟指南</button>` : ''}
         ${usable  ? `<button class="btn-item-use" data-id="${item.id}">▶ 使用</button>` : ''}
+        ${equipSlot ? `<button class="btn-item-equip-char" data-id="${item.id}">⚔️ 裝備到人物…</button>` : ''}
         <button class="btn-item-discard" data-id="${item.id}">🗑 丟棄</button>
       </div>
+      ${equipSlot ? '<div class="id-char-picker" style="display:none"></div>' : ''}
     `;
 
     document.getElementById('ui-item-detail-overlay').classList.add('visible');
@@ -1345,6 +1348,13 @@ export class GameUI {
       this._renderBackpack();
     });
 
+    // "裝備到人物" button – show inline character picker
+    if (equipSlot) {
+      detailBody.querySelector('.btn-item-equip-char')?.addEventListener('click', () => {
+        this._showCharEquipPicker(detailBody.querySelector('.id-char-picker'), item, equipSlot);
+      });
+    }
+
     detailBody.querySelector('.btn-item-discard')?.addEventListener('click', () => {
       this.inventory.removeItem(item.id, item.quantity);
       this._toast(`已丟棄 ${item.name}`);
@@ -1357,9 +1367,61 @@ export class GameUI {
     document.getElementById('ui-item-detail-overlay').classList.remove('visible');
   }
 
-  // -------------------------------------------------------------------------
-  // Minimap overlay
-  // -------------------------------------------------------------------------
+  /**
+   * Show an inline character picker inside the item detail overlay so the
+   * player can choose which unit to equip the item on.
+   * @param {HTMLElement} pickerEl
+   * @param {object} item  Inventory item
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   */
+  _showCharEquipPicker(pickerEl, item, slotKey) {
+    const SLOT_LABEL = { weapon: '武器', armor: '裝備', accessory: '飾品' };
+    const allUnits = [];
+    for (const sq of this.army.getSquads()) {
+      for (const m of sq.members) allUnits.push({ unit: m, squad: sq });
+    }
+
+    const rowsHTML = allUnits.length === 0
+      ? `<div class="id-char-picker-empty">沒有可裝備的人物</div>`
+      : allUnits.map(({ unit, squad }) => {
+          const cur = unit.equipment?.[slotKey];
+          const curText = cur ? `（已裝備：${cur.name}）` : '';
+          return `
+            <div class="id-char-picker-item" data-unit-id="${unit.id}" data-squad-id="${squad.id}" role="button" tabindex="0">
+              <span class="id-char-picker-item-name">${unit.name}</span>
+              <span class="id-char-picker-item-slot">${curText}</span>
+            </div>`;
+        }).join('');
+
+    pickerEl.innerHTML = `
+      <div class="id-char-picker-header">
+        <span>選擇人物（${SLOT_LABEL[slotKey]}欄）</span>
+        <button class="btn-equip-picker-cancel">✕</button>
+      </div>
+      ${rowsHTML}`;
+    pickerEl.style.display = 'block';
+
+    pickerEl.querySelector('.btn-equip-picker-cancel').addEventListener('click', () => {
+      pickerEl.style.display = 'none';
+    });
+
+    pickerEl.querySelectorAll('.id-char-picker-item').forEach(row => {
+      const confirm = () => {
+        const unitId  = Number(row.dataset.unitId);
+        const squadId = Number(row.dataset.squadId);
+        const squad   = this.army.getSquads().find(s => s.id === squadId);
+        const unit    = squad?.members.find(m => m.id === unitId);
+        if (!unit) return;
+        this._equipItemToUnit(unit, slotKey, item);
+        this._closeItemDetail();
+        this._renderBackpack();
+      };
+      row.addEventListener('click', confirm);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirm(); } });
+    });
+  }
+
+
 
   /** Terrain colour palette for the minimap canvas. */
   static get _MINIMAP_COLORS() {
@@ -3663,6 +3725,7 @@ export class GameUI {
         <div class="ud-stat"><span class="ud-stat-label">士氣</span><span class="ud-stat-val">${unit.stats.morale}</span></div>
         <div class="ud-stat"><span class="ud-stat-label">速度</span><span class="ud-stat-val">${unit.stats.moveSpeed ?? 5}</span></div>
       </div>
+      ${this._buildEquipSlotsHTML(unit)}
       ${captainBtn ? `<div class="ud-actions">${captainBtn}</div>` : ''}
       ${!isHero ? `
       <div class="ud-actions">
@@ -3679,6 +3742,9 @@ export class GameUI {
 
     const overlay = document.getElementById('ui-unit-detail-overlay');
     overlay.classList.add('visible');
+
+    // Attach equipment slot event handlers
+    this._attachEquipSlotHandlers(overlay, unit, squad);
 
     // Toggle active status
     overlay.querySelectorAll('.btn-toggle-active').forEach(btn => {
@@ -3738,8 +3804,183 @@ export class GameUI {
   }
 
   // -------------------------------------------------------------------------
-  // Unit acquisition
+  // Equipment slots helpers
   // -------------------------------------------------------------------------
+
+  /** Maps an item type string to the equipment slot key it belongs to. */
+  static _getEquipSlot(type) {
+    if (type === 'weapon') return 'weapon';
+    if (['helmet', 'chest', 'legs', 'boots'].includes(type)) return 'armor';
+    if (type === 'accessory') return 'accessory';
+    return null;
+  }
+
+  /** Returns a small string summarising equipment stats (e.g. "攻擊 +3"). */
+  static _equipStatsText(item) {
+    if (!item?.stats) return '';
+    const STAT_LABEL = { attack: '攻擊', defense: '防禦', speed: '速度', morale: '士氣' };
+    return Object.entries(item.stats)
+      .map(([k, v]) => `${STAT_LABEL[k] ?? k}${v >= 0 ? ' +' : ' '}${v}`)
+      .join(' ');
+  }
+
+  /**
+   * Build the HTML for the equipment-slots section shown inside the unit
+   * detail overlay.
+   * @param {import('../systems/Army.js').Unit} unit
+   * @returns {string}
+   */
+  _buildEquipSlotsHTML(unit) {
+    const SLOT_META = [
+      { key: 'weapon',    label: '武器', icon: '⚔️' },
+      { key: 'armor',     label: '裝備', icon: '🛡️' },
+      { key: 'accessory', label: '飾品', icon: '💍' },
+    ];
+    const slotsHTML = SLOT_META.map(({ key, label }) => {
+      const item = unit.equipment?.[key] ?? null;
+      const stats = GameUI._equipStatsText(item);
+      if (item) {
+        return `
+          <div class="ud-equip-slot ud-equip-slot-filled" data-slot="${key}">
+            <span class="ud-equip-slot-label">${label}</span>
+            <span class="ud-equip-slot-icon">${item.icon ?? '📦'}</span>
+            <span class="ud-equip-slot-name">${item.name}</span>
+            ${stats ? `<span class="ud-equip-slot-stats">${stats}</span>` : ''}
+            <button class="btn-unequip" data-slot="${key}">卸下</button>
+          </div>`;
+      }
+      return `
+        <div class="ud-equip-slot ud-equip-slot-empty" data-slot="${key}">
+          <span class="ud-equip-slot-label">${label}</span>
+          <span class="ud-equip-slot-empty-text">空</span>
+          <button class="btn-equip-slot" data-slot="${key}">裝備</button>
+        </div>`;
+    }).join('');
+    return `
+      <div class="ud-equip-section">
+        <div class="ud-section-title">裝備欄</div>
+        <div class="ud-equip-slots">${slotsHTML}</div>
+        <div class="ud-equip-picker" style="display:none"></div>
+      </div>`;
+  }
+
+  /**
+   * Attach event handlers for equip/unequip buttons inside the unit detail overlay.
+   * @param {HTMLElement} overlay
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {import('../systems/Army.js').Squad} squad
+   */
+  _attachEquipSlotHandlers(overlay, unit, squad) {
+    const picker = overlay.querySelector('.ud-equip-picker');
+
+    // Unequip button – returns item to backpack
+    overlay.querySelectorAll('.btn-unequip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const slotKey = btn.dataset.slot;
+        this._unequipItemFromUnit(unit, slotKey);
+        this._closeUnitDetail();
+        this._openUnitDetail(unit, squad);
+      });
+    });
+
+    // Equip button – opens inline picker for compatible backpack items
+    overlay.querySelectorAll('.btn-equip-slot').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const slotKey = btn.dataset.slot;
+        this._showEquipPicker(picker, unit, squad, slotKey);
+      });
+    });
+  }
+
+  /**
+   * Show the inline item picker inside the equipment section.
+   * @param {HTMLElement} pickerEl
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {import('../systems/Army.js').Squad} squad
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   */
+  _showEquipPicker(pickerEl, unit, squad, slotKey) {
+    const SLOT_TYPES = {
+      weapon:    ['weapon'],
+      armor:     ['helmet', 'chest', 'legs', 'boots'],
+      accessory: ['accessory'],
+    };
+    const SLOT_LABEL = { weapon: '武器', armor: '裝備', accessory: '飾品' };
+    const compatibleTypes = SLOT_TYPES[slotKey] ?? [];
+    const allItems = this.inventory.getItems();
+    const compatible = allItems.filter(i => compatibleTypes.includes(i.type));
+
+    const itemsHTML = compatible.length === 0
+      ? `<div class="ud-equip-picker-empty">背包中沒有可裝備的${SLOT_LABEL[slotKey]}</div>`
+      : compatible.map(it => {
+          const stats = GameUI._equipStatsText(it);
+          return `
+            <div class="ud-equip-picker-item" data-item-id="${it.id}" role="button" tabindex="0">
+              <span class="ud-equip-picker-item-icon">${it.icon}</span>
+              <span class="ud-equip-picker-item-name">${it.name}</span>
+              ${stats ? `<span class="ud-equip-picker-item-stats">${stats}</span>` : ''}
+            </div>`;
+        }).join('');
+
+    pickerEl.innerHTML = `
+      <div class="ud-equip-picker-header">
+        <span>選擇${SLOT_LABEL[slotKey]}</span>
+        <button class="btn-equip-picker-cancel">✕</button>
+      </div>
+      ${itemsHTML}`;
+    pickerEl.style.display = 'block';
+
+    pickerEl.querySelector('.btn-equip-picker-cancel').addEventListener('click', () => {
+      pickerEl.style.display = 'none';
+    });
+
+    pickerEl.querySelectorAll('.ud-equip-picker-item').forEach(row => {
+      const confirm = () => {
+        const item = allItems.find(i => i.id === Number(row.dataset.itemId));
+        if (!item) return;
+        this._equipItemToUnit(unit, slotKey, item);
+        this._closeUnitDetail();
+        this._openUnitDetail(unit, squad);
+      };
+      row.addEventListener('click', confirm);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirm(); } });
+    });
+  }
+
+  /**
+   * Equip an item from the backpack to the given slot on a unit.
+   * If the slot already has an item it is returned to the backpack first.
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   * @param {object} item  Inventory item object
+   */
+  _equipItemToUnit(unit, slotKey, item) {
+    // Return previously equipped item to backpack
+    const existing = unit.equipment?.[slotKey] ?? null;
+    if (existing) {
+      this.inventory.addItem({ ...existing, stackable: false });
+    }
+    // Remove 1 unit of the new item from backpack
+    this.inventory.removeItem(item.id, 1);
+    // Store a snapshot of the item in the equipment slot
+    unit.equipment[slotKey] = { ...item, quantity: 1 };
+    this._toast(`${unit.name} 裝備了 ${item.icon} ${item.name}`);
+  }
+
+  /**
+   * Unequip an item from the given slot and return it to the backpack.
+   * @param {import('../systems/Army.js').Unit} unit
+   * @param {'weapon'|'armor'|'accessory'} slotKey
+   */
+  _unequipItemFromUnit(unit, slotKey) {
+    const item = unit.equipment?.[slotKey] ?? null;
+    if (!item) return;
+    unit.equipment[slotKey] = null;
+    this.inventory.addItem({ ...item, stackable: false });
+    this._toast(`${unit.name} 卸下了 ${item.icon} ${item.name}`);
+  }
+
+
 
   /**
    * Call this when the player earns a new unit (e.g., after battle).

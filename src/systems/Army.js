@@ -49,9 +49,10 @@ export class Unit {
    *   stats?:      Object,
    *   active?:     boolean,
    *   appearance?: Object
+   *   equipment?:  { weapon?: object|null, armor?: object|null, accessory?: object|null },
    * }} opts
    */
-  constructor({ id, name, role, traits = [], stats = {}, active = true, appearance = null }) {
+  constructor({ id, name, role, traits = [], stats = {}, active = true, appearance = null, equipment = null }) {
     this.id     = id;
     this.name   = name;
     this.role   = role;
@@ -88,6 +89,20 @@ export class Unit {
     } else {
       this.appearance = generateCharAppearance(id * 17, id * 31 + 7);
     }
+
+    /**
+     * Equipment slots for this unit.
+     * Each slot holds a plain item object (from Inventory) or null.
+     * - weapon:    items of type 'weapon'
+     * - armor:     items of type 'helmet' | 'chest' | 'legs' | 'boots'
+     * - accessory: items of type 'accessory'
+     * @type {{ weapon: object|null, armor: object|null, accessory: object|null }}
+     */
+    this.equipment = {
+      weapon:    equipment?.weapon    ?? null,
+      armor:     equipment?.armor     ?? null,
+      accessory: equipment?.accessory ?? null,
+    };
   }
 
   /** @returns {boolean} true when the unit carries the captain trait */
@@ -308,6 +323,11 @@ export class Army {
             markColorIdx:  m.appearance.markColorIdx,
             bodyShapeIdx:  m.appearance.bodyShapeIdx  ?? 0,
             faceAccIdx:    m.appearance.faceAccIdx    ?? 0,
+          },
+          equipment: {
+            weapon:    m.equipment?.weapon    ? { ...m.equipment.weapon }    : null,
+            armor:     m.equipment?.armor     ? { ...m.equipment.armor }     : null,
+            accessory: m.equipment?.accessory ? { ...m.equipment.accessory } : null,
           },
         })),
       })),
