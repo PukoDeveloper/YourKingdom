@@ -3380,8 +3380,9 @@ export class GameUI {
     for (const [key] of [...this._playerGarrisons]) {
       const sett = this._getSettlementByKey(key);
       if (sett && sett.controllingNationId !== PLAYER_NATION_ID) {
+        const hadUnits = (this._playerGarrisons.get(key) ?? []).length > 0;
         this._playerGarrisons.delete(key);
-        this._addInboxMessage('🛡', `${sett.name} 失守，駐軍已解散！`);
+        if (hadUnits) this._addInboxMessage('🛡', `${sett.name} 失守，駐軍已解散！`);
       }
     }
 
@@ -5566,10 +5567,8 @@ export class GameUI {
       btn.addEventListener('click', () => {
         const unitId = Number(btn.dataset.unitId);
         const ids    = [...(this._playerGarrisons.get(key) ?? [])];
-        if (ids.length < garrisonMax && !ids.includes(unitId)) {
-          ids.push(unitId);
-          this._playerGarrisons.set(key, ids);
-        }
+        ids.push(unitId);
+        this._playerGarrisons.set(key, ids);
         this._openGarrisonPanel(building, settlement);
       });
     });
