@@ -402,6 +402,11 @@ const _BUILDING_COSTS = {
   [BLDG_INN]:         80,
 };
 
+/** Maximum player-controlled garrison units per castle settlement. */
+const PLAYER_CASTLE_GARRISON_MAX = 20;
+/** Maximum player-controlled garrison units per village settlement. */
+const PLAYER_VILLAGE_GARRISON_MAX = 10;
+
 /**
  * GameUI – manages the Backpack and Team DOM panels.
  *
@@ -689,6 +694,15 @@ export class GameUI {
      * @type {Map<string, { autoTax: boolean, autoFestival: boolean, autoInvest: boolean, minSatisfaction: number }>}
      */
     this._cityPlans = new Map();
+
+    /**
+     * Player garrison units per owned settlement.
+     * Key: settlementKey (e.g. "castle:0").
+     * Value: array of unit IDs stationed as garrison.
+     * Only these units count towards the garrison tax penalty for that settlement.
+     * @type {Map<string, number[]>}
+     */
+    this._playerGarrisons = new Map();
 
     /** Active city-hall department tab: 'gov' | 'construction' | 'planning' */
     this._cityHallTab = 'gov';
@@ -3362,6 +3376,15 @@ export class GameUI {
       }
     }
 
+    // Release garrison assignments for any lost settlements.
+    for (const [key] of [...this._playerGarrisons]) {
+      const sett = this._getSettlementByKey(key);
+      if (sett && sett.controllingNationId !== PLAYER_NATION_ID) {
+        this._playerGarrisons.delete(key);
+        this._addInboxMessage('🛡', `${sett.name} 失守，駐軍已解散！`);
+      }
+    }
+
     // City planning automation – run auto-tax / auto-festival / auto-invest
     // for each player settlement that has a plan configured.
     this._processCityPlanAutomation();
@@ -3406,8 +3429,7 @@ export class GameUI {
         const baseTax = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
         const factor  = Math.min(1.0, 0.1 + 0.9 * ((sat + 100) / 100));
         const taxBonusMult = 1.0 + getTaxBonus(ruler);
-        const playerUnits  = this.army.getSquads()
-          .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
+        const playerUnits  = (this._playerGarrisons.get(key) ?? []).length;
         const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
         const taxYield = Math.max(1, Math.round(baseTax * factor * taxBonusMult) - garrisonPenalty);
         // Deposit tax into regional treasury (player picks up at city hall)
@@ -3615,6 +3637,9 @@ export class GameUI {
     }
     for (const arr of this._buildingWorkers.values()) {
       for (const id of arr) { if (!missionLabelMap.has(id)) missionLabelMap.set(id, '🏗 建設工程'); }
+    }
+    for (const arr of this._playerGarrisons.values()) {
+      for (const id of arr) { if (!missionLabelMap.has(id)) missionLabelMap.set(id, '🛡 地區駐軍'); }
     }
 
     const missionCards = missionMembers.map(m => {
@@ -4876,12 +4901,26 @@ export class GameUI {
     const baseTax        = (settlement.economyLevel ?? 1) * 20 + Math.floor(settlement.population / 100);
     const factor         = Math.min(1.0, 0.1 + 0.9 * ((satisfaction + 100) / 100));
     const taxBonusMult   = 1.0 + getTaxBonus(ruler);
-    const playerUnits    = this.army.getSquads()
-      .reduce((sum, sq) => sum + sq.members.filter(m => m.active).length, 0);
+    const playerUnits    = (this._playerGarrisons.get(key) ?? []).length;
     const garrisonPenalty = playerUnits * GARRISON_TAX_PENALTY_PER_UNIT;
     const taxYield        = Math.max(1, Math.round(baseTax * factor * taxBonusMult) - garrisonPenalty);
 
     const traitBadgesHTML = renderTraitBadgesHTML(ruler?.traits ?? [], PERSONALITY_COLORS);
+
+    // Garrison info for the panel
+    const garrisonIds   = this._playerGarrisons.get(key) ?? [];
+    const garrisonMax   = settlement.type === 'castle' ? PLAYER_CASTLE_GARRISON_MAX : PLAYER_VILLAGE_GARRISON_MAX;
+    const garrisonUnits = garrisonIds
+      .map(id => this.army.getSquads().flatMap(sq => sq.members).find(m => m.id === id))
+      .filter(Boolean);
+    const garrisonListHTML = garrisonUnits.length > 0
+      ? garrisonUnits.map(u => `
+          <div class="gov-garrison-row">
+            <span class="gov-garrison-name">${u.name}</span>
+            <span class="gov-garrison-role">${u.role}</span>
+            <button class="btn-buy gov-garrison-remove" data-unit-id="${u.id}" style="font-size:11px;padding:2px 8px">撤回</button>
+          </div>`).join('')
+      : '<div class="gov-garrison-empty">（尚無駐軍）</div>';
 
     // Regional treasury
     const treasury = this._regionalTreasury.get(key) ?? 0;
@@ -4956,6 +4995,15 @@ export class GameUI {
           <span class="gov-stat-val" style="color:${demandColor}">${demandRes}（${demandNote}）</span>
         </div>
         <button class="btn-buy gov-tax-btn" id="btn-collect-tax">🏦 手動徵收稅款（存入金庫）</button>
+      </div>
+      <div class="gov-garrison-section">
+        <div class="gov-garrison-title">🛡 駐軍管理</div>
+        <div class="gov-stat-row-small">
+          <span class="gov-stat-label">駐軍人數</span>
+          <span class="gov-stat-val">${garrisonIds.length} / ${garrisonMax} 人</span>
+        </div>
+        <div class="gov-garrison-list" id="gov-garrison-list">${garrisonListHTML}</div>
+        <button class="btn-buy gov-garrison-btn" id="btn-manage-garrison">⚔ 調整駐軍</button>
       </div>
       <div class="gov-civic-section">
         <div class="gov-civic-title">🏙 市政活動</div>
@@ -5035,6 +5083,21 @@ export class GameUI {
 
     document.getElementById('btn-send-letter')?.addEventListener('click', () => {
       this._renderSendLetter(settlement);
+    });
+
+    // Garrison: remove individual unit
+    document.querySelectorAll('.gov-garrison-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const ids = (this._playerGarrisons.get(key) ?? []).filter(id => id !== unitId);
+        this._playerGarrisons.set(key, ids);
+        this._renderGovTabContent(building, settlement);
+      });
+    });
+
+    // Garrison: open assignment panel
+    document.getElementById('btn-manage-garrison')?.addEventListener('click', () => {
+      this._openGarrisonPanel(building, settlement);
     });
   }
 
@@ -5272,6 +5335,7 @@ export class GameUI {
     for (const arr of this._tradeRouteWorkers.values()) arr.forEach(id => ids.add(id));
     for (const arr of this._buildingWorkers.values()) arr.forEach(id => ids.add(id));
     for (const id of this._messengerUnitIds) ids.add(id);
+    for (const arr of this._playerGarrisons.values()) arr.forEach(id => ids.add(id));
     return ids;
   }
 
@@ -5437,6 +5501,85 @@ export class GameUI {
         const ids    = (currentMap.get(entityKey) ?? []).filter(id => id !== unitId);
         currentMap.set(entityKey, ids);
         this._openAssignWorkerPanel(context, entityKey, maxSlots, building, settlement, onBack);
+      });
+    });
+  }
+
+  /**
+   * Open the garrison assignment panel for a player-owned settlement.
+   * Allows assigning and removing units from the local garrison.
+   *
+   * @param {import('../systems/BuildingSystem.js').Building} building
+   * @param {import('../systems/NationSystem.js').Settlement} settlement
+   */
+  _openGarrisonPanel(building, settlement) {
+    const content = document.getElementById('location-content');
+    if (!content) return;
+
+    const key        = this._settlementKey(settlement);
+    const garrisonMax = settlement.type === 'castle' ? PLAYER_CASTLE_GARRISON_MAX : PLAYER_VILLAGE_GARRISON_MAX;
+    const currentIds  = this._playerGarrisons.get(key) ?? [];
+    const assignedAll = this._getAllAssignedUnitIds();
+
+    // All army members across squads
+    const allUnits = [];
+    for (const squad of this.army.getSquads()) {
+      for (const m of squad.members) allUnits.push(m);
+    }
+
+    const unitRows = allUnits.map(unit => {
+      const isAssignedHere  = currentIds.includes(unit.id);
+      const isAssignedElse  = !isAssignedHere && assignedAll.has(unit.id);
+      const traitBadges     = renderTraitBadgesHTML(unit.traits.slice(0, 3), PERSONALITY_COLORS);
+      const isFull          = currentIds.length >= garrisonMax && !isAssignedHere;
+      const canAssign       = !isAssignedElse && !isFull;
+
+      return `
+        <div class="assign-worker-row${isAssignedHere ? ' assigned-here' : ''}${isAssignedElse ? ' assigned-elsewhere' : ''}">
+          <span class="awr-name">${unit.name}</span>
+          <span class="awr-speed">${unit.role}</span>
+          <span class="awr-traits">${traitBadges}</span>
+          ${isAssignedElse ? '<span class="awr-conflict">已指派他處</span>' : ''}
+          ${isAssignedHere
+            ? `<button class="btn-buy awr-remove" data-unit-id="${unit.id}">撤回</button>`
+            : `<button class="btn-buy awr-assign${!canAssign ? ' disabled' : ''}" data-unit-id="${unit.id}"
+               ${!canAssign ? 'disabled' : ''}>派駐</button>`
+          }
+        </div>`;
+    }).join('');
+
+    content.innerHTML = `
+      <button class="fac-back-btn" id="garrison-back">← 返回</button>
+      <div class="fac-title">🛡 調整駐軍：${settlement.name}</div>
+      <div class="gov-stat-row-small" style="padding:4px 0 10px">
+        <span class="gov-stat-label">駐軍名額</span>
+        <span class="gov-stat-val">${currentIds.length} / ${garrisonMax} 人</span>
+      </div>
+      <div class="assign-worker-list">${unitRows}</div>
+    `;
+
+    const goBack = () => this._renderGovBuilding(building, settlement, 'gov');
+
+    document.getElementById('garrison-back')?.addEventListener('click', goBack);
+
+    content.querySelectorAll('.awr-assign:not(.disabled)').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const ids    = [...(this._playerGarrisons.get(key) ?? [])];
+        if (ids.length < garrisonMax && !ids.includes(unitId)) {
+          ids.push(unitId);
+          this._playerGarrisons.set(key, ids);
+        }
+        this._openGarrisonPanel(building, settlement);
+      });
+    });
+
+    content.querySelectorAll('.awr-remove').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const unitId = Number(btn.dataset.unitId);
+        const ids    = (this._playerGarrisons.get(key) ?? []).filter(id => id !== unitId);
+        this._playerGarrisons.set(key, ids);
+        this._openGarrisonPanel(building, settlement);
       });
     });
   }
@@ -9437,6 +9580,7 @@ export class GameUI {
       buildingWorkers:      [...this._buildingWorkers.entries()],
       regionalTreasury:     Object.fromEntries(this._regionalTreasury),
       cityPlans:            [...this._cityPlans.entries()],
+      playerGarrisons:      [...this._playerGarrisons.entries()],
       mapBuildings:         this._mapBuildings.map(b => ({ ...b })),
       mapBuildingWorkers:   this._mapBuildingWorkers.map(w => ({ ...w })),
       mapBuildingIdSeq:     this._mapBuildingIdSeq,
@@ -9537,6 +9681,11 @@ export class GameUI {
     if (Array.isArray(state.cityPlans)) {
       this._cityPlans = new Map(
         state.cityPlans.filter(([k, v]) => typeof k === 'string' && v && typeof v === 'object'),
+      );
+    }
+    if (Array.isArray(state.playerGarrisons)) {
+      this._playerGarrisons = new Map(
+        state.playerGarrisons.filter(([k, v]) => typeof k === 'string' && Array.isArray(v)),
       );
     }
     if (Array.isArray(state.mapBuildings)) {
