@@ -6986,6 +6986,24 @@ export class GameUI {
   }
 
   /**
+   * Returns true if at least one player-owned settlement is within
+   * `MAP_BLDG_WORKER_REACH` Manhattan tiles of (tx, ty).
+   * @param {number} tx
+   * @param {number} ty
+   * @returns {boolean}
+   */
+  _hasPlayerCityInRange(tx, ty) {
+    if (!this.nationSystem) return false;
+    const inRange = (arr) => arr.some(s => {
+      if (s.controllingNationId !== PLAYER_NATION_ID) return false;
+      const center = this._getSettlementCenter(s);
+      return Math.abs(center.tx - tx) + Math.abs(center.ty - ty) <= MAP_BLDG_WORKER_REACH;
+    });
+    return inRange(this.nationSystem.castleSettlements) ||
+           inRange(this.nationSystem.villageSettlements);
+  }
+
+  /**
    * Update the nearby-buildable-terrain state and show/hide the map-build button.
    * @param {number|null} tx
    * @param {number|null} ty
@@ -7049,11 +7067,19 @@ export class GameUI {
     const bldgTypeCheck = MAP_BLDG_TYPE_FOR_TERRAIN[terrainType];
     const tooClose = bldgTypeCheck != null && this._hasNearbyBuilding(tx, ty, bldgTypeCheck);
 
+    // For resource buildings (lumber camp / mine), also require a player city within reach.
+    const needsCityCheck = terrainType === TERRAIN.FOREST || terrainType === TERRAIN.MOUNTAIN;
+    const noCityInRange  = needsCityCheck && !this._hasPlayerCityInRange(tx, ty);
+
     this._nearbyBuildableTile = { tx, ty, terrainType };
-    btn.textContent = tooClose
-      ? (terrainType === TERRAIN.FOREST ? '🪵 附近已有伐木場' : '⛏️ 附近已有採礦場')
-      : label;
-    btn.disabled = tooClose;
+    if (tooClose) {
+      btn.textContent = terrainType === TERRAIN.FOREST ? '🪵 附近已有伐木場' : '⛏️ 附近已有採礦場';
+    } else if (noCityInRange) {
+      btn.textContent = terrainType === TERRAIN.FOREST ? '🪵 超出城市接收範圍' : '⛏️ 超出城市接收範圍';
+    } else {
+      btn.textContent = label;
+    }
+    btn.disabled = tooClose || noCityInRange;
     btn.classList.add('visible');
     // Ensure the wrap is visible
     if (wrap) wrap.classList.add('visible');
@@ -7100,21 +7126,24 @@ export class GameUI {
     if (!info) return;
 
     const gold = this._getGold();
-    const canAfford = gold >= info.cost;
-    const tooClose  = info.type !== 'bridge' && this._hasNearbyBuilding(tx, ty, info.type);
-    const canBuild  = canAfford && !tooClose;
+    const isResourceBldg = info.type === 'lumberCamp' || info.type === 'mine';
+    const canAfford    = gold >= info.cost;
+    const tooClose     = isResourceBldg && this._hasNearbyBuilding(tx, ty, info.type);
+    const noCityInRange = isResourceBldg && !this._hasPlayerCityInRange(tx, ty);
+    const canBuild     = canAfford && !tooClose && !noCityInRange;
 
     document.getElementById('map-build-title').textContent = `${info.icon} 建造${info.name}`;
     document.getElementById('map-build-body').innerHTML = `
       <div class="mb-desc">${info.desc}</div>
       ${tooClose ? `<div class="mb-warn">⚠️ 三格內已有同類建築，無法建造。</div>` : ''}
+      ${noCityInRange ? `<div class="mb-warn">⚠️ 附近 ${MAP_BLDG_WORKER_REACH} 格內無玩家城市，資源無法送達，無法建造。</div>` : ''}
       <div class="mb-cost">建造費用：🪙${info.cost}　持有：🪙${gold}</div>
       ${info.goldPerWorker > 0
         ? `<div class="mb-income">每次送達：🪙${info.goldPerWorker}</div>`
         : ''}
       <div class="mb-actions">
         <button class="btn-buy mb-confirm-btn" id="btn-map-build-confirm" ${canBuild ? '' : 'disabled'}>
-          ${tooClose ? '🚫 距離太近' : canAfford ? `✅ 建造（🪙${info.cost}）` : '💸 金幣不足'}
+          ${tooClose ? '🚫 距離太近' : noCityInRange ? '🚫 超出城市接收範圍' : canAfford ? `✅ 建造（🪙${info.cost}）` : '💸 金幣不足'}
         </button>
         <button class="mb-cancel-btn" id="btn-map-build-cancel">取消</button>
       </div>
@@ -7131,6 +7160,12 @@ export class GameUI {
       confirmBtn.replaceWith(newConfirm);
       newConfirm.addEventListener('click', () => {
         if (this._getGold() < info.cost) { this._toast('💸 金幣不足！'); return; }
+        if (info.type !== 'bridge' && this._hasNearbyBuilding(tx, ty, info.type)) {
+          this._toast('⚠️ 三格內已有同類建築，無法建造！'); return;
+        }
+        if ((info.type === 'lumberCamp' || info.type === 'mine') && !this._hasPlayerCityInRange(tx, ty)) {
+          this._toast(`⚠️ 附近 ${MAP_BLDG_WORKER_REACH} 格內無玩家城市，無法建造！`); return;
+        }
         this._spendGold(info.cost);
         const id = ++this._mapBuildingIdSeq;
         this._mapBuildings.push({ id, type: info.type, tx, ty, phaseTick: 0 });
