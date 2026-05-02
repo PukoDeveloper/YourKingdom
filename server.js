@@ -90,7 +90,7 @@ setInterval(() => {
 
 function broadcast(payload) {
   for (const { ws } of players.values()) {
-    if (ws.readyState === ws.OPEN) {
+    if (ws.readyState === WebSocket.OPEN) {
       ws.send(payload);
     }
   }
