@@ -357,6 +357,14 @@ export class DiplomacySystem {
     this._surrenderIndex = new Map();
 
     /**
+     * Optional callback that returns the player's current combined power score.
+     * Set via setPlayerPowerFn() after the GameUI is initialised.
+     * Used by updateSurrenderIndex to factor in the player's relative strength.
+     * @type {(() => number)|null}
+     */
+    this._playerPowerFn = null;
+
+    /**
      * NPC gold treasury per nation.
      * Key: nationId; Value: gold amount.
      * @type {Map<number, number>}
@@ -514,6 +522,16 @@ export class DiplomacySystem {
    */
   setPathfinderWorker(worker) {
     this._pathfinderWorker = worker;
+  }
+
+  /**
+   * Register a callback that returns the player's current combined power score.
+   * GameUI calls this once during initialisation so that updateSurrenderIndex
+   * can compare the NPC's remaining strength against the player's real power.
+   * @param {() => number} fn
+   */
+  setPlayerPowerFn(fn) {
+    this._playerPowerFn = fn;
   }
 
   /**
@@ -3209,11 +3227,14 @@ export class DiplomacySystem {
    * The index (0 – 100) reflects how close the nation is to considering surrender.
    * A higher value indicates greater pressure to capitulate.
    *
-   * Factors (not yet used for AI decisions):
-   *   - Enemy combined strength  : sum of settlements held by all hostile nations (relation ≤ -60)
-   *   - Occupied home territory  : proportion of own settlements already lost
-   *   - Ruler trait              : warlike / arrogant rulers resist; gentle / cautious rulers yield more easily
-   *   - Ally support             : each allied nation (relation ≥ 60) reduces the index
+   * Factors:
+   *   - Occupied territory   : proportion of own settlements lost × 30
+   *   - Last-stand bonus     : +20 flat when only 1 settlement remains controlled
+   *   - Military weakness    : 0–20, scales with how few healthy garrison soldiers remain
+   *   - Economy weakness     : 0–15, scales with low avg economy of remaining settlements
+   *   - Power disparity      : 0–20, ratio of player power vs NPC garrison strength
+   *   - Ruler trait          : warlike / arrogant resist; gentle / cautious yield
+   *   - Ally support         : each allied nation (relation ≥ 60) reduces the index
    *
    * @param {number} nationId  Nation to evaluate (must be a valid NPC nation id).
    */
@@ -3223,27 +3244,62 @@ export class DiplomacySystem {
 
     const allSettlements = [...castleSettlements, ...villageSettlements];
 
-    // ── Occupied territory pressure (0 – 40) ──────────────────────────────
-    const ownTotal = allSettlements.filter(s => s.nationId === nationId).length;
-    const ownLost  = allSettlements.filter(
-      s => s.nationId === nationId && s.controllingNationId !== nationId,
-    ).length;
-    const occupationRatio   = ownTotal > 0 ? ownLost / ownTotal : 0;
-    const occupationPressure = Math.round(occupationRatio * 40);
+    // ── Occupied territory pressure (0 – 30) ──────────────────────────────
+    const ownAll      = allSettlements.filter(s => s.nationId === nationId);
+    const ownTotal    = ownAll.length;
+    const ownControlled = ownAll.filter(s => s.controllingNationId === nationId);
+    const ownLost     = ownTotal - ownControlled.length;
+    const occupationRatio    = ownTotal > 0 ? ownLost / ownTotal : 0;
+    const occupationPressure = Math.round(occupationRatio * 30);
 
-    // ── Enemy combined strength (0 – 30) ──────────────────────────────────
-    let enemySettlements = 0;
-    nations.forEach((_, eid) => {
-      if (eid === nationId) return;
-      const rel = this.getRelation(nationId, eid);
-      if (rel <= -60) {
-        enemySettlements += allSettlements.filter(s => s.controllingNationId === eid).length;
+    // ── Last-stand bonus (+20 when only 1 settlement remains controlled) ──
+    const lastStandBonus = ownControlled.length <= 1 ? 20 : 0;
+
+    // ── Military weakness (0 – 20) ────────────────────────────────────────
+    // Count healthy garrison soldiers across all still-controlled settlements.
+    const castleSet = new Set(castleSettlements);
+    let healthySoldiers = 0;
+    ownControlled.forEach(s => {
+      const isCastle = castleSet.has(s);
+      const sArr  = isCastle ? castleSettlements : villageSettlements;
+      const sIdx  = sArr.indexOf(s);
+      const key   = `${isCastle ? 'castle' : 'village'}:${sIdx}`;
+      const armies = this._npcArmies.get(key);
+      if (armies) {
+        healthySoldiers += armies.reduce(
+          (sum, sq) => sum + sq.filter(u => (u.stats?.hp ?? 1) > 0).length,
+          0,
+        );
       }
     });
-    const maxExpectedEnemySettlements = Math.max(1, allSettlements.length / 2);
-    const enemyPressure = Math.round(
-      Math.min(enemySettlements / maxExpectedEnemySettlements, 1.0) * 30,
-    );
+    // Reference: NPC_SQUAD_MAX_MEMBERS × NPC_CASTLE_MAX_ARMIES = full garrison.
+    const fullGarrison = NPC_SQUAD_MAX_MEMBERS * NPC_CASTLE_MAX_ARMIES;
+    const militaryWeakness = Math.round(Math.max(0, 1 - healthySoldiers / fullGarrison) * 20);
+
+    // ── Economy weakness (0 – 15) ─────────────────────────────────────────
+    const avgEco = ownControlled.length > 0
+      ? ownControlled.reduce((sum, s) => sum + (s.economyLevel ?? 1), 0) / ownControlled.length
+      : 0;
+    const economyWeakness = Math.round(Math.max(0, (5 - avgEco) / 5) * 15);
+
+    // ── Power disparity vs player (0 – 20) ────────────────────────────────
+    // Compares the player's overall power score against this NPC's garrison strength.
+    let powerDisparityScore = 0;
+    if (this.isAtWar(nationId, _PLAYER_NATION_ID)) {
+      const playerPower = this._playerPowerFn?.() ?? 0;
+      // NPC garrison strength = sum of all controlled settlement garrison strengths.
+      let npcGarrisonStr = 0;
+      ownControlled.forEach(s => {
+        const isCastle = castleSet.has(s);
+        const sArr  = isCastle ? castleSettlements : villageSettlements;
+        const sIdx  = sArr.indexOf(s);
+        npcGarrisonStr += this._settlementGarrisonStrength(isCastle ? 'castle' : 'village', sIdx);
+      });
+      if (playerPower > 0 || npcGarrisonStr > 0) {
+        const ratio = playerPower / (playerPower + npcGarrisonStr + 1);
+        powerDisparityScore = Math.round(ratio * 20);
+      }
+    }
 
     // ── Ruler trait modifier (-10 … +15) ──────────────────────────────────
     const p = this._rulerPersonality(castleSettlements[nationId]);
@@ -3262,7 +3318,8 @@ export class DiplomacySystem {
     });
     const allyReduction = Math.min(allyCount * 5, 20);
 
-    const raw = occupationPressure + enemyPressure + traitMod - allyReduction;
+    const raw = occupationPressure + lastStandBonus + militaryWeakness
+              + economyWeakness + powerDisparityScore + traitMod - allyReduction;
     this._surrenderIndex.set(nationId, Math.max(0, Math.min(100, raw)));
   }
 
