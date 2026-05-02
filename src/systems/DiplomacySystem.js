@@ -357,6 +357,14 @@ export class DiplomacySystem {
     this._surrenderIndex = new Map();
 
     /**
+     * Optional callback that returns the player's current combined power score.
+     * Set via setPlayerPowerFn() after the GameUI is initialised.
+     * Used by updateSurrenderIndex to factor in the player's relative strength.
+     * @type {(() => number)|null}
+     */
+    this._playerPowerFn = null;
+
+    /**
      * NPC gold treasury per nation.
      * Key: nationId; Value: gold amount.
      * @type {Map<number, number>}
@@ -514,6 +522,16 @@ export class DiplomacySystem {
    */
   setPathfinderWorker(worker) {
     this._pathfinderWorker = worker;
+  }
+
+  /**
+   * Register a callback that returns the player's current combined power score.
+   * GameUI calls this once during initialisation so that updateSurrenderIndex
+   * can compare the NPC's remaining strength against the player's real power.
+   * @param {() => number} fn
+   */
+  setPlayerPowerFn(fn) {
+    this._playerPowerFn = fn;
   }
 
   /**
@@ -1406,7 +1424,9 @@ export class DiplomacySystem {
       const atkArmies = this._npcArmies.get(atkKey) ?? [];
       const squad1    = atkArmies[0] ?? [];
       const squad2    = atkArmies[1] ?? [];
-      if (squad1.length === 0 && squad2.length === 0) return; // no troops to dispatch
+      const healthyInSquad1 = squad1.filter(u => (u.stats?.hp ?? 1) > 0).length;
+      const healthyInSquad2 = squad2.filter(u => (u.stats?.hp ?? 1) > 0).length;
+      if (healthyInSquad1 === 0 && healthyInSquad2 === 0) return; // no healthy troops to dispatch
 
       // ── Determine attack target ──────────────────────────────────────────────
       // Use worker-computed target when available; fall back to inline evaluation.
@@ -1475,15 +1495,15 @@ export class DiplomacySystem {
       const s1Str    = this._squadStrength(squad1);
       const s2Str    = this._squadStrength(squad2);
       const defStr   = bestTarget.defStr;
-      // If squad1 is empty fall back to 0 win rate so we always commit squad2 when available.
+      // If squad1 is empty or all wounded fall back to 0 win rate so we always commit squad2 when available.
       // The `+ 1` in the denominator is a baseline defender advantage that prevents
       // division-by-zero and ensures even zero-strength defenders win occasionally.
-      const winRate1 = squad1.length > 0 && s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
+      const winRate1 = healthyInSquad1 > 0 && s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
       const totalStr = s1Str + s2Str;
       const winRate2 = totalStr > 0 ? totalStr / (totalStr + defStr + 1) : 0;
 
       // Commit both squads when a single squad would win less than 55% of the time.
-      const sendBoth = winRate1 < NPC_SINGLE_SQUAD_WIN_THRESHOLD && squad2.length > 0;
+      const sendBoth = winRate1 < NPC_SINGLE_SQUAD_WIN_THRESHOLD && healthyInSquad2 > 0;
       const winRate  = sendBoth ? winRate2 : winRate1;
       const victory  = Math.random() < winRate;
 
@@ -2132,12 +2152,14 @@ export class DiplomacySystem {
   /**
    * Compute the total combat strength of a single garrison squad.
    * Sums attack + defense + a morale bonus for each unit.
-   * @param {Array<{stats:{attack:number,defense:number,morale:number}}>} squad
+   * Wounded units (hp ≤ 0) are skipped and contribute nothing.
+   * @param {Array<{stats:{attack:number,defense:number,morale:number,hp:number}}>} squad
    * @returns {number}
    */
   _squadStrength(squad) {
     if (!squad || squad.length === 0) return 0;
     return squad.reduce((sum, u) => {
+      if ((u.stats?.hp ?? 1) <= 0) return sum; // wounded – contributes nothing
       const atk    = u.stats?.attack  ?? 5;
       const def    = u.stats?.defense ?? 5;
       const morale = u.stats?.morale  ?? 50;
@@ -2194,7 +2216,7 @@ export class DiplomacySystem {
       const sIdx  = sArr.indexOf(s);
       const key     = `${sType}:${sIdx}`;
       const armies  = this._npcArmies.get(key);
-      if (armies) armySize += armies.reduce((sum, sq) => sum + sq.length, 0);
+      if (armies) armySize += armies.reduce((sum, sq) => sum + sq.filter(u => (u.stats?.hp ?? 1) > 0).length, 0);
     });
     const armyWeakness = Math.max(0, (1 - armySize / 20) * 30);
 
@@ -2220,18 +2242,44 @@ export class DiplomacySystem {
   }
 
   /**
-   * Reduce a settlement's garrison by removing wounded/killed units after a battle.
+   * Reduce a settlement's garrison by wounding units after a battle.
+   * Wounded units (hp set to 0) remain in the squad and recover over time but
+   * contribute nothing to combat strength until healed.
    * @param {string} settlementKey
-   * @param {number} losses  Number of units to remove.
+   * @param {number} losses  Number of healthy units to wound.
    */
   applyGarrisonLosses(settlementKey, losses) {
     const armies = this._npcArmies.get(settlementKey);
     if (!armies || losses <= 0) return;
     let remaining = losses;
     for (let sq = armies.length - 1; sq >= 0 && remaining > 0; sq--) {
-      const remove = Math.min(remaining, armies[sq].length);
-      armies[sq].splice(armies[sq].length - remove, remove);
-      remaining -= remove;
+      for (let u = armies[sq].length - 1; u >= 0 && remaining > 0; u--) {
+        const unit = armies[sq][u];
+        if ((unit.stats?.hp ?? 0) > 0) {
+          unit.stats.hp = 0;
+          remaining--;
+        }
+      }
+    }
+  }
+
+  /**
+   * Daily HP recovery for all NPC garrison units.
+   * Each wounded unit recovers 10 % of its maxHp per day (minimum 1),
+   * mirroring the player army recovery formula in GameUI._dailyHpRecovery.
+   * Called once per in-game day from onDayPassed().
+   */
+  _npcGarrisonDailyRecovery() {
+    for (const squads of this._npcArmies.values()) {
+      for (const squad of squads) {
+        for (const unit of squad) {
+          if ((unit.stats?.hp ?? 0) < (unit.stats?.maxHp ?? 0)) {
+            const maxHp   = unit.stats.maxHp;
+            const recovery = Math.max(1, Math.floor(maxHp * 0.1));
+            unit.stats.hp = Math.min(maxHp, unit.stats.hp + recovery);
+          }
+        }
+      }
     }
   }
 
@@ -3179,11 +3227,14 @@ export class DiplomacySystem {
    * The index (0 – 100) reflects how close the nation is to considering surrender.
    * A higher value indicates greater pressure to capitulate.
    *
-   * Factors (not yet used for AI decisions):
-   *   - Enemy combined strength  : sum of settlements held by all hostile nations (relation ≤ -60)
-   *   - Occupied home territory  : proportion of own settlements already lost
-   *   - Ruler trait              : warlike / arrogant rulers resist; gentle / cautious rulers yield more easily
-   *   - Ally support             : each allied nation (relation ≥ 60) reduces the index
+   * Factors:
+   *   - Occupied territory   : proportion of own settlements lost × 30
+   *   - Last-stand bonus     : +20 flat when only 1 settlement remains controlled
+   *   - Military weakness    : 0–20, scales with how few healthy garrison soldiers remain
+   *   - Economy weakness     : 0–15, scales with low avg economy of remaining settlements
+   *   - Power disparity      : 0–20, ratio of player power vs NPC garrison strength
+   *   - Ruler trait          : warlike / arrogant resist; gentle / cautious yield
+   *   - Ally support         : each allied nation (relation ≥ 60) reduces the index
    *
    * @param {number} nationId  Nation to evaluate (must be a valid NPC nation id).
    */
@@ -3193,27 +3244,62 @@ export class DiplomacySystem {
 
     const allSettlements = [...castleSettlements, ...villageSettlements];
 
-    // ── Occupied territory pressure (0 – 40) ──────────────────────────────
-    const ownTotal = allSettlements.filter(s => s.nationId === nationId).length;
-    const ownLost  = allSettlements.filter(
-      s => s.nationId === nationId && s.controllingNationId !== nationId,
-    ).length;
-    const occupationRatio   = ownTotal > 0 ? ownLost / ownTotal : 0;
-    const occupationPressure = Math.round(occupationRatio * 40);
+    // ── Occupied territory pressure (0 – 30) ──────────────────────────────
+    const ownAll      = allSettlements.filter(s => s.nationId === nationId);
+    const ownTotal    = ownAll.length;
+    const ownControlled = ownAll.filter(s => s.controllingNationId === nationId);
+    const ownLost     = ownTotal - ownControlled.length;
+    const occupationRatio    = ownTotal > 0 ? ownLost / ownTotal : 0;
+    const occupationPressure = Math.round(occupationRatio * 30);
 
-    // ── Enemy combined strength (0 – 30) ──────────────────────────────────
-    let enemySettlements = 0;
-    nations.forEach((_, eid) => {
-      if (eid === nationId) return;
-      const rel = this.getRelation(nationId, eid);
-      if (rel <= -60) {
-        enemySettlements += allSettlements.filter(s => s.controllingNationId === eid).length;
+    // ── Last-stand bonus (+20 when only 1 settlement remains controlled) ──
+    const lastStandBonus = ownControlled.length <= 1 ? 20 : 0;
+
+    // ── Military weakness (0 – 20) ────────────────────────────────────────
+    // Count healthy garrison soldiers across all still-controlled settlements.
+    const castleSet = new Set(castleSettlements);
+    let healthySoldiers = 0;
+    ownControlled.forEach(s => {
+      const isCastle = castleSet.has(s);
+      const sArr  = isCastle ? castleSettlements : villageSettlements;
+      const sIdx  = sArr.indexOf(s);
+      const key   = `${isCastle ? 'castle' : 'village'}:${sIdx}`;
+      const armies = this._npcArmies.get(key);
+      if (armies) {
+        healthySoldiers += armies.reduce(
+          (sum, sq) => sum + sq.filter(u => (u.stats?.hp ?? 1) > 0).length,
+          0,
+        );
       }
     });
-    const maxExpectedEnemySettlements = Math.max(1, allSettlements.length / 2);
-    const enemyPressure = Math.round(
-      Math.min(enemySettlements / maxExpectedEnemySettlements, 1.0) * 30,
-    );
+    // Reference: NPC_SQUAD_MAX_MEMBERS × NPC_CASTLE_MAX_ARMIES = full garrison.
+    const fullGarrison = NPC_SQUAD_MAX_MEMBERS * NPC_CASTLE_MAX_ARMIES;
+    const militaryWeakness = Math.round(Math.max(0, 1 - healthySoldiers / fullGarrison) * 20);
+
+    // ── Economy weakness (0 – 15) ─────────────────────────────────────────
+    const avgEco = ownControlled.length > 0
+      ? ownControlled.reduce((sum, s) => sum + (s.economyLevel ?? 1), 0) / ownControlled.length
+      : 0;
+    const economyWeakness = Math.round(Math.max(0, (5 - avgEco) / 5) * 15);
+
+    // ── Power disparity vs player (0 – 20) ────────────────────────────────
+    // Compares the player's overall power score against this NPC's garrison strength.
+    let powerDisparityScore = 0;
+    if (this.isAtWar(nationId, _PLAYER_NATION_ID)) {
+      const playerPower = this._playerPowerFn?.() ?? 0;
+      // NPC garrison strength = sum of all controlled settlement garrison strengths.
+      let npcGarrisonStr = 0;
+      ownControlled.forEach(s => {
+        const isCastle = castleSet.has(s);
+        const sArr  = isCastle ? castleSettlements : villageSettlements;
+        const sIdx  = sArr.indexOf(s);
+        npcGarrisonStr += this._settlementGarrisonStrength(isCastle ? 'castle' : 'village', sIdx);
+      });
+      if (playerPower > 0 || npcGarrisonStr > 0) {
+        const ratio = playerPower / (playerPower + npcGarrisonStr + 1);
+        powerDisparityScore = Math.round(ratio * 20);
+      }
+    }
 
     // ── Ruler trait modifier (-10 … +15) ──────────────────────────────────
     const p = this._rulerPersonality(castleSettlements[nationId]);
@@ -3232,7 +3318,8 @@ export class DiplomacySystem {
     });
     const allyReduction = Math.min(allyCount * 5, 20);
 
-    const raw = occupationPressure + enemyPressure + traitMod - allyReduction;
+    const raw = occupationPressure + lastStandBonus + militaryWeakness
+              + economyWeakness + powerDisparityScore + traitMod - allyReduction;
     this._surrenderIndex.set(nationId, Math.max(0, Math.min(100, raw)));
   }
 
@@ -3297,6 +3384,8 @@ export class DiplomacySystem {
         this._npcConquestStreaks.set(nId, streak - 1);
       }
     }
+    // Heal wounded NPC garrison units (same 10%/day formula as player units).
+    this._npcGarrisonDailyRecovery();
     // Re-compute surrender indices and schedule a fresh worker pass for next cycle.
     this._scheduleWorkerUpdate();
     return this._processNpcDailyEvents();

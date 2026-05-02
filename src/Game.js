@@ -244,6 +244,10 @@ export class Game {
       this._pathfinderWorker,
     );
 
+    // Wire the player power callback so DiplomacySystem can factor the player's
+    // combined strength into NPC surrender pressure calculations.
+    this._diplomacySystem.setPlayerPowerFn(() => this._gameUI._getPlayerStrength());
+
     // Rebuild structures now that GameUI is ready (restores player flags from save).
     if (savedState) {
       this._structureRenderer.rebuild();
