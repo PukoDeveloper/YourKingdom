@@ -1406,7 +1406,9 @@ export class DiplomacySystem {
       const atkArmies = this._npcArmies.get(atkKey) ?? [];
       const squad1    = atkArmies[0] ?? [];
       const squad2    = atkArmies[1] ?? [];
-      if (squad1.length === 0 && squad2.length === 0) return; // no troops to dispatch
+      const healthyInSquad1 = squad1.filter(u => (u.stats?.hp ?? 1) > 0).length;
+      const healthyInSquad2 = squad2.filter(u => (u.stats?.hp ?? 1) > 0).length;
+      if (healthyInSquad1 === 0 && healthyInSquad2 === 0) return; // no healthy troops to dispatch
 
       // ── Determine attack target ──────────────────────────────────────────────
       // Use worker-computed target when available; fall back to inline evaluation.
@@ -1475,15 +1477,15 @@ export class DiplomacySystem {
       const s1Str    = this._squadStrength(squad1);
       const s2Str    = this._squadStrength(squad2);
       const defStr   = bestTarget.defStr;
-      // If squad1 is empty fall back to 0 win rate so we always commit squad2 when available.
+      // If squad1 is empty or all wounded fall back to 0 win rate so we always commit squad2 when available.
       // The `+ 1` in the denominator is a baseline defender advantage that prevents
       // division-by-zero and ensures even zero-strength defenders win occasionally.
-      const winRate1 = squad1.length > 0 && s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
+      const winRate1 = healthyInSquad1 > 0 && s1Str > 0 ? s1Str / (s1Str + defStr + 1) : 0;
       const totalStr = s1Str + s2Str;
       const winRate2 = totalStr > 0 ? totalStr / (totalStr + defStr + 1) : 0;
 
       // Commit both squads when a single squad would win less than 55% of the time.
-      const sendBoth = winRate1 < NPC_SINGLE_SQUAD_WIN_THRESHOLD && squad2.length > 0;
+      const sendBoth = winRate1 < NPC_SINGLE_SQUAD_WIN_THRESHOLD && healthyInSquad2 > 0;
       const winRate  = sendBoth ? winRate2 : winRate1;
       const victory  = Math.random() < winRate;
 
@@ -2132,12 +2134,14 @@ export class DiplomacySystem {
   /**
    * Compute the total combat strength of a single garrison squad.
    * Sums attack + defense + a morale bonus for each unit.
-   * @param {Array<{stats:{attack:number,defense:number,morale:number}}>} squad
+   * Wounded units (hp ≤ 0) are skipped and contribute nothing.
+   * @param {Array<{stats:{attack:number,defense:number,morale:number,hp:number}}>} squad
    * @returns {number}
    */
   _squadStrength(squad) {
     if (!squad || squad.length === 0) return 0;
     return squad.reduce((sum, u) => {
+      if ((u.stats?.hp ?? 1) <= 0) return sum; // wounded – contributes nothing
       const atk    = u.stats?.attack  ?? 5;
       const def    = u.stats?.defense ?? 5;
       const morale = u.stats?.morale  ?? 50;
@@ -2194,7 +2198,7 @@ export class DiplomacySystem {
       const sIdx  = sArr.indexOf(s);
       const key     = `${sType}:${sIdx}`;
       const armies  = this._npcArmies.get(key);
-      if (armies) armySize += armies.reduce((sum, sq) => sum + sq.length, 0);
+      if (armies) armySize += armies.reduce((sum, sq) => sum + sq.filter(u => (u.stats?.hp ?? 1) > 0).length, 0);
     });
     const armyWeakness = Math.max(0, (1 - armySize / 20) * 30);
 
@@ -2220,18 +2224,44 @@ export class DiplomacySystem {
   }
 
   /**
-   * Reduce a settlement's garrison by removing wounded/killed units after a battle.
+   * Reduce a settlement's garrison by wounding units after a battle.
+   * Wounded units (hp set to 0) remain in the squad and recover over time but
+   * contribute nothing to combat strength until healed.
    * @param {string} settlementKey
-   * @param {number} losses  Number of units to remove.
+   * @param {number} losses  Number of healthy units to wound.
    */
   applyGarrisonLosses(settlementKey, losses) {
     const armies = this._npcArmies.get(settlementKey);
     if (!armies || losses <= 0) return;
     let remaining = losses;
     for (let sq = armies.length - 1; sq >= 0 && remaining > 0; sq--) {
-      const remove = Math.min(remaining, armies[sq].length);
-      armies[sq].splice(armies[sq].length - remove, remove);
-      remaining -= remove;
+      for (let u = armies[sq].length - 1; u >= 0 && remaining > 0; u--) {
+        const unit = armies[sq][u];
+        if ((unit.stats?.hp ?? 0) > 0) {
+          unit.stats.hp = 0;
+          remaining--;
+        }
+      }
+    }
+  }
+
+  /**
+   * Daily HP recovery for all NPC garrison units.
+   * Each wounded unit recovers 10 % of its maxHp per day (minimum 1),
+   * mirroring the player army recovery formula in GameUI._dailyHpRecovery.
+   * Called once per in-game day from onDayPassed().
+   */
+  _npcGarrisonDailyRecovery() {
+    for (const squads of this._npcArmies.values()) {
+      for (const squad of squads) {
+        for (const unit of squad) {
+          if ((unit.stats?.hp ?? 0) < (unit.stats?.maxHp ?? 0)) {
+            const maxHp   = unit.stats.maxHp;
+            const recovery = Math.max(1, Math.floor(maxHp * 0.1));
+            unit.stats.hp = Math.min(maxHp, unit.stats.hp + recovery);
+          }
+        }
+      }
     }
   }
 
@@ -3297,6 +3327,8 @@ export class DiplomacySystem {
         this._npcConquestStreaks.set(nId, streak - 1);
       }
     }
+    // Heal wounded NPC garrison units (same 10%/day formula as player units).
+    this._npcGarrisonDailyRecovery();
     // Re-compute surrender indices and schedule a fresh worker pass for next cycle.
     this._scheduleWorkerUpdate();
     return this._processNpcDailyEvents();

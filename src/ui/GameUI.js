@@ -9863,6 +9863,12 @@ export class GameUI {
     this._capturedSettlements.add(key);
     this._playerSettlementCount = this._capturedSettlements.size;
 
+    // Clear the NPC garrison – former defenders are dispersed on capture.
+    if (this.diplomacySystem) {
+      const armies = this.diplomacySystem.getNpcArmies(key);
+      armies.forEach(sq => { sq.length = 0; });
+    }
+
     // Initialise satisfaction at -50 for newly-conquered settlements.
     this._satisfactionMap.set(key, -50);
 
