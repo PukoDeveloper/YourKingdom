@@ -144,7 +144,124 @@
         min-height: 1.4em;
       }
 
+      /* Title screen */
+      #title-screen {
+        position: fixed;
+        inset: 0;
+        background: radial-gradient(ellipse at center, #1a2e44 0%, #0d1b2a 100%);
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        transition: opacity 0.5s ease;
+        gap: 0;
+      }
+      #title-screen.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+      .title-crown {
+        font-size: 56px;
+        margin-bottom: 8px;
+        filter: drop-shadow(0 0 18px #e2c97e88);
+      }
+      .title-main {
+        color: #e2c97e;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 36px;
+        font-weight: bold;
+        letter-spacing: 6px;
+        text-shadow: 0 0 24px #e2c97e66;
+        margin-bottom: 6px;
+      }
+      .title-sub {
+        color: #90a4ae;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 13px;
+        letter-spacing: 3px;
+        margin-bottom: 52px;
+      }
+      .title-btn {
+        width: 240px;
+        padding: 14px 0;
+        margin: 8px 0;
+        border: none;
+        border-radius: 8px;
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK TC', sans-serif;
+        font-size: 16px;
+        letter-spacing: 2px;
+        cursor: pointer;
+        transition: transform 0.12s, box-shadow 0.12s;
+      }
+      .title-btn:active {
+        transform: scale(0.97);
+      }
+      .title-btn-primary {
+        background: linear-gradient(135deg, #e2c97e, #c9a84c);
+        color: #1a1a1a;
+        box-shadow: 0 4px 18px #e2c97e44;
+      }
+      .title-btn-primary:hover {
+        box-shadow: 0 6px 24px #e2c97e66;
+      }
+      .title-btn-secondary {
+        background: rgba(255,255,255,0.08);
+        color: #b3e5fc;
+        border: 1px solid rgba(179,229,252,0.3);
+      }
+      .title-btn-secondary:hover {
+        background: rgba(255,255,255,0.14);
+      }
+      #title-ip-wrap {
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      #title-ip-input {
+        width: 240px;
+        padding: 10px 14px;
+        border-radius: 6px;
+        border: 1px solid rgba(100,181,246,0.4);
+        background: rgba(255,255,255,0.06);
+        color: #e0e0e0;
+        font-family: 'PingFang SC', 'Microsoft YaHei', monospace, sans-serif;
+        font-size: 14px;
+        outline: none;
+        text-align: center;
+      }
+      #title-ip-input:focus {
+        border-color: rgba(100,181,246,0.8);
+        background: rgba(255,255,255,0.10);
+      }
+      #title-ip-input::placeholder {
+        color: rgba(255,255,255,0.3);
+      }
+      .title-btn-connect {
+        width: 240px;
+        padding: 10px 0;
+        border: none;
+        border-radius: 6px;
+        background: linear-gradient(135deg, #4fc3f7, #0288d1);
+        color: #fff;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 14px;
+        letter-spacing: 2px;
+        cursor: pointer;
+        transition: transform 0.12s;
+      }
+      .title-btn-connect:active { transform: scale(0.97); }
+      #title-ip-error {
+        color: #ef9a9a;
+        font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        font-size: 12px;
+        min-height: 1.2em;
+      }
+
       /* Mobile control hint */
+
       #hint {
         position: fixed;
         bottom: 14px;
@@ -4999,6 +5116,20 @@
     </style>
   </head>
   <body>
+    <!-- Title screen (shown first; hidden once the player selects a mode) -->
+    <div id="title-screen" class="hidden">
+      <div class="title-crown">👑</div>
+      <div class="title-main">你的王國</div>
+      <div class="title-sub">YOUR KINGDOM</div>
+      <button class="title-btn title-btn-primary" id="title-btn-single">⚔ 開始單人遊戲</button>
+      <button class="title-btn title-btn-secondary" id="title-btn-multi">🌐 多人模式</button>
+      <div id="title-ip-wrap">
+        <input id="title-ip-input" type="text" placeholder="伺服器位址，例如 192.168.1.1" autocomplete="off" />
+        <button class="title-btn-connect" id="title-btn-connect">連線</button>
+        <div id="title-ip-error"></div>
+      </div>
+    </div>
+
     <div id="loading">
       <div class="loading-title">你的王國</div>
       <div class="loading-subtitle">YOUR KINGDOM</div>

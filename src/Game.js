@@ -1,4 +1,5 @@
 import { Application, Container, Graphics } from 'pixi.js';
+import { RemotePlayerEntity } from './entities/RemotePlayerEntity.js';
 import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
@@ -31,6 +32,16 @@ const AUTO_SAVE_INTERVAL_MS = 60_000;
 const ADJACENT_OFFSETS = [[0, -1], [0, 1], [-1, 0], [1, 0]];
 
 export class Game {
+  /**
+   * @param {import('./systems/MultiplayerClient.js').MultiplayerClient|null} [multiplayerClient]
+   */
+  constructor(multiplayerClient = null) {
+    /** @type {import('./systems/MultiplayerClient.js').MultiplayerClient|null} */
+    this._mp = multiplayerClient;
+    /** Remote player entities keyed by server id. @type {Map<string, RemotePlayerEntity>} */
+    this._remotePlayers = new Map();
+  }
+
   async init() {
     // -----------------------------------------------------------------------
     // Pixi application
@@ -321,6 +332,15 @@ export class Game {
     // -----------------------------------------------------------------------
     this.app.ticker.add((ticker) => this._update(ticker.deltaMS / 1000));
 
+    // -----------------------------------------------------------------------
+    // Multiplayer wiring
+    // -----------------------------------------------------------------------
+    if (this._mp) {
+      this._mp.onStateUpdate = (players) => this._onRemoteStateUpdate(players);
+      this._mp.onPlayerLeft  = (id)      => this._removeRemotePlayer(id);
+      this._mp.onDisconnect  = ()        => this._gameUI?.showToast('與伺服器斷線 ✗');
+    }
+
     // Hide loading screen
     this._reportLoading(100);
     this._setLoadingStatus('進入王國...');
@@ -343,6 +363,12 @@ export class Game {
   _update(dt) {
     const dir = this._input.getDirection();
     this._player.update(dt, dir.x, dir.y, this._mapData, this._builtRoadTileSet, this._builtBridgeTileSet);
+
+    // Multiplayer: broadcast local player position and advance remote entities.
+    if (this._mp) {
+      this._mp.sendMove(this._player.x, this._player.y, this._player.container.rotation);
+      this._remotePlayers.forEach(rp => rp.update(dt));
+    }
 
     this._camera.follow(this._player.x, this._player.y);
     this._camera.update(dt);
@@ -607,6 +633,51 @@ export class Game {
 
     SaveManager.clear();
     window.location.reload();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multiplayer helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Handle a full state update from the server: create/update/remove remote
+   * player entities as needed.
+   * @param {Record<string, {x:number, y:number, angle:number}>} players
+   */
+  _onRemoteStateUpdate(players) {
+    const localId = this._mp?.id;
+
+    // Update or create entities for players in the snapshot.
+    for (const [id, state] of Object.entries(players)) {
+      if (id === localId) continue; // skip ourselves
+
+      let rp = this._remotePlayers.get(id);
+      if (!rp) {
+        rp = new RemotePlayerEntity(id, state.x, state.y);
+        this._world.addChild(rp.container);
+        this._remotePlayers.set(id, rp);
+      }
+      rp.setTarget(state.x, state.y, state.angle);
+    }
+
+    // Remove entities that are no longer in the snapshot.
+    for (const id of this._remotePlayers.keys()) {
+      if (!(id in players) || id === localId) {
+        this._removeRemotePlayer(id);
+      }
+    }
+  }
+
+  /**
+   * Remove a single remote player entity from the scene.
+   * @param {string} id
+   */
+  _removeRemotePlayer(id) {
+    const rp = this._remotePlayers.get(id);
+    if (rp) {
+      this._world.removeChild(rp.container);
+      this._remotePlayers.delete(id);
+    }
   }
 
   // ---------------------------------------------------------------------------
