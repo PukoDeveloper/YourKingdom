@@ -3,10 +3,10 @@
  * lifecycle and message routing for multiplayer mode.
  *
  * Protocol (JSON over WebSocket):
- *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, sessionToken: string, name: string }
+ *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string }
  *   Server → Client  name_taken { type: 'name_taken', name: string }
  *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
- *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number }
+ *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
  *   Server → Client  leave      { type: 'leave', id: string }
  *
  * Reconnection:
@@ -45,6 +45,12 @@ export class MultiplayerClient {
     /** World seed received from the server – all clients share the same value. @type {number|null} */
     this.seed = null;
 
+    /** In-game time fraction received from the server. @type {number|null} */
+    this.dayTime = null;
+
+    /** Weather state index received from the server. @type {number|null} */
+    this.weather = null;
+
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
 
@@ -59,6 +65,10 @@ export class MultiplayerClient {
     /** Called when all reconnection attempts have been exhausted.
      *  @type {(() => void)|null} */
     this.onDisconnect = null;
+
+    /** Called with the authoritative world time and weather on each server state broadcast.
+     *  @type {((time: number, weather: number) => void)|null} */
+    this.onWorldSync = null;
 
     /** Called when the chosen name is already taken by an active player.
      *  @type {((name: string) => void)|null} */
@@ -160,7 +170,9 @@ export class MultiplayerClient {
         welcomed = true;
         this._reconnectTries = 0;
         this.id         = msg.id;
-        this.seed       = typeof msg.seed === 'number' ? msg.seed : null;
+        this.seed       = typeof msg.seed    === 'number' ? msg.seed    : null;
+        this.dayTime    = typeof msg.time    === 'number' ? msg.time    : null;
+        this.weather    = typeof msg.weather === 'number' ? msg.weather : null;
         this.playerName = msg.name || this.playerName;
         if (msg.sessionToken) {
           try { localStorage.setItem(SESSION_KEY, msg.sessionToken); } catch { /* ignore */ }
@@ -200,6 +212,9 @@ export class MultiplayerClient {
     switch (msg.type) {
       case 'state':
         this.onStateUpdate?.(msg.players);
+        if (typeof msg.time === 'number' && typeof msg.weather === 'number') {
+          this.onWorldSync?.(msg.time, msg.weather);
+        }
         break;
       case 'leave':
         this.onPlayerLeft?.(msg.id);

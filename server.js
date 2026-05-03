@@ -6,7 +6,7 @@
  *   PORT=8080 node server.js    # listens on a custom port
  *
  * Each connected client receives one of:
- *   { type: 'welcome',    id, seed, sessionToken, name }
+ *   { type: 'welcome',    id, seed, time, weather, sessionToken, name }
  *   { type: 'name_taken', name }   (then the server closes the connection)
  *
  * Clients send:
@@ -14,7 +14,7 @@
  *
  * The server broadcasts the current player state to all clients every
  * TICK_MS milliseconds:
- *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms> }
+ *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms>, time: <number>, weather: <number> }
  *
  * When a client disconnects the server broadcasts:
  *   { type: 'leave', id: '<id>' }
@@ -41,6 +41,39 @@ const MAX_NAME_LEN        = 20;
 // World seed: fixed for the lifetime of this server process so every client
 // that connects (or reconnects) generates the same deterministic map.
 const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
+
+// ---------------------------------------------------------------------------
+// Authoritative world time and weather
+// ---------------------------------------------------------------------------
+
+/** Seconds for one full in-game day – must match DayNightCycle.DEFAULT_DAY_DURATION. */
+const DAY_DURATION = 300;
+
+/** In-game time fraction [0, 1). 0.27 ≈ just after dawn, matching the client default. */
+let WORLD_TIME = 0.27;
+
+/**
+ * Weather state (integer index matching the client-side WEATHER constants):
+ *   0 = CLEAR, 1 = CLOUDY, 2 = RAIN, 3 = STORM
+ */
+let WORLD_WEATHER = 0;
+
+/**
+ * Possible next weather states for each current state (mirrors WeatherSystem.js TRANSITIONS).
+ * Weighted by repetition: CLEAR → mostly stays clear, etc.
+ */
+const WEATHER_TRANSITIONS = [
+  /* CLEAR  */ [0, 0, 0, 1],
+  /* CLOUDY */ [0, 1, 1, 2],
+  /* RAIN   */ [1, 2, 2, 3],
+  /* STORM  */ [2, 3, 3, 1],
+];
+
+const MIN_WEATHER_DURATION = 30;   // seconds before state may change
+const MAX_WEATHER_DURATION = 100;  // seconds maximum state duration
+
+/** Countdown until next weather transition (seconds). */
+let _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION - MIN_WEATHER_DURATION);
 
 const wss = new WebSocketServer({ port: PORT });
 
@@ -96,7 +129,7 @@ wss.on('connection', (ws, req) => {
     players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name });
     // Keep the namedSession in sync with the restored position.
     if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle });
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken: incomingToken, name }));
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken: incomingToken, name }));
     console.log(`[~] Player "${name || id}" reconnected via token (total: ${players.size})`);
     _attachHandlers(ws, id, incomingToken, name);
     return;
@@ -122,7 +155,7 @@ wss.on('connection', (ws, req) => {
       const prev = namedSessions.get(nameKey);
       const { id } = prev;
       players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: incomingName }));
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName }));
       console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     } else {
@@ -130,7 +163,7 @@ wss.on('connection', (ws, req) => {
       const id = generateId();
       players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName });
       namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0 });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: incomingName }));
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName }));
       console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     }
@@ -141,7 +174,7 @@ wss.on('connection', (ws, req) => {
   const id           = generateId();
   const sessionToken = generateToken();
   players.set(id, { ws, x: 0, y: 0, angle: 0, name: '' });
-  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: '' }));
+  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: '' }));
   console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
   _attachHandlers(ws, id, sessionToken, '');
 });
@@ -202,6 +235,17 @@ function _attachHandlers(ws, id, sessionToken, name) {
 // ---------------------------------------------------------------------------
 
 setInterval(() => {
+  // Advance authoritative world time (always, even with no players connected).
+  WORLD_TIME = (WORLD_TIME + (TICK_MS / 1000) / DAY_DURATION) % 1;
+
+  // Advance authoritative weather timer and transition when due.
+  _weatherTimer -= TICK_MS / 1000;
+  if (_weatherTimer <= 0) {
+    const opts    = WEATHER_TRANSITIONS[WORLD_WEATHER];
+    WORLD_WEATHER = opts[Math.floor(Math.random() * opts.length)];
+    _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION - MIN_WEATHER_DURATION);
+  }
+
   if (players.size === 0) return;
 
   /** @type {Record<string, { x: number, y: number, angle: number, name: string }>} */
@@ -210,7 +254,7 @@ setInterval(() => {
     snapshot[pid] = { x: data.x, y: data.y, angle: data.angle, name: data.name };
   }
 
-  broadcast(JSON.stringify({ type: 'state', players: snapshot, ts: Date.now() }));
+  broadcast(JSON.stringify({ type: 'state', players: snapshot, ts: Date.now(), time: WORLD_TIME, weather: WORLD_WEATHER }));
 }, TICK_MS);
 
 function broadcast(payload) {

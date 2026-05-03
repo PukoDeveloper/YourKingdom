@@ -222,4 +222,18 @@ export class WeatherSystem {
   getName() {
     return WEATHER_NAMES[this._state];
   }
+
+  /**
+   * Set the weather state directly (e.g. for server-authoritative sync in multiplayer).
+   * Resets the transition timer and reinitialises rain drops when entering a rain state.
+   * @param {number} state  One of the WEATHER constants.
+   */
+  setState(state) {
+    if (this._state === state) return;
+    this._state = state;
+    this._timer = this._randomDuration();
+    if (this._state === WEATHER.RAIN || this._state === WEATHER.STORM) {
+      for (const d of this._drops) Object.assign(d, this._newDrop(false));
+    }
+  }
 }

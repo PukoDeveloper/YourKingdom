@@ -54,6 +54,12 @@ export class DayNightCycle {
   /** Current time fraction [0, 1). */
   get time() { return this._time; }
 
+  /**
+   * Set the current time fraction directly (e.g. for server-authoritative sync).
+   * @param {number} t  Time fraction [0, 1).
+   */
+  set time(t) { this._time = ((t % 1) + 1) % 1; }
+
   /** Advance in-game time. @param {number} dt  Delta time in real seconds. */
   update(dt) {
     this._time = (this._time + dt / this._dayDuration) % 1;

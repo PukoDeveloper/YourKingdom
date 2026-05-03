@@ -220,11 +220,17 @@ export class Game {
     // Day / Night cycle & Weather
     // -----------------------------------------------------------------------
     this._setLoadingStatus('準備天氣系統...');
+    // In multiplayer, initialise from server-provided values so all clients
+    // start in sync.  Fall back to the saved state or the built-in defaults
+    // for single-player.
     this._dayNight = new DayNightCycle(
       undefined,
-      savedState?.dayTime ?? undefined,
+      this._mp?.dayTime ?? savedState?.dayTime ?? undefined,
     );
     this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
+    if (this._mp?.weather !== null && this._mp?.weather !== undefined) {
+      this._weather.setState(this._mp.weather);
+    }
     this._ui.addChild(this._weather.container);
 
     // -----------------------------------------------------------------------
@@ -342,6 +348,7 @@ export class Game {
       this._mp.onStateUpdate = (players) => this._onRemoteStateUpdate(players);
       this._mp.onPlayerLeft  = (id)      => this._removeRemotePlayer(id);
       this._mp.onDisconnect  = ()        => this._gameUI?.showToast('與伺服器斷線 ✗');
+      this._mp.onWorldSync   = (time, weather) => this._syncWorld(time, weather);
     }
 
     // Hide loading screen
@@ -687,6 +694,26 @@ export class Game {
       this._world.removeChild(rp.container);
       this._remotePlayers.delete(id);
     }
+  }
+
+  /**
+   * Apply server-authoritative world time and weather.
+   * Called on every 'state' broadcast from the server (~20 Hz).
+   *
+   * Syncing the day/night time here keeps all multiplayer clients in
+   * lock-step without relying on each client's local clock drift.
+   * Updating _prevDayTime to the synced value prevents the day-rollover
+   * detector in _update() from firing spuriously when the server correction
+   * nudges the time fractionally backwards.
+   *
+   * @param {number} time     Authoritative in-game time fraction [0, 1).
+   * @param {number} weather  Authoritative weather state index.
+   */
+  _syncWorld(time, weather) {
+    this._prevDayTime = time;
+    this._dayNight.time = time;
+    this._prevPhase = this._dayNight.getPhaseName();
+    this._weather.setState(weather);
   }
 
   // ---------------------------------------------------------------------------
