@@ -88,7 +88,10 @@ export class Game {
 
     // In multiplayer mode never restore a local save – always start fresh.
     const savedState = this._mp ? null : SaveManager.load();
-    const seed = savedState?.seed ?? Math.floor(Math.random() * 0xFFFFFF); // 24-bit seed range: 0 – 16 777 215
+    // In multiplayer the server sends a shared seed so every client generates
+    // the same deterministic world.  Fall back to a local save seed or a fresh
+    // random value for single-player.
+    const seed = this._mp?.seed ?? savedState?.seed ?? Math.floor(Math.random() * 0xFFFFFF); // 24-bit seed range: 0 – 16 777 215
     this._seed = seed;
 
     this._setLoadingStatus('生成世界地圖...');
