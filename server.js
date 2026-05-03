@@ -6,15 +6,16 @@
  *   PORT=8080 node server.js    # listens on a custom port
  *
  * Each connected client receives one of:
- *   { type: 'welcome',    id, seed, sessionToken, name }
+ *   { type: 'welcome',    id, seed, time, weather, sessionToken, name }
  *   { type: 'name_taken', name }   (then the server closes the connection)
  *
  * Clients send:
  *   { type: 'move', x: <number>, y: <number>, angle: <number> }
+ *   { type: 'save', gameState: <object> }   (persists full game state for the named account)
  *
  * The server broadcasts the current player state to all clients every
  * TICK_MS milliseconds:
- *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms> }
+ *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms>, time: <number>, weather: <number> }
  *
  * When a client disconnects the server broadcasts:
  *   { type: 'leave', id: '<id>' }
@@ -42,6 +43,50 @@ const MAX_NAME_LEN        = 20;
 // that connects (or reconnects) generates the same deterministic map.
 const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
 
+// ---------------------------------------------------------------------------
+// Authoritative world time and weather
+// ---------------------------------------------------------------------------
+
+/** Seconds for one full in-game day – must match DEFAULT_DAY_DURATION in src/world/DayNightCycle.js. */
+const DAY_DURATION = 300;
+
+/**
+ * Starting in-game time fraction [0, 1) – just after dawn, matching the
+ * DayNightCycle client default (0.27 ≈ 06:29 in-game).
+ */
+const DEFAULT_WORLD_TIME = 0.27;
+
+/** In-game time fraction [0, 1). Authoritative value broadcast to all clients. */
+let WORLD_TIME = DEFAULT_WORLD_TIME;
+
+// Weather state constants – must match the WEATHER object in src/world/WeatherSystem.js.
+const WEATHER_CLEAR  = 0;
+const WEATHER_CLOUDY = 1;
+const WEATHER_RAIN   = 2;
+const WEATHER_STORM  = 3;
+
+/** Authoritative weather state index broadcast to all clients. */
+let WORLD_WEATHER = WEATHER_CLEAR;
+
+/**
+ * Possible next weather states for each current state.
+ * Mirrors the TRANSITIONS table in src/world/WeatherSystem.js exactly so that
+ * server-side transitions produce the same distribution as the client would
+ * (weighted by repetition: CLEAR → mostly stays clear, etc.).
+ */
+const WEATHER_TRANSITIONS = [
+  /* CLEAR  */ [WEATHER_CLEAR,  WEATHER_CLEAR,  WEATHER_CLEAR,  WEATHER_CLOUDY],
+  /* CLOUDY */ [WEATHER_CLEAR,  WEATHER_CLOUDY, WEATHER_CLOUDY, WEATHER_RAIN  ],
+  /* RAIN   */ [WEATHER_CLOUDY, WEATHER_RAIN,   WEATHER_RAIN,   WEATHER_STORM ],
+  /* STORM  */ [WEATHER_RAIN,   WEATHER_STORM,  WEATHER_STORM,  WEATHER_CLOUDY],
+];
+
+const MIN_WEATHER_DURATION = 30;   // seconds before state may change
+const MAX_WEATHER_DURATION = 100;  // seconds maximum state duration
+
+/** Countdown until next weather transition (seconds). */
+let _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION - MIN_WEATHER_DURATION);
+
 const wss = new WebSocketServer({ port: PORT });
 
 /** @type {Map<string, { ws: import('ws').WebSocket, x: number, y: number, angle: number, name: string }>} */
@@ -56,9 +101,11 @@ const pendingReconnect = new Map();
 
 /**
  * Persistent name-based identity store.
- * Key: playerName (lowercase)  Value: { id, x, y, angle }
+ * Key: playerName (lowercase)  Value: { id, x, y, angle, gameState }
  * Entries are never deleted – they persist for the lifetime of the server process.
- * @type {Map<string, { id: string, x: number, y: number, angle: number }>}
+ * gameState holds the full serialised game snapshot uploaded by the client via a
+ * 'save' message, or null when no save has been received yet.
+ * @type {Map<string, { id: string, x: number, y: number, angle: number, gameState: object|null }>}
  */
 const namedSessions = new Map();
 
@@ -94,9 +141,11 @@ wss.on('connection', (ws, req) => {
 
     const { id, name } = session;
     players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name });
-    // Keep the namedSession in sync with the restored position.
-    if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle });
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken: incomingToken, name }));
+    // Keep the namedSession in sync with the restored position; preserve existing gameState.
+    const existingNs = name ? namedSessions.get(name.toLowerCase()) : null;
+    if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle, gameState: existingNs?.gameState ?? null });
+    const tokenGameState = existingNs?.gameState ?? null;
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken: incomingToken, name, gameState: tokenGameState }));
     console.log(`[~] Player "${name || id}" reconnected via token (total: ${players.size})`);
     _attachHandlers(ws, id, incomingToken, name);
     return;
@@ -118,19 +167,19 @@ wss.on('connection', (ws, req) => {
     const sessionToken = generateToken();
 
     if (namedSessions.has(nameKey)) {
-      // Restore existing named session (same id, last-known position).
+      // Restore existing named session (same id, last-known position, and saved game state).
       const prev = namedSessions.get(nameKey);
       const { id } = prev;
       players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: incomingName }));
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: prev.gameState ?? null }));
       console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     } else {
       // New named player.
       const id = generateId();
       players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName });
-      namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0 });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: incomingName }));
+      namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0, gameState: null });
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: null }));
       console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     }
@@ -141,7 +190,7 @@ wss.on('connection', (ws, req) => {
   const id           = generateId();
   const sessionToken = generateToken();
   players.set(id, { ws, x: 0, y: 0, angle: 0, name: '' });
-  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: '' }));
+  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: '' }));
   console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
   _attachHandlers(ws, id, sessionToken, '');
 });
@@ -170,6 +219,23 @@ function _attachHandlers(ws, id, sessionToken, name) {
         if (ns) { ns.x = player.x; ns.y = player.y; ns.angle = player.angle; }
       }
     }
+
+    if (msg.type === 'save' && name) {
+      // Accept gameState: <object> to persist, or gameState: null to clear the saved state.
+      const isValidSave = msg.gameState !== undefined &&
+        (msg.gameState === null || typeof msg.gameState === 'object');
+      if (isValidSave) {
+        const ns = namedSessions.get(name.toLowerCase());
+        if (ns) {
+          ns.gameState = msg.gameState;
+          if (msg.gameState) {
+            console.log(`[💾] Saved game state for "${name}"`);
+          } else {
+            console.log(`[🗑] Cleared game state for "${name}"`);
+          }
+        }
+      }
+    }
   });
 
   ws.on('close', () => {
@@ -182,7 +248,11 @@ function _attachHandlers(ws, id, sessionToken, name) {
     broadcast(JSON.stringify({ type: 'leave', id }));
 
     // Persist latest position in namedSessions so the player can rejoin by name.
-    if (name) namedSessions.set(name.toLowerCase(), { id, ...snapshot });
+    // Preserve the existing gameState so it survives the disconnect.
+    if (name) {
+      const prevNs = namedSessions.get(name.toLowerCase());
+      namedSessions.set(name.toLowerCase(), { id, ...snapshot, gameState: prevNs?.gameState ?? null });
+    }
 
     // Also keep the short-lived token-based session for fast reconnect.
     const timer = setTimeout(() => {
@@ -202,6 +272,17 @@ function _attachHandlers(ws, id, sessionToken, name) {
 // ---------------------------------------------------------------------------
 
 setInterval(() => {
+  // Advance authoritative world time (always, even with no players connected).
+  WORLD_TIME = (WORLD_TIME + (TICK_MS / 1000) / DAY_DURATION) % 1;
+
+  // Advance authoritative weather timer and transition when due.
+  _weatherTimer -= TICK_MS / 1000;
+  if (_weatherTimer <= 0) {
+    const opts    = WEATHER_TRANSITIONS[WORLD_WEATHER];
+    WORLD_WEATHER = opts[Math.floor(Math.random() * opts.length)];
+    _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION - MIN_WEATHER_DURATION);
+  }
+
   if (players.size === 0) return;
 
   /** @type {Record<string, { x: number, y: number, angle: number, name: string }>} */
@@ -210,7 +291,7 @@ setInterval(() => {
     snapshot[pid] = { x: data.x, y: data.y, angle: data.angle, name: data.name };
   }
 
-  broadcast(JSON.stringify({ type: 'state', players: snapshot, ts: Date.now() }));
+  broadcast(JSON.stringify({ type: 'state', players: snapshot, ts: Date.now(), time: WORLD_TIME, weather: WORLD_WEATHER }));
 }, TICK_MS);
 
 function broadcast(payload) {

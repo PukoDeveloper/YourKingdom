@@ -86,8 +86,9 @@ export class Game {
     this._setLoadingStatus('初始化引擎...');
     await this._yieldFrame();
 
-    // In multiplayer mode never restore a local save – always start fresh.
-    const savedState = this._mp ? null : SaveManager.load();
+    // In multiplayer, restore from the server-side saved game state for this named account
+    // (received in the 'welcome' message).  For single-player, load from localStorage.
+    const savedState = this._mp ? (this._mp.gameState ?? null) : SaveManager.load();
     // In multiplayer the server sends a shared seed so every client generates
     // the same deterministic world.  Fall back to a local save seed or a fresh
     // random value for single-player.
@@ -220,11 +221,17 @@ export class Game {
     // Day / Night cycle & Weather
     // -----------------------------------------------------------------------
     this._setLoadingStatus('準備天氣系統...');
+    // In multiplayer, initialise from server-provided values so all clients
+    // start in sync.  Fall back to the saved state or the built-in defaults
+    // for single-player.
     this._dayNight = new DayNightCycle(
       undefined,
-      savedState?.dayTime ?? undefined,
+      this._mp?.dayTime ?? savedState?.dayTime ?? undefined,
     );
     this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
+    if (this._mp !== null && this._mp.weather !== null) {
+      this._weather.setState(this._mp.weather);
+    }
     this._ui.addChild(this._weather.container);
 
     // -----------------------------------------------------------------------
@@ -342,6 +349,7 @@ export class Game {
       this._mp.onStateUpdate = (players) => this._onRemoteStateUpdate(players);
       this._mp.onPlayerLeft  = (id)      => this._removeRemotePlayer(id);
       this._mp.onDisconnect  = ()        => this._gameUI?.showToast('與伺服器斷線 ✗');
+      this._mp.onWorldSync   = (time, weather) => this._syncWorld(time, weather);
     }
 
     // Hide loading screen
@@ -354,12 +362,10 @@ export class Game {
     // Save / auto-save
     // -----------------------------------------------------------------------
     if (savedState) {
-      this._gameUI.showToast('已載入上次存檔 ✓');
+      this._gameUI.showToast(this._mp ? '已從伺服器載入存檔 ✓' : '已載入上次存檔 ✓');
     }
-    // Auto-save is single-player only; multiplayer sessions must not overwrite local records.
-    if (!this._mp) {
-      this._startAutoSave();
-    }
+    // Auto-save works in both single-player (localStorage) and multiplayer (server).
+    this._startAutoSave();
   }
 
   // ---------------------------------------------------------------------------
@@ -586,10 +592,8 @@ export class Game {
   // Save / load
   // ---------------------------------------------------------------------------
 
-  /** Collect full game state and persist it to localStorage. */
-  save() {
-    // Multiplayer sessions must never write to local storage.
-    if (this._mp) return;
+  /** Collect and return the full serialisable game state. */
+  _collectSaveState() {
     // Collect per-region satisfaction and assignedCharacters for persistence.
     const regionState = [];
     const collectRegionState = (settlements, prefix) => {
@@ -606,7 +610,7 @@ export class Game {
       collectRegionState(this._nationSystem.villageSettlements, 'village');
     }
 
-    const ok = SaveManager.save({
+    return {
       seed:             this._seed,
       player:           { x: this._player.x, y: this._player.y },
       playerAppearance: this._player.getAppearanceState(),
@@ -615,7 +619,21 @@ export class Game {
       diplomacy:        this._diplomacySystem.getState(),
       regionState,
       ...this._gameUI.getState(),
-    });
+    };
+  }
+
+  /** Persist the current game state (to server in multiplayer, to localStorage in single-player). */
+  save() {
+    const state = this._collectSaveState();
+
+    if (this._mp) {
+      // Send state to the server for persistence under the player's named account.
+      this._mp.sendSave(state);
+      this._gameUI.showToast('遊戲已儲存至伺服器 ☁');
+      return;
+    }
+
+    const ok = SaveManager.save(state);
     this._gameUI.showToast(ok ? '遊戲已儲存 💾' : '儲存失敗 ✗');
   }
 
@@ -639,6 +657,10 @@ export class Game {
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
 
+    if (this._mp) {
+      // Clear the server-side save for this named account before reloading.
+      this._mp.sendSave(null);
+    }
     SaveManager.clear();
     window.location.reload();
   }
@@ -687,6 +709,29 @@ export class Game {
       this._world.removeChild(rp.container);
       this._remotePlayers.delete(id);
     }
+  }
+
+  /**
+   * Apply server-authoritative world time and weather.
+   * Called on every 'state' broadcast from the server (~20 Hz).
+   *
+   * Syncing the day/night time here keeps all multiplayer clients in
+   * lock-step without relying on each client's local clock drift.
+   * Updating _prevDayTime to the synced value prevents the day-rollover
+   * detector in _update() from firing spuriously when the server correction
+   * nudges the time fractionally backwards.
+   * Updating _prevPhase to the current phase after the time snap prevents a
+   * spurious phase-transition event from firing in the same frame when the
+   * corrected time happens to cross a phase boundary.
+   *
+   * @param {number} time     Authoritative in-game time fraction [0, 1).
+   * @param {number} weather  Authoritative weather state index.
+   */
+  _syncWorld(time, weather) {
+    this._prevDayTime = time;
+    this._dayNight.time = time;
+    this._prevPhase = this._dayNight.getPhaseName();
+    this._weather.setState(weather);
   }
 
   // ---------------------------------------------------------------------------
