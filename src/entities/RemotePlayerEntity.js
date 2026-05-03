@@ -86,6 +86,17 @@ export class RemotePlayerEntity {
   }
 
   /**
+   * Update the name label shown above this player's sprite.
+   * @param {string} name
+   */
+  setName(name) {
+    const label = name?.trim() || '玩家';
+    if (this._label.text !== label) {
+      this._label.text = label;
+    }
+  }
+
+  /**
    * Advance the visual interpolation by one frame.
    * @param {number} dt  Delta-time in seconds.
    */
