@@ -90,6 +90,14 @@ export class MultiplayerClient {
      *  @type {((id: string, name: string) => void)|null} */
     this.onPlayerJoined = null;
 
+    /**
+     * Called when the server corrects the local player's position after a
+     * speed violation.  The client should snap the player sprite to the
+     * server-authoritative coordinates immediately.
+     * @type {((x: number, y: number, angle: number) => void)|null}
+     */
+    this.onPositionCorrection = null;
+
     this._ws               = null;
     /** Minimum milliseconds between outgoing move messages. */
     this._sendIntervalMs   = 50;
@@ -287,6 +295,11 @@ export class MultiplayerClient {
         break;
       case 'leave':
         this.onPlayerLeft?.(msg.id, msg.name ?? '');
+        break;
+      case 'correction':
+        if (typeof msg.x === 'number' && typeof msg.y === 'number' && typeof msg.angle === 'number') {
+          this.onPositionCorrection?.(msg.x, msg.y, msg.angle);
+        }
         break;
     }
   }

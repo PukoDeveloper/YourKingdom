@@ -372,6 +372,9 @@ export class Game {
       };
       this._mp.onDisconnect   = () => this._gameUI?.showToast('與伺服器斷線 ✗');
       this._mp.onWorldSync    = (time, weather) => this._syncWorld(time, weather);
+      // When the server corrects our position (speed-violation detected), snap
+      // the local player sprite to the authoritative coordinates immediately.
+      this._mp.onPositionCorrection = (x, y, angle) => this._onServerCorrection(x, y, angle);
       // Broadcast our initial appearance, kingdom info and territory immediately
       // after init so other already-connected players see our look right away.
       this._mpSendInfo();
@@ -416,13 +419,18 @@ export class Game {
     this._dayNight.update(dt);
     const prevDayTime = this._prevDayTime;
     const currDayTime = this._dayNight.time;
-    if (currDayTime < prevDayTime) {
+    // In multiplayer the server is the authority for day rollovers; _syncWorld()
+    // handles them when the server broadcasts the new time.  Skip the local
+    // rollover check here to prevent double-firing onDayPassed in the same tick.
+    if (!this._mp && currDayTime < prevDayTime) {
       // Day has rolled over – consume food for all active members
       this._gameUI.onDayPassed();
     }
     this._prevDayTime = currDayTime;
 
     // Phase transitions trigger NPC AI phase actions.
+    // In multiplayer, _syncWorld() keeps _prevPhase in sync with server time, so
+    // this check still fires exactly once per transition on each client.
     const currPhase = this._dayNight.getPhaseName();
     if (currPhase !== this._prevPhase) {
       this._gameUI.onPhaseChanged(currPhase);
@@ -758,6 +766,24 @@ export class Game {
   // ---------------------------------------------------------------------------
   // Multiplayer helpers: sending local state
   // ---------------------------------------------------------------------------
+
+  /**
+   * Snap the local player to the server-corrected position.
+   * Called when the server detects a movement-speed violation and sends a
+   * `correction` message with the authoritative coordinates.
+   * @param {number} x
+   * @param {number} y
+   * @param {number} angle
+   */
+  _onServerCorrection(x, y, angle) {
+    if (!this._player) return;
+    this._player.x = x;
+    this._player.y = y;
+    this._player.container.x = x;
+    this._player.container.y = y;
+    this._player.container.rotation = angle;
+    this._player._facingAngle = angle;
+  }
 
   /**
    * Send the local player's current appearance indices and kingdom info to the
