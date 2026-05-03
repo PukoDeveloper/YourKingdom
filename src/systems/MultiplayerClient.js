@@ -6,9 +6,12 @@
  *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string, gameState: object|null }
  *   Server → Client  name_taken { type: 'name_taken', name: string }
  *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
+ *   Client → Server  info       { type: 'info', appearance: object, kingdom: { name, color } }
+ *   Client → Server  territory  { type: 'territory', captured: string[], liberated: string[] }
  *   Client → Server  save       { type: 'save', gameState: object }
+ *   Server → Client  join       { type: 'join', id: string, name: string }
  *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
- *   Server → Client  leave      { type: 'leave', id: string }
+ *   Server → Client  leave      { type: 'leave', id: string, name: string }
  *
  * Reconnection:
  *   On disconnect the client stores its sessionToken in localStorage under
@@ -83,6 +86,10 @@ export class MultiplayerClient {
      *  @type {((name: string) => void)|null} */
     this.onNameTaken = null;
 
+    /** Called when another player joins the server.
+     *  @type {((id: string, name: string) => void)|null} */
+    this.onPlayerJoined = null;
+
     this._ws               = null;
     /** Minimum milliseconds between outgoing move messages. */
     this._sendIntervalMs   = 50;
@@ -130,6 +137,32 @@ export class MultiplayerClient {
   }
 
   /**
+   * Send the local player's appearance indices and kingdom info to the server.
+   * Other connected clients will receive this in the next 'state' broadcast.
+   * Called once on initial connect and again whenever the player edits their
+   * character appearance or kingdom flag/name.
+   * @param {{ bodyColorIdx: number, headgearIdx: number, armorColorIdx: number,
+   *            markColorIdx: number, bodyShapeIdx: number, faceAccIdx: number }} appearance
+   * @param {{ name: string, color: string }} kingdom
+   */
+  sendInfo(appearance, kingdom) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'info', appearance, kingdom }));
+  }
+
+  /**
+   * Send the player's captured / liberated settlement key lists.
+   * Other connected clients will receive these in the next 'state' broadcast
+   * and can display a visual territory overlay on the map.
+   * @param {string[]} captured   e.g. ['castle:0', 'village:3']
+   * @param {string[]} liberated  e.g. ['village:5']
+   */
+  sendTerritory(captured, liberated) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'territory', captured, liberated }));
+  }
+
+  /**
    * Send the full game-state snapshot to the server for persistence under this
    * player's named account.  Pass `null` to clear the server-side save (e.g. on reset).
    * Silently ignored if not currently connected.
@@ -163,10 +196,17 @@ export class MultiplayerClient {
 
   /**
    * Open a new WebSocket, wiring all event handlers.
+   * Any previously open socket is closed before the new one is created.
    * @param {(() => void)|null}           onWelcome  Called once on the first welcome message.
    * @param {((err: Error) => void)|null} onError    Called on connection error before welcome.
    */
   _openSocket(onWelcome, onError) {
+    // Close any existing socket to avoid stale event handlers or duplicate connections.
+    if (this._ws && this._ws.readyState !== WebSocket.CLOSED) {
+      this._ws.onclose = null; // prevent the old close handler from scheduling a reconnect
+      this._ws.close();
+    }
+
     const ws = new WebSocket(this._buildUrl());
     this._ws = ws;
     let welcomed = false;
@@ -179,6 +219,11 @@ export class MultiplayerClient {
 
     ws.addEventListener('close', () => {
       if (this._destroyed) return;
+      // Only schedule a reconnect if the connection was ever successfully established
+      // (welcomed). This prevents a failed initial connect from silently retrying,
+      // and also prevents the close event (which always follows an error event) from
+      // scheduling a duplicate reconnect on top of the one already queued by onError.
+      if (!welcomed) return;
       this._scheduleReconnect();
     });
 
@@ -237,8 +282,11 @@ export class MultiplayerClient {
           this.onWorldSync?.(msg.time, msg.weather);
         }
         break;
+      case 'join':
+        this.onPlayerJoined?.(msg.id, msg.name ?? '');
+        break;
       case 'leave':
-        this.onPlayerLeft?.(msg.id);
+        this.onPlayerLeft?.(msg.id, msg.name ?? '');
         break;
     }
   }

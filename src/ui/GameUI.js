@@ -597,6 +597,14 @@ export class GameUI {
     this.onPlayerKingdomChanged = null;
 
     /**
+     * Callback invoked whenever the player edits their character appearance
+     * (body colour, headgear, etc.).  Used in multiplayer to broadcast the
+     * updated look to other players.
+     * @type {(() => void)|null}
+     */
+    this.onPlayerAppearanceChanged = null;
+
+    /**
      * Callback invoked whenever a road is completed or demolished.
      * The game uses this to rebuild the road overlay on the world map.
      * @type {(() => void)|null}
@@ -2118,6 +2126,10 @@ export class GameUI {
           heroUnit.appearance = charAppearanceFromIndices(pending);
           heroUnit.name = pending.playerName;
         }
+      }
+      // Notify multiplayer so the updated appearance is broadcast to other players.
+      if (typeof this.onPlayerAppearanceChanged === 'function') {
+        this.onPlayerAppearanceChanged();
       }
     };
 
@@ -7109,6 +7121,18 @@ export class GameUI {
    */
   getMapBuildings() {
     return this._mapBuildings.map(b => ({ ...b }));
+  }
+
+  /**
+   * Return the player's current territory as plain arrays, safe to iterate
+   * without exposing the internal Set instances.
+   * @returns {{ captured: string[], liberated: string[] }}
+   */
+  getTerritoryState() {
+    return {
+      captured:  [...this._capturedSettlements],
+      liberated: [...this._liberatedSettlements],
+    };
   }
 
   /**
