@@ -29,8 +29,8 @@
  *      the server sends { type: 'name_taken', name } and closes.
  */
 
-import { WebSocketServer } from 'ws';
-import { randomBytes }    from 'crypto';
+import { WebSocketServer, WebSocket } from 'ws';
+import { randomBytes }               from 'crypto';
 
 const PORT                = Number(process.env.PORT ?? 3000);
 const TICK_MS             = 50;     // broadcast interval (20 Hz)
@@ -215,7 +215,7 @@ setInterval(() => {
 
 function broadcast(payload) {
   for (const { ws } of players.values()) {
-    if (ws.readyState === ws.OPEN) {
+    if (ws.readyState === WebSocket.OPEN) {
       ws.send(payload);
     }
   }

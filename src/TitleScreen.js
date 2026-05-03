@@ -89,7 +89,7 @@ export function showTitleScreen(prefillError = '') {
     }, { once: true });
     nameInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') ipInput.focus();
-    });
+    }, { once: true });
 
     // Reveal the title screen (it starts hidden so the DOM is ready first).
     overlay.style.display = 'flex';
