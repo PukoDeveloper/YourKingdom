@@ -228,7 +228,7 @@ export class Game {
       this._mp?.dayTime ?? savedState?.dayTime ?? undefined,
     );
     this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
-    if (this._mp?.weather !== null && this._mp?.weather !== undefined) {
+    if (this._mp?.weather != null) {
       this._weather.setState(this._mp.weather);
     }
     this._ui.addChild(this._weather.container);

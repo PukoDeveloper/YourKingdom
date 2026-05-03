@@ -46,7 +46,7 @@ const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
 // Authoritative world time and weather
 // ---------------------------------------------------------------------------
 
-/** Seconds for one full in-game day – must match DayNightCycle.DEFAULT_DAY_DURATION. */
+/** Seconds for one full in-game day – must match DEFAULT_DAY_DURATION in src/world/DayNightCycle.js. */
 const DAY_DURATION = 300;
 
 /** In-game time fraction [0, 1). 0.27 ≈ just after dawn, matching the client default. */
@@ -59,8 +59,10 @@ let WORLD_TIME = 0.27;
 let WORLD_WEATHER = 0;
 
 /**
- * Possible next weather states for each current state (mirrors WeatherSystem.js TRANSITIONS).
- * Weighted by repetition: CLEAR → mostly stays clear, etc.
+ * Possible next weather states for each current state.
+ * Mirrors the TRANSITIONS table in src/world/WeatherSystem.js exactly so that
+ * server-side transitions produce the same distribution as the client would
+ * (weighted by repetition: CLEAR → mostly stays clear, etc.).
  */
 const WEATHER_TRANSITIONS = [
   /* CLEAR  */ [0, 0, 0, 1],
