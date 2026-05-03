@@ -374,8 +374,7 @@ function _attachHandlers(ws, id, sessionToken, name) {
         //   • Newly added keys are accepted only when the player is currently
         //     within TERRITORY_CAPTURE_RADIUS_PX of the settlement centre.
         player.captured = msg.captured
-          .filter(isValidKey)
-          .filter(k => oldCapturedSet.has(k) || _isNearSettlement(player, k))
+          .filter(k => isValidKey(k) && (oldCapturedSet.has(k) || _isNearSettlement(player, k)))
           .slice(0, 200);
       }
       if (Array.isArray(msg.liberated)) {

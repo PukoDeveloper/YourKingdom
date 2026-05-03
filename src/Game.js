@@ -779,10 +779,10 @@ export class Game {
     if (!this._player) return;
     this._player.x = x;
     this._player.y = y;
-    this._player.container.x        = x;
-    this._player.container.y        = y;
+    this._player.container.x = x;
+    this._player.container.y = y;
     this._player.container.rotation = angle;
-    this._player._facingAngle       = angle;
+    this._player._facingAngle = angle;
   }
 
   /**
