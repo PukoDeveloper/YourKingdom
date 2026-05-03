@@ -86,8 +86,8 @@ export class Game {
     this._setLoadingStatus('初始化引擎...');
     await this._yieldFrame();
 
-    // Try to restore a previous session; fall back to a fresh random world.
-    const savedState = SaveManager.load();
+    // In multiplayer mode never restore a local save – always start fresh.
+    const savedState = this._mp ? null : SaveManager.load();
     const seed = savedState?.seed ?? Math.floor(Math.random() * 0xFFFFFF); // 24-bit seed range: 0 – 16 777 215
     this._seed = seed;
 
@@ -353,7 +353,10 @@ export class Game {
     if (savedState) {
       this._gameUI.showToast('已載入上次存檔 ✓');
     }
-    this._startAutoSave();
+    // Auto-save is single-player only; multiplayer sessions must not overwrite local records.
+    if (!this._mp) {
+      this._startAutoSave();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -582,6 +585,8 @@ export class Game {
 
   /** Collect full game state and persist it to localStorage. */
   save() {
+    // Multiplayer sessions must never write to local storage.
+    if (this._mp) return;
     // Collect per-region satisfaction and assignedCharacters for persistence.
     const regionState = [];
     const collectRegionState = (settlements, prefix) => {
