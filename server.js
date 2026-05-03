@@ -50,14 +50,23 @@ const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
 /** Seconds for one full in-game day – must match DEFAULT_DAY_DURATION in src/world/DayNightCycle.js. */
 const DAY_DURATION = 300;
 
-/** In-game time fraction [0, 1). 0.27 ≈ just after dawn, matching the client default. */
-let WORLD_TIME = 0.27;
-
 /**
- * Weather state (integer index matching the client-side WEATHER constants):
- *   0 = CLEAR, 1 = CLOUDY, 2 = RAIN, 3 = STORM
+ * Starting in-game time fraction [0, 1) – just after dawn, matching the
+ * DayNightCycle client default (0.27 ≈ 06:29 in-game).
  */
-let WORLD_WEATHER = 0;
+const DEFAULT_WORLD_TIME = 0.27;
+
+/** In-game time fraction [0, 1). Authoritative value broadcast to all clients. */
+let WORLD_TIME = DEFAULT_WORLD_TIME;
+
+// Weather state constants – must match the WEATHER object in src/world/WeatherSystem.js.
+const WEATHER_CLEAR  = 0;
+const WEATHER_CLOUDY = 1;
+const WEATHER_RAIN   = 2;
+const WEATHER_STORM  = 3;
+
+/** Authoritative weather state index broadcast to all clients. */
+let WORLD_WEATHER = WEATHER_CLEAR;
 
 /**
  * Possible next weather states for each current state.
@@ -66,10 +75,10 @@ let WORLD_WEATHER = 0;
  * (weighted by repetition: CLEAR → mostly stays clear, etc.).
  */
 const WEATHER_TRANSITIONS = [
-  /* CLEAR  */ [0, 0, 0, 1],
-  /* CLOUDY */ [0, 1, 1, 2],
-  /* RAIN   */ [1, 2, 2, 3],
-  /* STORM  */ [2, 3, 3, 1],
+  /* CLEAR  */ [WEATHER_CLEAR,  WEATHER_CLEAR,  WEATHER_CLEAR,  WEATHER_CLOUDY],
+  /* CLOUDY */ [WEATHER_CLEAR,  WEATHER_CLOUDY, WEATHER_CLOUDY, WEATHER_RAIN  ],
+  /* RAIN   */ [WEATHER_CLOUDY, WEATHER_RAIN,   WEATHER_RAIN,   WEATHER_STORM ],
+  /* STORM  */ [WEATHER_RAIN,   WEATHER_STORM,  WEATHER_STORM,  WEATHER_CLOUDY],
 ];
 
 const MIN_WEATHER_DURATION = 30;   // seconds before state may change

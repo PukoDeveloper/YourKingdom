@@ -229,7 +229,7 @@ export class Game {
       this._mp?.dayTime ?? savedState?.dayTime ?? undefined,
     );
     this._weather  = new WeatherSystem(this.app.screen.width, this.app.screen.height);
-    if (this._mp?.weather != null) {
+    if (this._mp !== null && this._mp.weather !== null) {
       this._weather.setState(this._mp.weather);
     }
     this._ui.addChild(this._weather.container);
@@ -720,6 +720,9 @@ export class Game {
    * Updating _prevDayTime to the synced value prevents the day-rollover
    * detector in _update() from firing spuriously when the server correction
    * nudges the time fractionally backwards.
+   * Updating _prevPhase to the current phase after the time snap prevents a
+   * spurious phase-transition event from firing in the same frame when the
+   * corrected time happens to cross a phase boundary.
    *
    * @param {number} time     Authoritative in-game time fraction [0, 1).
    * @param {number} weather  Authoritative weather state index.
