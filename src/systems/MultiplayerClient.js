@@ -3,9 +3,10 @@
  * lifecycle and message routing for multiplayer mode.
  *
  * Protocol (JSON over WebSocket):
- *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string }
+ *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string, gameState: object|null }
  *   Server → Client  name_taken { type: 'name_taken', name: string }
  *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
+ *   Client → Server  save       { type: 'save', gameState: object }
  *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
  *   Server → Client  leave      { type: 'leave', id: string }
  *
@@ -50,6 +51,14 @@ export class MultiplayerClient {
 
     /** Weather state index received from the server. @type {number|null} */
     this.weather = null;
+
+    /**
+     * Full game-state snapshot for this named account, as sent by the server in the
+     * 'welcome' message.  null when the account has no prior save or the player is
+     * anonymous.  Used by Game.init() to restore the player's kingdom on reconnect.
+     * @type {object|null}
+     */
+    this.gameState = null;
 
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
@@ -120,6 +129,17 @@ export class MultiplayerClient {
     this._ws.send(JSON.stringify({ type: 'move', x, y, angle }));
   }
 
+  /**
+   * Send the full game-state snapshot to the server for persistence under this
+   * player's named account.  Pass `null` to clear the server-side save (e.g. on reset).
+   * Silently ignored if not currently connected.
+   * @param {object|null} gameState  Serialisable game snapshot, or null to clear.
+   */
+  sendSave(gameState) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'save', gameState: gameState ?? null }));
+  }
+
   // ---------------------------------------------------------------------------
   // Internal
   // ---------------------------------------------------------------------------
@@ -173,6 +193,7 @@ export class MultiplayerClient {
         this.seed       = typeof msg.seed    === 'number' ? msg.seed    : null;
         this.dayTime    = typeof msg.time    === 'number' ? msg.time    : null;
         this.weather    = typeof msg.weather === 'number' ? msg.weather : null;
+        this.gameState  = msg.gameState ?? null;
         this.playerName = msg.name || this.playerName;
         if (msg.sessionToken) {
           try { localStorage.setItem(SESSION_KEY, msg.sessionToken); } catch { /* ignore */ }

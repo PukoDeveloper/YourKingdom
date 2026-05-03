@@ -86,8 +86,9 @@ export class Game {
     this._setLoadingStatus('初始化引擎...');
     await this._yieldFrame();
 
-    // In multiplayer mode never restore a local save – always start fresh.
-    const savedState = this._mp ? null : SaveManager.load();
+    // In multiplayer, restore from the server-side saved game state for this named account
+    // (received in the 'welcome' message).  For single-player, load from localStorage.
+    const savedState = this._mp ? (this._mp.gameState ?? null) : SaveManager.load();
     // In multiplayer the server sends a shared seed so every client generates
     // the same deterministic world.  Fall back to a local save seed or a fresh
     // random value for single-player.
@@ -361,12 +362,10 @@ export class Game {
     // Save / auto-save
     // -----------------------------------------------------------------------
     if (savedState) {
-      this._gameUI.showToast('已載入上次存檔 ✓');
+      this._gameUI.showToast(this._mp ? '已從伺服器載入存檔 ✓' : '已載入上次存檔 ✓');
     }
-    // Auto-save is single-player only; multiplayer sessions must not overwrite local records.
-    if (!this._mp) {
-      this._startAutoSave();
-    }
+    // Auto-save works in both single-player (localStorage) and multiplayer (server).
+    this._startAutoSave();
   }
 
   // ---------------------------------------------------------------------------
@@ -593,10 +592,8 @@ export class Game {
   // Save / load
   // ---------------------------------------------------------------------------
 
-  /** Collect full game state and persist it to localStorage. */
-  save() {
-    // Multiplayer sessions must never write to local storage.
-    if (this._mp) return;
+  /** Collect and return the full serialisable game state. */
+  _collectSaveState() {
     // Collect per-region satisfaction and assignedCharacters for persistence.
     const regionState = [];
     const collectRegionState = (settlements, prefix) => {
@@ -613,7 +610,7 @@ export class Game {
       collectRegionState(this._nationSystem.villageSettlements, 'village');
     }
 
-    const ok = SaveManager.save({
+    return {
       seed:             this._seed,
       player:           { x: this._player.x, y: this._player.y },
       playerAppearance: this._player.getAppearanceState(),
@@ -622,7 +619,21 @@ export class Game {
       diplomacy:        this._diplomacySystem.getState(),
       regionState,
       ...this._gameUI.getState(),
-    });
+    };
+  }
+
+  /** Persist the current game state (to server in multiplayer, to localStorage in single-player). */
+  save() {
+    const state = this._collectSaveState();
+
+    if (this._mp) {
+      // Send state to the server for persistence under the player's named account.
+      this._mp.sendSave(state);
+      this._gameUI.showToast('遊戲已儲存至伺服器 ☁');
+      return;
+    }
+
+    const ok = SaveManager.save(state);
     this._gameUI.showToast(ok ? '遊戲已儲存 💾' : '儲存失敗 ✗');
   }
 
@@ -646,6 +657,10 @@ export class Game {
     document.removeEventListener('visibilitychange', this._onVisibilityChange);
     window.removeEventListener('beforeunload', this._onBeforeUnload);
 
+    if (this._mp) {
+      // Clear the server-side save for this named account before reloading.
+      this._mp.sendSave(null);
+    }
     SaveManager.clear();
     window.location.reload();
   }

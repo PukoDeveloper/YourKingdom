@@ -11,6 +11,7 @@
  *
  * Clients send:
  *   { type: 'move', x: <number>, y: <number>, angle: <number> }
+ *   { type: 'save', gameState: <object> }   (persists full game state for the named account)
  *
  * The server broadcasts the current player state to all clients every
  * TICK_MS milliseconds:
@@ -91,9 +92,11 @@ const pendingReconnect = new Map();
 
 /**
  * Persistent name-based identity store.
- * Key: playerName (lowercase)  Value: { id, x, y, angle }
+ * Key: playerName (lowercase)  Value: { id, x, y, angle, gameState }
  * Entries are never deleted – they persist for the lifetime of the server process.
- * @type {Map<string, { id: string, x: number, y: number, angle: number }>}
+ * gameState holds the full serialised game snapshot uploaded by the client via a
+ * 'save' message, or null when no save has been received yet.
+ * @type {Map<string, { id: string, x: number, y: number, angle: number, gameState: object|null }>}
  */
 const namedSessions = new Map();
 
@@ -129,9 +132,11 @@ wss.on('connection', (ws, req) => {
 
     const { id, name } = session;
     players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name });
-    // Keep the namedSession in sync with the restored position.
-    if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle });
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken: incomingToken, name }));
+    // Keep the namedSession in sync with the restored position; preserve existing gameState.
+    const existingNs = name ? namedSessions.get(name.toLowerCase()) : null;
+    if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle, gameState: existingNs?.gameState ?? null });
+    const tokenGameState = existingNs?.gameState ?? null;
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken: incomingToken, name, gameState: tokenGameState }));
     console.log(`[~] Player "${name || id}" reconnected via token (total: ${players.size})`);
     _attachHandlers(ws, id, incomingToken, name);
     return;
@@ -153,19 +158,19 @@ wss.on('connection', (ws, req) => {
     const sessionToken = generateToken();
 
     if (namedSessions.has(nameKey)) {
-      // Restore existing named session (same id, last-known position).
+      // Restore existing named session (same id, last-known position, and saved game state).
       const prev = namedSessions.get(nameKey);
       const { id } = prev;
       players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName }));
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: prev.gameState ?? null }));
       console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     } else {
       // New named player.
       const id = generateId();
       players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName });
-      namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0 });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName }));
+      namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0, gameState: null });
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: null }));
       console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     }
@@ -205,6 +210,23 @@ function _attachHandlers(ws, id, sessionToken, name) {
         if (ns) { ns.x = player.x; ns.y = player.y; ns.angle = player.angle; }
       }
     }
+
+    if (msg.type === 'save' && name) {
+      // Accept gameState: <object> to persist, or gameState: null to clear the saved state.
+      const isValidSave = msg.gameState !== undefined &&
+        (msg.gameState === null || typeof msg.gameState === 'object');
+      if (isValidSave) {
+        const ns = namedSessions.get(name.toLowerCase());
+        if (ns) {
+          ns.gameState = msg.gameState;
+          if (msg.gameState) {
+            console.log(`[💾] Saved game state for "${name}"`);
+          } else {
+            console.log(`[🗑] Cleared game state for "${name}"`);
+          }
+        }
+      }
+    }
   });
 
   ws.on('close', () => {
@@ -217,7 +239,11 @@ function _attachHandlers(ws, id, sessionToken, name) {
     broadcast(JSON.stringify({ type: 'leave', id }));
 
     // Persist latest position in namedSessions so the player can rejoin by name.
-    if (name) namedSessions.set(name.toLowerCase(), { id, ...snapshot });
+    // Preserve the existing gameState so it survives the disconnect.
+    if (name) {
+      const prevNs = namedSessions.get(name.toLowerCase());
+      namedSessions.set(name.toLowerCase(), { id, ...snapshot, gameState: prevNs?.gameState ?? null });
+    }
 
     // Also keep the short-lived token-based session for fast reconnect.
     const timer = setTimeout(() => {
