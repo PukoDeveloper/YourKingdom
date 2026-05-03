@@ -6,6 +6,8 @@
  *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string, gameState: object|null }
  *   Server → Client  name_taken { type: 'name_taken', name: string }
  *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
+ *   Client → Server  info       { type: 'info', appearance: object, kingdom: { name, color } }
+ *   Client → Server  territory  { type: 'territory', captured: string[], liberated: string[] }
  *   Client → Server  save       { type: 'save', gameState: object }
  *   Server → Client  join       { type: 'join', id: string, name: string }
  *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
@@ -132,6 +134,32 @@ export class MultiplayerClient {
     if (now - this._lastSendTime < this._sendIntervalMs) return;
     this._lastSendTime = now;
     this._ws.send(JSON.stringify({ type: 'move', x, y, angle }));
+  }
+
+  /**
+   * Send the local player's appearance indices and kingdom info to the server.
+   * Other connected clients will receive this in the next 'state' broadcast.
+   * Called once on initial connect and again whenever the player edits their
+   * character appearance or kingdom flag/name.
+   * @param {{ bodyColorIdx: number, headgearIdx: number, armorColorIdx: number,
+   *            markColorIdx: number, bodyShapeIdx: number, faceAccIdx: number }} appearance
+   * @param {{ name: string, color: string }} kingdom
+   */
+  sendInfo(appearance, kingdom) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'info', appearance, kingdom }));
+  }
+
+  /**
+   * Send the player's captured / liberated settlement key lists.
+   * Other connected clients will receive these in the next 'state' broadcast
+   * and can display a visual territory overlay on the map.
+   * @param {string[]} captured   e.g. ['castle:0', 'village:3']
+   * @param {string[]} liberated  e.g. ['village:5']
+   */
+  sendTerritory(captured, liberated) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'territory', captured, liberated }));
   }
 
   /**

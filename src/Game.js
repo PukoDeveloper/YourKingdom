@@ -14,6 +14,7 @@ import { Camera }           from './Camera.js';
 import { InputManager }     from './controls/InputManager.js';
 import { VirtualJoystick }  from './controls/VirtualJoystick.js';
 import { TILE_SIZE, TERRAIN, TERRAIN_NAMES } from './world/constants.js';
+import { cssToNum } from './systems/AppearanceSystem.js';
 import { DayNightCycle }    from './world/DayNightCycle.js';
 import { WeatherSystem }    from './world/WeatherSystem.js';
 import { GameUI }           from './ui/GameUI.js';
@@ -174,6 +175,14 @@ export class Game {
     this._workerRenderer = new WorkerRenderer();
     this._world.addChild(this._workerRenderer.container);
 
+    // Remote territory overlay – shows other players' captured/liberated
+    // settlements as small coloured flag markers above each settlement.
+    // Rendered above structures/armies but below entity sprites.
+    this._remoteTerritoryContainer = new Container();
+    this._world.addChild(this._remoteTerritoryContainer);
+    /** @type {Map<string, import('pixi.js').Graphics>} */
+    this._remoteTerritoryGraphics = new Map();
+
     // Player
     this._setLoadingStatus('召喚玩家...');
     const { tileX, tileY } = this._mapData.findStartTile();
@@ -310,10 +319,17 @@ export class Game {
       this._structureRenderer.rebuild();
       this._hudTileX = -1; // force HUD refresh next frame
       this._hudFacingOctant = -1;
+      this._mpSendTerritory();
     };
 
     // Rebuild map structures whenever the player changes their kingdom flag or name.
-    this._gameUI.onPlayerKingdomChanged = () => this._structureRenderer.rebuild();
+    this._gameUI.onPlayerKingdomChanged = () => {
+      this._structureRenderer.rebuild();
+      this._mpSendInfo();
+    };
+
+    // Re-broadcast appearance to peers when the player edits their character look.
+    this._gameUI.onPlayerAppearanceChanged = () => this._mpSendInfo();
 
     // Rebuild road overlay whenever a road is completed or demolished.
     this._gameUI.onRoadBuilt = () => {
@@ -356,6 +372,10 @@ export class Game {
       };
       this._mp.onDisconnect   = () => this._gameUI?.showToast('與伺服器斷線 ✗');
       this._mp.onWorldSync    = (time, weather) => this._syncWorld(time, weather);
+      // Broadcast our initial appearance, kingdom info and territory immediately
+      // after init so other already-connected players see our look right away.
+      this._mpSendInfo();
+      this._mpSendTerritory();
     }
 
     // Hide loading screen
@@ -694,7 +714,19 @@ export class Game {
         this._remotePlayers.set(id, rp);
       }
       rp.setTarget(state.x, state.y, state.angle);
-      if (state.name !== undefined) rp.setName(state.name);
+      if (state.name       !== undefined) rp.setName(state.name);
+      if (state.appearance)               rp.setAppearance(state.appearance);
+      if (state.kingdom)                  rp.setKingdom(state.kingdom.name, state.kingdom.color);
+
+      // Update the territory overlay whenever captured/liberated lists are present.
+      if (state.captured !== undefined || state.liberated !== undefined) {
+        this._updateRemoteTerritory(
+          id,
+          state.captured  ?? [],
+          state.liberated ?? [],
+          state.kingdom?.color ?? '#64b5f6',
+        );
+      }
     }
 
     // Remove entities that are no longer in the snapshot.
@@ -715,6 +747,118 @@ export class Game {
       this._world.removeChild(rp.container);
       this._remotePlayers.delete(id);
     }
+    // Clean up the territory overlay for this player.
+    const tg = this._remoteTerritoryGraphics?.get(id);
+    if (tg) {
+      this._remoteTerritoryContainer?.removeChild(tg);
+      this._remoteTerritoryGraphics.delete(id);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multiplayer helpers: sending local state
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Send the local player's current appearance indices and kingdom info to the
+   * server so other players' clients can render the correct sprite and label.
+   * No-op when not connected.
+   */
+  _mpSendInfo() {
+    if (!this._mp) return;
+    const appearance  = this._player?.getAppearanceState() ?? null;
+    const playerNation = this._gameUI?.getPlayerNation();
+    const kingdom = playerNation
+      ? { name: playerNation.name, color: playerNation.color }
+      : null;
+    this._mp.sendInfo(appearance, kingdom);
+  }
+
+  /**
+   * Send the local player's captured/liberated settlement keys to the server.
+   * Other clients will show a territory-flag overlay for these settlements.
+   * No-op when not connected or GameUI not ready.
+   */
+  _mpSendTerritory() {
+    if (!this._mp || !this._gameUI) return;
+    this._mp.sendTerritory(
+      [...this._gameUI._capturedSettlements],
+      [...this._gameUI._liberatedSettlements],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Remote territory overlay
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Redraw the territory-flag markers for one remote player.
+   *
+   * Each captured settlement gets a small coloured flag marker (pole + banner)
+   * drawn just above the settlement's centre.  Liberated (neutral) settlements
+   * get a grey marker instead.  The markers are purely visual; they do not
+   * affect this client's local game-state in any way.
+   *
+   * @param {string}   id        Remote player id.
+   * @param {string[]} captured  Keys like 'castle:0', 'village:2'.
+   * @param {string[]} liberated Keys of liberated (neutral) settlements.
+   * @param {string}   color     Kingdom CSS colour, e.g. '#C62828'.
+   */
+  _updateRemoteTerritory(id, captured, liberated, color) {
+    // Acquire or create a Graphics object for this player.
+    let g = this._remoteTerritoryGraphics.get(id);
+    if (!g) {
+      g = new Graphics();
+      this._remoteTerritoryContainer.addChild(g);
+      this._remoteTerritoryGraphics.set(id, g);
+    }
+    g.clear();
+
+    const colNum    = cssToNum(color);
+    const captSet   = new Set(captured);
+    const allKeys   = [...new Set([...captured, ...liberated])];
+
+    for (const key of allKeys) {
+      const pos = this._settlementWorldPos(key);
+      if (!pos) continue;
+
+      const isCaptured = captSet.has(key);
+      const flagColor  = isCaptured ? colNum : 0xAAAAAA;
+      const { x, y }   = pos;
+
+      // Flag pole (2 × 16 px, white)
+      g.rect(x - 1, y - 28, 2, 16).fill({ color: 0xffffff, alpha: 0.75 });
+      // Flag banner (14 × 9 px in the player's kingdom colour)
+      g.rect(x + 1, y - 28, 14, 9).fill({ color: flagColor, alpha: 0.88 });
+    }
+  }
+
+  /**
+   * Return the world-pixel centre of a settlement identified by its key.
+   * @param {string} key  e.g. 'castle:0' or 'village:3'
+   * @returns {{ x: number, y: number }|null}
+   */
+  _settlementWorldPos(key) {
+    if (!this._mapData) return null;
+    const colonIdx = key.indexOf(':');
+    if (colonIdx < 0) return null;
+    const type = key.slice(0, colonIdx);
+    const idx  = parseInt(key.slice(colonIdx + 1), 10);
+    if (isNaN(idx)) return null;
+
+    if (type === 'castle') {
+      const c = this._mapData.castles[idx];
+      if (!c) return null;
+      // Castle occupies 4×4 tiles; centre is at (cx+2, cy+2) in tile coordinates.
+      return { x: (c.x + 2) * TILE_SIZE, y: (c.y + 2) * TILE_SIZE };
+    }
+    if (type === 'village') {
+      const v = this._mapData.villages[idx];
+      if (!v) return null;
+      // Village occupies 2×2 tiles; centre is at (vx+1, vy+1) in tile coordinates.
+      return { x: (v.x + 1) * TILE_SIZE, y: (v.y + 1) * TILE_SIZE };
+    }
+    return null;
   }
 
   /**

@@ -10,12 +10,17 @@
  *   { type: 'name_taken', name }   (then the server closes the connection)
  *
  * Clients send:
- *   { type: 'move', x: <number>, y: <number>, angle: <number> }
- *   { type: 'save', gameState: <object> }   (persists full game state for the named account)
+ *   { type: 'move',      x: <number>, y: <number>, angle: <number> }
+ *   { type: 'info',      appearance: <object>, kingdom: { name, color } }
+ *   { type: 'territory', captured: string[], liberated: string[] }
+ *   { type: 'save',      gameState: <object> }   (persists full game state for the named account)
  *
  * The server broadcasts the current player state to all clients every
  * TICK_MS milliseconds:
- *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms>, time: <number>, weather: <number> }
+ *   { type: 'state', players: { '<id>': { x, y, angle, name,
+ *                                                    appearance, kingdom,
+ *                                                    captured, liberated } },
+ *                   ts: <ms>, time: <number>, weather: <number> }
  *
  * When a player connects the server broadcasts (to existing players only):
  *   { type: 'join', id: '<id>', name: '<name>' }
@@ -93,7 +98,16 @@ let _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION
 const wss = new WebSocketServer({ port: PORT });
 
 /**
- * @type {Map<string, { ws: import('ws').WebSocket, x: number, y: number, angle: number, name: string, hasPosition: boolean }>}
+ * @type {Map<string, {
+ *   ws: import('ws').WebSocket,
+ *   x: number, y: number, angle: number,
+ *   name: string,
+ *   hasPosition: boolean,
+ *   appearance: object|null,
+ *   kingdom: { name: string, color: string }|null,
+ *   captured: string[],
+ *   liberated: string[],
+ * }>}
  * hasPosition: false until the client sends its first 'move' message, so we
  * don't broadcast the placeholder (0,0) position to other players.
  */
@@ -148,7 +162,7 @@ wss.on('connection', (ws, req) => {
 
     const { id, name } = session;
     // hasPosition: true – the server already has a valid last-known position.
-    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name, hasPosition: true });
+    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name, hasPosition: true, appearance: null, kingdom: null, captured: [], liberated: [] });
     // Keep the namedSession in sync with the restored position; preserve existing gameState.
     const existingNs = name ? namedSessions.get(name.toLowerCase()) : null;
     if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle, gameState: existingNs?.gameState ?? null });
@@ -193,7 +207,7 @@ wss.on('connection', (ws, req) => {
       const prev = namedSessions.get(nameKey);
       const { id } = prev;
       // hasPosition: true – we have the last-known position from namedSessions.
-      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true });
+      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, appearance: null, kingdom: null, captured: [], liberated: [] });
       ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: prev.gameState ?? null }));
       broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
       console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
@@ -201,7 +215,7 @@ wss.on('connection', (ws, req) => {
     } else {
       // New named player – position unknown until client sends its first 'move'.
       const id = generateId();
-      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false });
+      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, appearance: null, kingdom: null, captured: [], liberated: [] });
       namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0, gameState: null });
       ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: null }));
       broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
@@ -215,7 +229,7 @@ wss.on('connection', (ws, req) => {
   const id           = generateId();
   const sessionToken = generateToken();
   // hasPosition: false until the client sends its first 'move'.
-  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '', hasPosition: false });
+  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '', hasPosition: false, appearance: null, kingdom: null, captured: [], liberated: [] });
   ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: '' }));
   broadcastExcept(id, JSON.stringify({ type: 'join', id, name: '' }));
   console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
@@ -248,6 +262,37 @@ function _attachHandlers(ws, id, sessionToken, name) {
         if (ns) { ns.x = player.x; ns.y = player.y; ns.angle = player.angle; }
       }
     }
+
+    if (msg.type === 'info') {
+      const player = players.get(id);
+      if (!player) return;
+      // Sanitise: only accept well-typed fields; ignore anything unexpected.
+      if (msg.appearance && typeof msg.appearance === 'object') {
+        player.appearance = msg.appearance;
+      }
+      if (msg.kingdom && typeof msg.kingdom === 'object') {
+        // Only store name (string) and color (CSS string) – the minimum needed by peers.
+        const kName  = typeof msg.kingdom.name  === 'string' ? msg.kingdom.name.slice(0, 40)  : '';
+        const kColor = typeof msg.kingdom.color === 'string' ? msg.kingdom.color.slice(0, 12) : '#64b5f6';
+        player.kingdom = { name: kName, color: kColor };
+      }
+    }
+
+    if (msg.type === 'territory') {
+      const player = players.get(id);
+      if (!player) return;
+      if (Array.isArray(msg.captured)) {
+        player.captured = msg.captured
+          .filter(k => typeof k === 'string' && /^(castle|village):\d+$/.test(k))
+          .slice(0, 200);
+      }
+      if (Array.isArray(msg.liberated)) {
+        player.liberated = msg.liberated
+          .filter(k => typeof k === 'string' && /^(castle|village):\d+$/.test(k))
+          .slice(0, 200);
+      }
+    }
+
 
     if (msg.type === 'save' && name) {
       // Accept gameState: <object> to persist, or gameState: null to clear the saved state.
@@ -314,12 +359,18 @@ setInterval(() => {
 
   if (players.size === 0) return;
 
-  /** @type {Record<string, { x: number, y: number, angle: number, name: string }>} */
+  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[] }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
     // Omit players whose position isn't known yet (no 'move' received).
     if (!data.hasPosition) continue;
-    snapshot[pid] = { x: data.x, y: data.y, angle: data.angle, name: data.name };
+    snapshot[pid] = {
+      x: data.x, y: data.y, angle: data.angle, name: data.name,
+      appearance: data.appearance ?? null,
+      kingdom:    data.kingdom    ?? null,
+      captured:   data.captured  ?? [],
+      liberated:  data.liberated ?? [],
+    };
   }
 
   broadcast(JSON.stringify({ type: 'state', players: snapshot, ts: Date.now(), time: WORLD_TIME, weather: WORLD_WEATHER }));
