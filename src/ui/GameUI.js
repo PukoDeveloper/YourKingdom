@@ -7124,6 +7124,18 @@ export class GameUI {
   }
 
   /**
+   * Return the player's current territory as plain arrays, safe to iterate
+   * without exposing the internal Set instances.
+   * @returns {{ captured: string[], liberated: string[] }}
+   */
+  getTerritoryState() {
+    return {
+      captured:  [...this._capturedSettlements],
+      liberated: [...this._liberatedSettlements],
+    };
+  }
+
+  /**
    * Returns true if any player-placed building of `bldgType` exists within
    * `distance` Chebyshev tiles of (tx, ty).
    * @param {number} tx

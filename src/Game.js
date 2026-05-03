@@ -781,10 +781,8 @@ export class Game {
    */
   _mpSendTerritory() {
     if (!this._mp || !this._gameUI) return;
-    this._mp.sendTerritory(
-      [...this._gameUI._capturedSettlements],
-      [...this._gameUI._liberatedSettlements],
-    );
+    const { captured, liberated } = this._gameUI.getTerritoryState();
+    this._mp.sendTerritory(captured, liberated);
   }
 
   // ---------------------------------------------------------------------------
