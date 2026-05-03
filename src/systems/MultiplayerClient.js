@@ -3,28 +3,30 @@
  * lifecycle and message routing for multiplayer mode.
  *
  * Protocol (JSON over WebSocket):
- *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string, gameState: object|null }
- *   Server → Client  name_taken { type: 'name_taken', name: string }
- *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
- *   Client → Server  info       { type: 'info', appearance: object, kingdom: { name, color } }
- *   Client → Server  territory  { type: 'territory', captured: string[], liberated: string[] }
- *   Client → Server  save       { type: 'save', gameState: object }
- *   Server → Client  join       { type: 'join', id: string, name: string }
- *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
- *   Server → Client  leave      { type: 'leave', id: string, name: string }
+ *   Server → Client  welcome       { type: 'welcome', id: string, seed: number, time: number, weather: number, name: string, gameState: object|null }
+ *   Server → Client  name_taken    { type: 'name_taken', name: string }
+ *   Server → Client  name_required { type: 'name_required' }
+ *   Client → Server  move          { type: 'move', x: number, y: number, angle: number }
+ *   Client → Server  info          { type: 'info', appearance: object, kingdom: { name, color } }
+ *   Client → Server  territory     { type: 'territory', captured: string[], liberated: string[] }
+ *   Client → Server  save          { type: 'save', gameState: object }
+ *   Server → Client  join          { type: 'join', id: string, name: string }
+ *   Server → Client  state         { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
+ *                                   where id is the player's lowercase name
+ *   Server → Client  leave         { type: 'leave', id: string, name: string }
  *
  * Reconnection:
- *   On disconnect the client stores its sessionToken in localStorage under
- *   SESSION_KEY and automatically appends it as ?token=<sessionToken> on the
- *   next connection attempt so the server can restore the original player id.
- *   Up to MAX_RECONNECT_TRIES are made before onDisconnect is fired.
+ *   On disconnect the client automatically retries with exponential back-off
+ *   up to MAX_RECONNECT_TRIES times before onDisconnect is fired.
+ *   The player name is sent as ?name=<name> on every connection attempt so
+ *   the server can restore the session (last-known position and saved game
+ *   state) for the named account.
  *
- *   Additionally, the player name is appended as ?name=<name> so the server
- *   can also restore the session by name even after the token has expired.
+ * Identity:
+ *   The player's name is their sole unique identifier.  The server uses it
+ *   as the player id and rejects duplicate names from concurrent connections.
  */
 
-/** localStorage key used to persist the session token across page reloads. */
-const SESSION_KEY          = 'yk_mp_session';
 /** Base delay for reconnection back-off (ms); doubles on each attempt, capped at 32 s. */
 const RECONNECT_BASE_MS    = 2_000;
 /** Maximum number of automatic reconnection attempts before giving up. */
@@ -186,17 +188,11 @@ export class MultiplayerClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Build the WebSocket URL, appending the stored session token and player name.
+   * Build the WebSocket URL, appending the player name.
    * @returns {string}
    */
   _buildUrl() {
     const params = new URLSearchParams();
-    // Prefer the fast-reconnect token when available.
-    try {
-      const token = localStorage.getItem(SESSION_KEY);
-      if (token) params.set('token', token);
-    } catch { /* localStorage unavailable */ }
-    // Always send the player name so the server can do name-based identity lookup.
     if (this.playerName) params.set('name', this.playerName);
     const qs = params.toString();
     return qs ? `${this._baseUrl}?${qs}` : this._baseUrl;
@@ -248,16 +244,17 @@ export class MultiplayerClient {
         this.weather    = typeof msg.weather === 'number' ? msg.weather : null;
         this.gameState  = msg.gameState ?? null;
         this.playerName = msg.name || this.playerName;
-        if (msg.sessionToken) {
-          try { localStorage.setItem(SESSION_KEY, msg.sessionToken); } catch { /* ignore */ }
-        }
         onWelcome?.();
-      } else if (msg.type === 'name_taken' && !welcomed) {
-        // Server rejected because the name is already in use.
+      } else if ((msg.type === 'name_taken' || msg.type === 'name_required') && !welcomed) {
+        // Server rejected the connection.
         welcomed = true; // prevent reconnect loop
         this._destroyed = true;
-        this.onNameTaken?.(msg.name);
-        onError?.(new Error(`名稱「${msg.name}」已被其他玩家使用，請換一個名稱`));
+        if (msg.type === 'name_taken') {
+          this.onNameTaken?.(msg.name);
+          onError?.(new Error(`名稱「${msg.name}」已被其他玩家使用，請換一個名稱`));
+        } else {
+          onError?.(new Error('連線需要玩家名稱'));
+        }
       } else {
         this._handleMessage(msg);
       }
