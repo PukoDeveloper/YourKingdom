@@ -7,8 +7,9 @@
  *   Server → Client  name_taken { type: 'name_taken', name: string }
  *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
  *   Client → Server  save       { type: 'save', gameState: object }
+ *   Server → Client  join       { type: 'join', id: string, name: string }
  *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
- *   Server → Client  leave      { type: 'leave', id: string }
+ *   Server → Client  leave      { type: 'leave', id: string, name: string }
  *
  * Reconnection:
  *   On disconnect the client stores its sessionToken in localStorage under
@@ -82,6 +83,10 @@ export class MultiplayerClient {
     /** Called when the chosen name is already taken by an active player.
      *  @type {((name: string) => void)|null} */
     this.onNameTaken = null;
+
+    /** Called when another player joins the server.
+     *  @type {((id: string, name: string) => void)|null} */
+    this.onPlayerJoined = null;
 
     this._ws               = null;
     /** Minimum milliseconds between outgoing move messages. */
@@ -163,10 +168,17 @@ export class MultiplayerClient {
 
   /**
    * Open a new WebSocket, wiring all event handlers.
+   * Any previously open socket is closed before the new one is created.
    * @param {(() => void)|null}           onWelcome  Called once on the first welcome message.
    * @param {((err: Error) => void)|null} onError    Called on connection error before welcome.
    */
   _openSocket(onWelcome, onError) {
+    // Close any existing socket to avoid stale event handlers or duplicate connections.
+    if (this._ws && this._ws.readyState !== WebSocket.CLOSED) {
+      this._ws.onclose = null; // prevent the old close handler from scheduling a reconnect
+      this._ws.close();
+    }
+
     const ws = new WebSocket(this._buildUrl());
     this._ws = ws;
     let welcomed = false;
@@ -179,6 +191,11 @@ export class MultiplayerClient {
 
     ws.addEventListener('close', () => {
       if (this._destroyed) return;
+      // Only schedule a reconnect if the connection was ever successfully established
+      // (welcomed). This prevents a failed initial connect from silently retrying,
+      // and also prevents the close event (which always follows an error event) from
+      // scheduling a duplicate reconnect on top of the one already queued by onError.
+      if (!welcomed) return;
       this._scheduleReconnect();
     });
 
@@ -237,8 +254,11 @@ export class MultiplayerClient {
           this.onWorldSync?.(msg.time, msg.weather);
         }
         break;
+      case 'join':
+        this.onPlayerJoined?.(msg.id, msg.name ?? '');
+        break;
       case 'leave':
-        this.onPlayerLeft?.(msg.id);
+        this.onPlayerLeft?.(msg.id, msg.name ?? '');
         break;
     }
   }

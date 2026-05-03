@@ -17,8 +17,11 @@
  * TICK_MS milliseconds:
  *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms>, time: <number>, weather: <number> }
  *
+ * When a player connects the server broadcasts (to existing players only):
+ *   { type: 'join', id: '<id>', name: '<name>' }
+ *
  * When a client disconnects the server broadcasts:
- *   { type: 'leave', id: '<id>' }
+ *   { type: 'leave', id: '<id>', name: '<name>' }
  *
  * Identity:
  *   1. Token-based (fast reconnect within RECONNECT_GRACE_MS):
@@ -89,7 +92,11 @@ let _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION
 
 const wss = new WebSocketServer({ port: PORT });
 
-/** @type {Map<string, { ws: import('ws').WebSocket, x: number, y: number, angle: number, name: string }>} */
+/**
+ * @type {Map<string, { ws: import('ws').WebSocket, x: number, y: number, angle: number, name: string, hasPosition: boolean }>}
+ * hasPosition: false until the client sends its first 'move' message, so we
+ * don't broadcast the placeholder (0,0) position to other players.
+ */
 const players = new Map();
 
 /**
@@ -140,12 +147,14 @@ wss.on('connection', (ws, req) => {
     pendingReconnect.delete(incomingToken);
 
     const { id, name } = session;
-    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name });
+    // hasPosition: true – the server already has a valid last-known position.
+    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name, hasPosition: true });
     // Keep the namedSession in sync with the restored position; preserve existing gameState.
     const existingNs = name ? namedSessions.get(name.toLowerCase()) : null;
     if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle, gameState: existingNs?.gameState ?? null });
     const tokenGameState = existingNs?.gameState ?? null;
     ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken: incomingToken, name, gameState: tokenGameState }));
+    broadcastExcept(id, JSON.stringify({ type: 'join', id, name }));
     console.log(`[~] Player "${name || id}" reconnected via token (total: ${players.size})`);
     _attachHandlers(ws, id, incomingToken, name);
     return;
@@ -164,22 +173,38 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // If a pendingReconnect session exists for this name, cancel it so the old
+    // token can no longer be used to steal back the identity after the new player
+    // has taken it.  This prevents a race where both the old token and the new
+    // name-based connection resolve to the same player id simultaneously.
+    for (const [token, session] of pendingReconnect) {
+      if (session.name && session.name.toLowerCase() === nameKey) {
+        clearTimeout(session.timer);
+        pendingReconnect.delete(token);
+        console.log(`[~] Cancelled pending token for "${incomingName}" (name-based reconnect)`);
+        break;
+      }
+    }
+
     const sessionToken = generateToken();
 
     if (namedSessions.has(nameKey)) {
       // Restore existing named session (same id, last-known position, and saved game state).
       const prev = namedSessions.get(nameKey);
       const { id } = prev;
-      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName });
+      // hasPosition: true – we have the last-known position from namedSessions.
+      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true });
       ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: prev.gameState ?? null }));
+      broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
       console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     } else {
-      // New named player.
+      // New named player – position unknown until client sends its first 'move'.
       const id = generateId();
-      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName });
+      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false });
       namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0, gameState: null });
       ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: null }));
+      broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
       console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
       _attachHandlers(ws, id, sessionToken, incomingName);
     }
@@ -189,8 +214,10 @@ wss.on('connection', (ws, req) => {
   // --- Anonymous connection (no name) ---
   const id           = generateId();
   const sessionToken = generateToken();
-  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '' });
+  // hasPosition: false until the client sends its first 'move'.
+  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '', hasPosition: false });
   ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: '' }));
+  broadcastExcept(id, JSON.stringify({ type: 'join', id, name: '' }));
   console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
   _attachHandlers(ws, id, sessionToken, '');
 });
@@ -213,6 +240,8 @@ function _attachHandlers(ws, id, sessionToken, name) {
       player.x     = typeof msg.x     === 'number' ? msg.x     : player.x;
       player.y     = typeof msg.y     === 'number' ? msg.y     : player.y;
       player.angle = typeof msg.angle === 'number' ? msg.angle : player.angle;
+      // Mark position as known once the client sends real coordinates.
+      player.hasPosition = true;
       // Keep the persistent named session position up to date.
       if (name) {
         const ns = namedSessions.get(name.toLowerCase());
@@ -245,7 +274,7 @@ function _attachHandlers(ws, id, sessionToken, name) {
       : { x: 0, y: 0, angle: 0 };
     players.delete(id);
     console.log(`[-] Player "${name || id}" disconnected (total: ${players.size})`);
-    broadcast(JSON.stringify({ type: 'leave', id }));
+    broadcast(JSON.stringify({ type: 'leave', id, name }));
 
     // Persist latest position in namedSessions so the player can rejoin by name.
     // Preserve the existing gameState so it survives the disconnect.
@@ -288,6 +317,8 @@ setInterval(() => {
   /** @type {Record<string, { x: number, y: number, angle: number, name: string }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
+    // Omit players whose position isn't known yet (no 'move' received).
+    if (!data.hasPosition) continue;
     snapshot[pid] = { x: data.x, y: data.y, angle: data.angle, name: data.name };
   }
 
@@ -297,6 +328,20 @@ setInterval(() => {
 function broadcast(payload) {
   for (const { ws } of players.values()) {
     if (ws.readyState === WebSocket.OPEN) {
+      ws.send(payload);
+    }
+  }
+}
+
+/**
+ * Send `payload` to every connected player except the one with id `excludeId`.
+ * Used for join/leave notifications so the subject doesn't receive their own event.
+ * @param {string} excludeId
+ * @param {string} payload
+ */
+function broadcastExcept(excludeId, payload) {
+  for (const [pid, { ws }] of players) {
+    if (pid !== excludeId && ws.readyState === WebSocket.OPEN) {
       ws.send(payload);
     }
   }

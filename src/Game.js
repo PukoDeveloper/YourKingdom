@@ -346,10 +346,16 @@ export class Game {
     // Multiplayer wiring
     // -----------------------------------------------------------------------
     if (this._mp) {
-      this._mp.onStateUpdate = (players) => this._onRemoteStateUpdate(players);
-      this._mp.onPlayerLeft  = (id)      => this._removeRemotePlayer(id);
-      this._mp.onDisconnect  = ()        => this._gameUI?.showToast('與伺服器斷線 ✗');
-      this._mp.onWorldSync   = (time, weather) => this._syncWorld(time, weather);
+      this._mp.onStateUpdate  = (players) => this._onRemoteStateUpdate(players);
+      this._mp.onPlayerLeft   = (id, name) => {
+        this._removeRemotePlayer(id);
+        this._gameUI?.showToast(`${name || '玩家'} 離開了遊戲`);
+      };
+      this._mp.onPlayerJoined = (id, name) => {
+        this._gameUI?.showToast(`${name || '玩家'} 加入了遊戲 ✓`);
+      };
+      this._mp.onDisconnect   = () => this._gameUI?.showToast('與伺服器斷線 ✗');
+      this._mp.onWorldSync    = (time, weather) => this._syncWorld(time, weather);
     }
 
     // Hide loading screen
@@ -724,10 +730,23 @@ export class Game {
    * spurious phase-transition event from firing in the same frame when the
    * corrected time happens to cross a phase boundary.
    *
+   * Day-rollover detection: because the server is authoritative and advances
+   * time independently, the rollover (time wrapping ~1 → ~0) is observed here
+   * rather than in _update()'s local drift check.  We detect it by comparing
+   * the new server time against the locally-tracked previous time: a decrease
+   * of more than 0.5 (half a day) can only happen due to a wrap-around.
+   *
    * @param {number} time     Authoritative in-game time fraction [0, 1).
    * @param {number} weather  Authoritative weather state index.
    */
   _syncWorld(time, weather) {
+    // Detect day rollover from the server's perspective and fire the day-passed
+    // event that single-player detects locally in _update().
+    const prevTime = this._dayNight.time;
+    if (time < prevTime - 0.5) {
+      this._gameUI?.onDayPassed();
+    }
+
     this._prevDayTime = time;
     this._dayNight.time = time;
     this._prevPhase = this._dayNight.getPhaseName();
