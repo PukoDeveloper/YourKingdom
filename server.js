@@ -5,32 +5,38 @@
  *   node server.js              # listens on port 3000
  *   PORT=8080 node server.js    # listens on a custom port
  *
- * Each connected client receives:
- *   { type: 'welcome', id: string, seed: number, sessionToken: string }
+ * Each connected client receives one of:
+ *   { type: 'welcome',    id, seed, sessionToken, name }
+ *   { type: 'name_taken', name }   (then the server closes the connection)
  *
  * Clients send:
  *   { type: 'move', x: <number>, y: <number>, angle: <number> }
  *
  * The server broadcasts the current player state to all clients every
  * TICK_MS milliseconds:
- *   { type: 'state', players: { '<id>': { x, y, angle } }, ts: <ms> }
+ *   { type: 'state', players: { '<id>': { x, y, angle, name } }, ts: <ms> }
  *
  * When a client disconnects the server broadcasts:
  *   { type: 'leave', id: '<id>' }
  *
- * Reconnection:
- *   Clients that possess a sessionToken (stored in localStorage) append it
- *   as ?token=<sessionToken> when opening the WebSocket URL.  The server
- *   looks up the token in its pendingReconnect registry; if found within
- *   RECONNECT_GRACE_MS the player's previous id and position are restored.
+ * Identity:
+ *   1. Token-based (fast reconnect within RECONNECT_GRACE_MS):
+ *      Client appends ?token=<sessionToken> – server restores id & position.
+ *   2. Name-based (persistent across sessions):
+ *      Client appends ?name=<playerName> – server looks up namedSessions and
+ *      restores the player's last-known position indefinitely (until the server
+ *      process restarts).  If the name is already used by an active connection
+ *      the server sends { type: 'name_taken', name } and closes.
  */
 
 import { WebSocketServer } from 'ws';
 import { randomBytes }    from 'crypto';
 
 const PORT                = Number(process.env.PORT ?? 3000);
-const TICK_MS             = 50;   // broadcast interval (20 Hz)
-const RECONNECT_GRACE_MS  = 30_000; // session kept alive after disconnect
+const TICK_MS             = 50;     // broadcast interval (20 Hz)
+const RECONNECT_GRACE_MS  = 30_000; // token-based grace period after disconnect
+/** Maximum length accepted for a player name. */
+const MAX_NAME_LEN        = 20;
 
 // World seed: fixed for the lifetime of this server process so every client
 // that connects (or reconnects) generates the same deterministic map.
@@ -38,15 +44,23 @@ const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
 
 const wss = new WebSocketServer({ port: PORT });
 
-/** @type {Map<string, { ws: import('ws').WebSocket, x: number, y: number, angle: number }>} */
+/** @type {Map<string, { ws: import('ws').WebSocket, x: number, y: number, angle: number, name: string }>} */
 const players = new Map();
 
 /**
- * Sessions kept alive during the reconnection grace period.
- * Key: sessionToken  Value: { id, x, y, angle, timer }
- * @type {Map<string, { id: string, x: number, y: number, angle: number, timer: ReturnType<typeof setTimeout> }>}
+ * Token-based sessions kept alive during the reconnection grace period.
+ * Key: sessionToken  Value: { id, name, x, y, angle, timer }
+ * @type {Map<string, { id: string, name: string, x: number, y: number, angle: number, timer: ReturnType<typeof setTimeout> }>}
  */
 const pendingReconnect = new Map();
+
+/**
+ * Persistent name-based identity store.
+ * Key: playerName (lowercase)  Value: { id, x, y, angle }
+ * Entries are never deleted – they persist for the lifetime of the server process.
+ * @type {Map<string, { id: string, x: number, y: number, angle: number }>}
+ */
+const namedSessions = new Map();
 
 let _idCounter = 0;
 function generateId() {
@@ -58,37 +72,78 @@ function generateToken() {
   return randomBytes(24).toString('hex');
 }
 
+/** Sanitise a player name: trim, limit length, strip control chars. */
+function sanitiseName(raw) {
+  return String(raw).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, MAX_NAME_LEN);
+}
+
 // ---------------------------------------------------------------------------
 // Connection handler
 // ---------------------------------------------------------------------------
 
 wss.on('connection', (ws, req) => {
-  // Parse optional session token from the WebSocket URL query string.
-  // req.url is a relative path such as "/?token=xxx"; splitting on "?" avoids
-  // the need for a synthetic base URL and works regardless of hostname.
-  const incomingToken = new URLSearchParams(req.url.split('?')[1] ?? '').get('token') ?? null;
+  const qs            = new URLSearchParams(req.url.split('?')[1] ?? '');
+  const incomingToken = qs.get('token') ?? null;
+  const incomingName  = qs.has('name') ? sanitiseName(qs.get('name')) : '';
 
-  // --- Reconnection path ---
+  // --- Token-based reconnect (highest priority: within grace period) ---
   if (incomingToken && pendingReconnect.has(incomingToken)) {
     const session = pendingReconnect.get(incomingToken);
     clearTimeout(session.timer);
     pendingReconnect.delete(incomingToken);
 
-    const id = session.id;
-    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle });
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken: incomingToken }));
-    console.log(`[~] Player ${id} reconnected (total: ${players.size})`);
-    _attachHandlers(ws, id, incomingToken);
+    const { id, name } = session;
+    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name });
+    // Keep the namedSession in sync with the restored position.
+    if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle });
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken: incomingToken, name }));
+    console.log(`[~] Player "${name || id}" reconnected via token (total: ${players.size})`);
+    _attachHandlers(ws, id, incomingToken, name);
     return;
   }
 
-  // --- New connection path ---
+  // --- Name-based reconnect / new named connection ---
+  if (incomingName) {
+    const nameKey = incomingName.toLowerCase();
+
+    // Reject if this name is already held by an active (connected) player.
+    const activeEntry = [...players.values()].find(p => p.name.toLowerCase() === nameKey);
+    if (activeEntry) {
+      ws.send(JSON.stringify({ type: 'name_taken', name: incomingName }));
+      ws.close();
+      console.log(`[!] Name "${incomingName}" is already taken – rejected new connection`);
+      return;
+    }
+
+    const sessionToken = generateToken();
+
+    if (namedSessions.has(nameKey)) {
+      // Restore existing named session (same id, last-known position).
+      const prev = namedSessions.get(nameKey);
+      const { id } = prev;
+      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName });
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: incomingName }));
+      console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
+      _attachHandlers(ws, id, sessionToken, incomingName);
+    } else {
+      // New named player.
+      const id = generateId();
+      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName });
+      namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0 });
+      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: incomingName }));
+      console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
+      _attachHandlers(ws, id, sessionToken, incomingName);
+    }
+    return;
+  }
+
+  // --- Anonymous connection (no name) ---
   const id           = generateId();
   const sessionToken = generateToken();
-  players.set(id, { ws, x: 0, y: 0, angle: 0 });
-  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken }));
-  console.log(`[+] Player ${id} connected  (total: ${players.size})`);
-  _attachHandlers(ws, id, sessionToken);
+  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '' });
+  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, sessionToken, name: '' }));
+  console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
+  _attachHandlers(ws, id, sessionToken, '');
 });
 
 /**
@@ -96,8 +151,9 @@ wss.on('connection', (ws, req) => {
  * @param {import('ws').WebSocket} ws
  * @param {string} id
  * @param {string} sessionToken
+ * @param {string} name
  */
-function _attachHandlers(ws, id, sessionToken) {
+function _attachHandlers(ws, id, sessionToken, name) {
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -108,6 +164,11 @@ function _attachHandlers(ws, id, sessionToken) {
       player.x     = typeof msg.x     === 'number' ? msg.x     : player.x;
       player.y     = typeof msg.y     === 'number' ? msg.y     : player.y;
       player.angle = typeof msg.angle === 'number' ? msg.angle : player.angle;
+      // Keep the persistent named session position up to date.
+      if (name) {
+        const ns = namedSessions.get(name.toLowerCase());
+        if (ns) { ns.x = player.x; ns.y = player.y; ns.angle = player.angle; }
+      }
     }
   });
 
@@ -117,20 +178,22 @@ function _attachHandlers(ws, id, sessionToken) {
       ? { x: player.x, y: player.y, angle: player.angle }
       : { x: 0, y: 0, angle: 0 };
     players.delete(id);
-    console.log(`[-] Player ${id} disconnected (total: ${players.size})`);
-    // Notify remaining clients immediately.
+    console.log(`[-] Player "${name || id}" disconnected (total: ${players.size})`);
     broadcast(JSON.stringify({ type: 'leave', id }));
 
-    // Keep the session alive so the player can rejoin within the grace period.
+    // Persist latest position in namedSessions so the player can rejoin by name.
+    if (name) namedSessions.set(name.toLowerCase(), { id, ...snapshot });
+
+    // Also keep the short-lived token-based session for fast reconnect.
     const timer = setTimeout(() => {
       pendingReconnect.delete(sessionToken);
-      console.log(`[x] Session for player ${id} expired`);
+      console.log(`[x] Token session for "${name || id}" expired`);
     }, RECONNECT_GRACE_MS);
-    pendingReconnect.set(sessionToken, { id, ...snapshot, timer });
+    pendingReconnect.set(sessionToken, { id, name, ...snapshot, timer });
   });
 
   ws.on('error', (err) => {
-    console.error(`[!] Error from ${id}:`, err.message);
+    console.error(`[!] Error from "${name || id}":`, err.message);
   });
 }
 
@@ -141,10 +204,10 @@ function _attachHandlers(ws, id, sessionToken) {
 setInterval(() => {
   if (players.size === 0) return;
 
-  /** @type {Record<string, { x: number, y: number, angle: number }>} */
+  /** @type {Record<string, { x: number, y: number, angle: number, name: string }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
-    snapshot[pid] = { x: data.x, y: data.y, angle: data.angle };
+    snapshot[pid] = { x: data.x, y: data.y, angle: data.angle, name: data.name };
   }
 
   broadcast(JSON.stringify({ type: 'state', players: snapshot, ts: Date.now() }));

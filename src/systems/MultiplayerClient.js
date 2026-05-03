@@ -3,16 +3,20 @@
  * lifecycle and message routing for multiplayer mode.
  *
  * Protocol (JSON over WebSocket):
- *   Server → Client  welcome  { type: 'welcome', id: string, seed: number, sessionToken: string }
- *   Client → Server  move     { type: 'move', x: number, y: number, angle: number }
- *   Server → Client  state    { type: 'state', players: { [id]: { x, y, angle } }, ts: number }
- *   Server → Client  leave    { type: 'leave', id: string }
+ *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, sessionToken: string, name: string }
+ *   Server → Client  name_taken { type: 'name_taken', name: string }
+ *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
+ *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number }
+ *   Server → Client  leave      { type: 'leave', id: string }
  *
  * Reconnection:
  *   On disconnect the client stores its sessionToken in localStorage under
  *   SESSION_KEY and automatically appends it as ?token=<sessionToken> on the
  *   next connection attempt so the server can restore the original player id.
  *   Up to MAX_RECONNECT_TRIES are made before onDisconnect is fired.
+ *
+ *   Additionally, the player name is appended as ?name=<name> so the server
+ *   can also restore the session by name even after the token has expired.
  */
 
 /** localStorage key used to persist the session token across page reloads. */
@@ -24,14 +28,15 @@ const MAX_RECONNECT_TRIES  = 5;
 
 export class MultiplayerClient {
   /**
-   * @param {string} address  Raw address entered by the user.
+   * @param {string} address     Raw address entered by the user.
    *   Accepted formats:
    *     192.168.1.1          → ws://192.168.1.1:3000
    *     192.168.1.1:8080     → ws://192.168.1.1:8080
    *     ws://…               → used as-is
    *     wss://…              → used as-is
+   * @param {string} [playerName]  Display / identity name entered by the player.
    */
-  constructor(address) {
+  constructor(address, playerName = '') {
     this._baseUrl = MultiplayerClient._normalise(address);
 
     /** Our own player id assigned by the server. @type {string|null} */
@@ -40,8 +45,11 @@ export class MultiplayerClient {
     /** World seed received from the server – all clients share the same value. @type {number|null} */
     this.seed = null;
 
+    /** Player name confirmed by the server. @type {string} */
+    this.playerName = playerName.trim().slice(0, 20) || '玩家';
+
     /** Called whenever remote player positions change.
-     *  @type {((players: Record<string, {x:number,y:number,angle:number}>) => void)|null} */
+     *  @type {((players: Record<string, {x:number,y:number,angle:number,name:string}>) => void)|null} */
     this.onStateUpdate = null;
 
     /** Called when a remote player disconnects.
@@ -51,6 +59,10 @@ export class MultiplayerClient {
     /** Called when all reconnection attempts have been exhausted.
      *  @type {(() => void)|null} */
     this.onDisconnect = null;
+
+    /** Called when the chosen name is already taken by an active player.
+     *  @type {((name: string) => void)|null} */
+    this.onNameTaken = null;
 
     this._ws               = null;
     /** Minimum milliseconds between outgoing move messages. */
@@ -68,7 +80,8 @@ export class MultiplayerClient {
    * Open the WebSocket connection.
    * Resolves only after the server's 'welcome' message is received so that
    * this.seed and this.id are guaranteed to be set before Game.init() runs.
-   * @returns {Promise<void>} Resolves on successful welcome, rejects on error.
+   * Rejects with an Error when the connection fails or the name is taken.
+   * @returns {Promise<void>}
    */
   connect() {
     return new Promise((resolve, reject) => {
@@ -102,23 +115,25 @@ export class MultiplayerClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Build the WebSocket URL, appending the stored session token if one exists.
+   * Build the WebSocket URL, appending the stored session token and player name.
    * @returns {string}
    */
   _buildUrl() {
+    const params = new URLSearchParams();
+    // Prefer the fast-reconnect token when available.
     try {
       const token = localStorage.getItem(SESSION_KEY);
-      if (token) {
-        const sep = this._baseUrl.includes('?') ? '&' : '?';
-        return `${this._baseUrl}${sep}token=${encodeURIComponent(token)}`;
-      }
-    } catch { /* localStorage unavailable (e.g. private browsing restrictions) */ }
-    return this._baseUrl;
+      if (token) params.set('token', token);
+    } catch { /* localStorage unavailable */ }
+    // Always send the player name so the server can do name-based identity lookup.
+    if (this.playerName) params.set('name', this.playerName);
+    const qs = params.toString();
+    return qs ? `${this._baseUrl}?${qs}` : this._baseUrl;
   }
 
   /**
    * Open a new WebSocket, wiring all event handlers.
-   * @param {(() => void)|null}       onWelcome  Called once on the first welcome message.
+   * @param {(() => void)|null}           onWelcome  Called once on the first welcome message.
    * @param {((err: Error) => void)|null} onError    Called on connection error before welcome.
    */
   _openSocket(onWelcome, onError) {
@@ -144,12 +159,19 @@ export class MultiplayerClient {
       if (msg.type === 'welcome' && !welcomed) {
         welcomed = true;
         this._reconnectTries = 0;
-        this.id   = msg.id;
-        this.seed = typeof msg.seed === 'number' ? msg.seed : null;
+        this.id         = msg.id;
+        this.seed       = typeof msg.seed === 'number' ? msg.seed : null;
+        this.playerName = msg.name || this.playerName;
         if (msg.sessionToken) {
           try { localStorage.setItem(SESSION_KEY, msg.sessionToken); } catch { /* ignore */ }
         }
         onWelcome?.();
+      } else if (msg.type === 'name_taken' && !welcomed) {
+        // Server rejected because the name is already in use.
+        welcomed = true; // prevent reconnect loop
+        this._destroyed = true;
+        this.onNameTaken?.(msg.name);
+        onError?.(new Error(`名稱「${msg.name}」已被其他玩家使用，請換一個名稱`));
       } else {
         this._handleMessage(msg);
       }

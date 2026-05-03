@@ -220,7 +220,8 @@
         gap: 8px;
         margin-top: 4px;
       }
-      #title-ip-input {
+      #title-ip-input,
+      #title-name-input {
         width: 240px;
         padding: 10px 14px;
         border-radius: 6px;
@@ -232,11 +233,13 @@
         outline: none;
         text-align: center;
       }
-      #title-ip-input:focus {
+      #title-ip-input:focus,
+      #title-name-input:focus {
         border-color: rgba(100,181,246,0.8);
         background: rgba(255,255,255,0.10);
       }
-      #title-ip-input::placeholder {
+      #title-ip-input::placeholder,
+      #title-name-input::placeholder {
         color: rgba(255,255,255,0.3);
       }
       .title-btn-connect {
@@ -5124,6 +5127,7 @@
       <button class="title-btn title-btn-primary" id="title-btn-single">⚔ 開始單人遊戲</button>
       <button class="title-btn title-btn-secondary" id="title-btn-multi">🌐 多人模式</button>
       <div id="title-ip-wrap">
+        <input id="title-name-input" type="text" placeholder="玩家名稱（用於辨識身分）" autocomplete="off" maxlength="20" />
         <input id="title-ip-input" type="text" placeholder="伺服器位址，例如 192.168.1.1" autocomplete="off" />
         <button class="title-btn-connect" id="title-btn-connect">連線</button>
         <div id="title-ip-error"></div>

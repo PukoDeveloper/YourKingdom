@@ -666,6 +666,7 @@ export class Game {
         this._remotePlayers.set(id, rp);
       }
       rp.setTarget(state.x, state.y, state.angle);
+      if (state.name !== undefined) rp.setName(state.name);
     }
 
     // Remove entities that are no longer in the snapshot.
