@@ -22,6 +22,10 @@
  *                                                    captured, liberated } },
  *                   ts: <ms>, time: <number>, weather: <number> }
  *
+ * When the server rejects a client's position (teleport / speed violation) it
+ * sends a correction directly to that client:
+ *   { type: 'correction', x: <number>, y: <number>, angle: <number> }
+ *
  * When a player connects the server broadcasts (to existing players only):
  *   { type: 'join', id: '<id>', name: '<name>' }
  *
@@ -40,6 +44,8 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomBytes }               from 'crypto';
+import { MapData }                   from './src/world/MapData.js';
+import { TILE_SIZE }                 from './src/world/constants.js';
 
 const PORT                = Number(process.env.PORT ?? 3000);
 const TICK_MS             = 50;     // broadcast interval (20 Hz)
@@ -50,6 +56,42 @@ const MAX_NAME_LEN        = 20;
 // World seed: fixed for the lifetime of this server process so every client
 // that connects (or reconnects) generates the same deterministic map.
 const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
+
+// ---------------------------------------------------------------------------
+// Server-authoritative world geometry (for validation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic world map generated from WORLD_SEED.
+ * The server uses settlement positions to validate territory claims.
+ * @type {import('./src/world/MapData.js').MapData}
+ */
+const _worldData = new MapData(WORLD_SEED);
+
+// ---------------------------------------------------------------------------
+// Movement and territory validation constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum player speed in world-pixels per second used for anti-cheat.
+ * Set slightly above the client's maximum (200 px/s × 1.25 road boost = 250 px/s)
+ * to tolerate minor floating-point differences.
+ */
+const MAX_PLAYER_SPEED_PX_S = 260;
+
+/**
+ * Extra milliseconds added to the elapsed-time window when checking movement
+ * distance.  Absorbs network jitter and server-processing delay without
+ * requiring precise clock synchronisation between client and server.
+ */
+const MOVE_JITTER_MS = 300;
+
+/**
+ * Maximum world-pixel distance from a settlement's centre that a player must
+ * be within before the server accepts a new territory claim for that settlement.
+ * Covers the full extent of a castle (4×4 tiles = 192 px) plus one extra tile.
+ */
+const TERRITORY_CAPTURE_RADIUS_PX = 5 * TILE_SIZE;
 
 // ---------------------------------------------------------------------------
 // Authoritative world time and weather
@@ -103,6 +145,7 @@ const wss = new WebSocketServer({ port: PORT });
  *   x: number, y: number, angle: number,
  *   name: string,
  *   hasPosition: boolean,
+ *   lastMoveMs: number,
  *   appearance: object|null,
  *   kingdom: { name: string, color: string }|null,
  *   captured: string[],
@@ -110,6 +153,8 @@ const wss = new WebSocketServer({ port: PORT });
  * }>}
  * hasPosition: false until the client sends its first 'move' message, so we
  * don't broadcast the placeholder (0,0) position to other players.
+ * lastMoveMs: server timestamp (ms) of the last accepted 'move' message, used
+ * for movement-speed validation.
  */
 const players = new Map();
 
@@ -162,7 +207,7 @@ wss.on('connection', (ws, req) => {
 
     const { id, name } = session;
     // hasPosition: true – the server already has a valid last-known position.
-    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name, hasPosition: true, appearance: null, kingdom: null, captured: [], liberated: [] });
+    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
     // Keep the namedSession in sync with the restored position; preserve existing gameState.
     const existingNs = name ? namedSessions.get(name.toLowerCase()) : null;
     if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle, gameState: existingNs?.gameState ?? null });
@@ -207,7 +252,7 @@ wss.on('connection', (ws, req) => {
       const prev = namedSessions.get(nameKey);
       const { id } = prev;
       // hasPosition: true – we have the last-known position from namedSessions.
-      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, appearance: null, kingdom: null, captured: [], liberated: [] });
+      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
       ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: prev.gameState ?? null }));
       broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
       console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
@@ -215,7 +260,7 @@ wss.on('connection', (ws, req) => {
     } else {
       // New named player – position unknown until client sends its first 'move'.
       const id = generateId();
-      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, appearance: null, kingdom: null, captured: [], liberated: [] });
+      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
       namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0, gameState: null });
       ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: null }));
       broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
@@ -229,7 +274,7 @@ wss.on('connection', (ws, req) => {
   const id           = generateId();
   const sessionToken = generateToken();
   // hasPosition: false until the client sends its first 'move'.
-  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '', hasPosition: false, appearance: null, kingdom: null, captured: [], liberated: [] });
+  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '', hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
   ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: '' }));
   broadcastExcept(id, JSON.stringify({ type: 'join', id, name: '' }));
   console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
@@ -251,11 +296,48 @@ function _attachHandlers(ws, id, sessionToken, name) {
     if (msg.type === 'move') {
       const player = players.get(id);
       if (!player) return;
-      player.x     = typeof msg.x     === 'number' ? msg.x     : player.x;
-      player.y     = typeof msg.y     === 'number' ? msg.y     : player.y;
-      player.angle = typeof msg.angle === 'number' ? msg.angle : player.angle;
-      // Mark position as known once the client sends real coordinates.
-      player.hasPosition = true;
+
+      const newX     = typeof msg.x     === 'number' ? msg.x     : player.x;
+      const newY     = typeof msg.y     === 'number' ? msg.y     : player.y;
+      const newAngle = typeof msg.angle === 'number' ? msg.angle : player.angle;
+
+      // Server-authoritative movement validation.
+      // Skip speed check on the very first move (hasPosition is false and the
+      // player is teleporting from the spawn origin to wherever they actually are).
+      if (player.hasPosition) {
+        const now       = Date.now();
+        const elapsedMs = now - player.lastMoveMs;
+        const maxDist   = MAX_PLAYER_SPEED_PX_S * ((elapsedMs + MOVE_JITTER_MS) / 1000);
+        const dx        = newX - player.x;
+        const dy        = newY - player.y;
+        const dist      = Math.sqrt(dx * dx + dy * dy);
+
+        if (dist > maxDist) {
+          // Movement exceeds what is physically possible: clamp to the maximum
+          // reachable position along the same direction and notify the client so
+          // it can snap its local sprite to the corrected position.
+          const ratio = maxDist / dist;
+          player.x     = player.x + dx * ratio;
+          player.y     = player.y + dy * ratio;
+          player.angle = newAngle;
+          player.lastMoveMs = now;
+          ws.send(JSON.stringify({ type: 'correction', x: player.x, y: player.y, angle: player.angle }));
+          console.log(`[⚠] Speed violation from "${name || id}" (dist=${dist.toFixed(0)} max=${maxDist.toFixed(0)}) – corrected`);
+        } else {
+          player.x     = newX;
+          player.y     = newY;
+          player.angle = newAngle;
+          player.lastMoveMs = now;
+        }
+      } else {
+        // First move: accept unconditionally and initialise the timer.
+        player.x          = newX;
+        player.y          = newY;
+        player.angle      = newAngle;
+        player.hasPosition = true;
+        player.lastMoveMs  = Date.now();
+      }
+
       // Keep the persistent named session position up to date.
       if (name) {
         const ns = namedSessions.get(name.toLowerCase());
@@ -281,14 +363,26 @@ function _attachHandlers(ws, id, sessionToken, name) {
     if (msg.type === 'territory') {
       const player = players.get(id);
       if (!player) return;
+
+      const isValidKey = k => typeof k === 'string' && /^(castle|village):\d+$/.test(k);
+
       if (Array.isArray(msg.captured)) {
+        const oldCapturedSet = new Set(player.captured ?? []);
+        // Re-validate every key in the incoming list:
+        //   • Keys the player already held are preserved without a proximity check
+        //     (they could be far from those settlements after capturing them earlier).
+        //   • Newly added keys are accepted only when the player is currently
+        //     within TERRITORY_CAPTURE_RADIUS_PX of the settlement centre.
         player.captured = msg.captured
-          .filter(k => typeof k === 'string' && /^(castle|village):\d+$/.test(k))
+          .filter(isValidKey)
+          .filter(k => oldCapturedSet.has(k) || _isNearSettlement(player, k))
           .slice(0, 200);
       }
       if (Array.isArray(msg.liberated)) {
+        // Liberation (neutralising a settlement) is accepted without a proximity
+        // check; there is no incentive to fake-liberate one's own territory.
         player.liberated = msg.liberated
-          .filter(k => typeof k === 'string' && /^(castle|village):\d+$/.test(k))
+          .filter(isValidKey)
           .slice(0, 200);
       }
     }
@@ -339,6 +433,53 @@ function _attachHandlers(ws, id, sessionToken, name) {
   ws.on('error', (err) => {
     console.error(`[!] Error from "${name || id}":`, err.message);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the world-pixel centre of a settlement identified by its key,
+ * or null if the key is invalid or out-of-bounds.
+ * @param {string} key  e.g. 'castle:0' or 'village:3'
+ * @returns {{ cx: number, cy: number }|null}
+ */
+function _settlementCenter(key) {
+  const colonIdx = key.indexOf(':');
+  if (colonIdx < 0) return null;
+  const type = key.slice(0, colonIdx);
+  const idx  = parseInt(key.slice(colonIdx + 1), 10);
+  if (isNaN(idx)) return null;
+
+  if (type === 'castle') {
+    const c = _worldData.castles[idx];
+    if (!c) return null;
+    // Castle occupies a 4×4 tile block; world-pixel centre is at anchor+2 tiles.
+    return { cx: (c.x + 2) * TILE_SIZE, cy: (c.y + 2) * TILE_SIZE };
+  }
+  if (type === 'village') {
+    const v = _worldData.villages[idx];
+    if (!v) return null;
+    // Village occupies a 2×2 tile block; world-pixel centre is at anchor+1 tile.
+    return { cx: (v.x + 1) * TILE_SIZE, cy: (v.y + 1) * TILE_SIZE };
+  }
+  return null;
+}
+
+/**
+ * Returns true when the player's current server-side position is within
+ * TERRITORY_CAPTURE_RADIUS_PX of the settlement identified by `key`.
+ * @param {{ x: number, y: number }} player
+ * @param {string} key
+ * @returns {boolean}
+ */
+function _isNearSettlement(player, key) {
+  const center = _settlementCenter(key);
+  if (!center) return false;
+  const dx = player.x - center.cx;
+  const dy = player.y - center.cy;
+  return Math.sqrt(dx * dx + dy * dy) <= TERRITORY_CAPTURE_RADIUS_PX;
 }
 
 // ---------------------------------------------------------------------------
