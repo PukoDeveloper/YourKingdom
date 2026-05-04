@@ -98,6 +98,20 @@ export class MultiplayerClient {
      */
     this.serverConfig = null;
 
+    /**
+     * Authoritative gold balance sent by the server in the 'welcome' message.
+     * Game.js passes this to `GameUI.syncGold()` after init so the client's
+     * inventory reflects the server's tracked value rather than any locally
+     * cached (potentially manipulated) save-blob value.
+     * @type {number|null}
+     */
+    this.serverGold = null;
+
+    /** Called whenever the server sends a `gold_sync` balance correction.
+     *  Argument: the authoritative gold balance (non-negative integer).
+     *  @type {((balance: number) => void)|null} */
+    this.onGoldSync = null;
+
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
 
@@ -309,6 +323,7 @@ export class MultiplayerClient {
         this.gameState  = msg.gameState ?? null;
         this.worldState = msg.worldState ?? null;
         this.serverConfig = msg.serverConfig ?? null;
+        this.serverGold = typeof msg.serverGold === 'number' ? msg.serverGold : null;
         this.playerName = msg.name || this.playerName;
         onWelcome?.();
       } else if ((msg.type === 'name_taken' || msg.type === 'name_required') && !welcomed) {
@@ -369,6 +384,13 @@ export class MultiplayerClient {
         // any player captures or liberates a settlement.
         if (msg.settlements && typeof msg.settlements === 'object') {
           this.onWorldDelta?.({ settlements: msg.settlements, version: msg.version ?? 0 });
+        }
+        break;
+      case 'gold_sync':
+        // Server-authoritative gold balance.  Fired after every gold_earn /
+        // gold_spend action and on reconnect (via serverGold in 'welcome').
+        if (typeof msg.balance === 'number') {
+          this.onGoldSync?.(msg.balance);
         }
         break;
       // action_ok / action_reject are handled by per-action callbacks (sendAction).

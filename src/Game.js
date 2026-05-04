@@ -304,7 +304,6 @@ export class Game {
       this._dayNight,
       this._mapData,
       this._pathfinderWorker,
-      this._mp !== null, // isMultiplayer: hide dev tools in multiplayer
     );
 
     // Wire the player power callback so DiplomacySystem can factor the player's
@@ -419,6 +418,29 @@ export class Game {
       }
       // Apply incremental settlement-control updates broadcast by the server.
       this._mp.onWorldDelta = (delta) => this._applyWorldDelta(delta);
+
+      // ── Server-authoritative gold ──────────────────────────────────────────
+      // On (re)connect the server sends its tracked gold balance.  Override the
+      // locally-restored inventory gold with the server's canonical value so any
+      // in-session manipulation is corrected immediately.
+      if (typeof this._mp.serverGold === 'number') {
+        this._gameUI.syncGold(this._mp.serverGold);
+      }
+      // When the server sends a gold_sync correction (after earn/spend actions
+      // or when it detects a discrepancy), hard-set the client's gold to match.
+      this._mp.onGoldSync = (balance) => this._gameUI?.syncGold(balance);
+      // Forward every gold earn to the server so it can validate and track the
+      // authoritative balance.
+      this._gameUI.onGoldEarned = (amount, source) => {
+        this._mp.sendAction('gold_earn', { amount, source });
+      };
+      // Forward every gold spend to the server so the authoritative balance
+      // stays in sync.  Spends are applied optimistically on the client; the
+      // server sends a gold_sync correction if the balance was invalid.
+      this._gameUI.onGoldSpent = (amount) => {
+        this._mp.sendAction('gold_spend', { amount });
+      };
+
       // Broadcast our initial appearance, kingdom info, territory and map buildings
       // immediately after init so other already-connected players see our look right away.
       this._mpSendInfo();
