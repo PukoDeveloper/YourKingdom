@@ -457,8 +457,8 @@ function _attachHandlers(ws, id, name) {
               // Settlement was previously recorded as held by this player.
               // Re-validate: if another player now owns it (PvP capture while we weren't
               // watching), remove it from our list to keep server state consistent.
-              const w = sharedWorld.settlements.get(k);
-              if (w?.ownerName && w.ownerName !== id) return false;
+              const current = sharedWorld.settlements.get(k);
+              if (current?.ownerName && current.ownerName !== id) return false;
               return true;
             }
 
@@ -488,13 +488,7 @@ function _attachHandlers(ws, id, name) {
           for (const k of newCaptures) {
             // PvP: remove the settlement from the previous owner's captured list so
             // their state broadcast no longer shows a stale territory overlay.
-            const prev = sharedWorld.settlements.get(k);
-            if (prev?.ownerName && prev.ownerName !== id) {
-              const prevPlayer = players.get(prev.ownerName);
-              if (prevPlayer?.captured) {
-                prevPlayer.captured = prevPlayer.captured.filter(c => c !== k);
-              }
-            }
+            _evictPreviousOwner(k, id);
             sharedWorld.settlements.set(k, { ownerName: id, controllingNationId: -1, ownerColor });
           }
           broadcastWorldDelta(newCaptures);
@@ -508,7 +502,15 @@ function _attachHandlers(ws, id, name) {
         player.liberated = msg.liberated
           .filter(k => {
             if (!isValidKey(k)) return false;
-            if (oldLiberatedSet.has(k)) return true; // already liberated – keep without re-check
+
+            if (oldLiberatedSet.has(k)) {
+              // Re-validate: if someone now owns this settlement (e.g. player B captured
+              // a neutral settlement that A had previously liberated), drop the stale
+              // entry so the state broadcast no longer shows a misleading overlay.
+              const current = sharedWorld.settlements.get(k);
+              if (current?.ownerName) return false;
+              return true;
+            }
 
             // New liberation: the player must currently own this settlement in the
             // shared world.  Accepting liberations for settlements owned by other
@@ -658,6 +660,24 @@ function _isNearSettlement(player, key) {
 }
 
 /**
+ * When a settlement changes hands via PvP, remove it from the previous owner's
+ * `player.captured` list so the next state broadcast no longer shows a stale
+ * territory overlay.
+ *
+ * @param {string} key          Settlement key ('castle:N' / 'village:N').
+ * @param {string} newOwnerId   Id of the player who is taking ownership.
+ */
+function _evictPreviousOwner(key, newOwnerId) {
+  const prev = sharedWorld.settlements.get(key);
+  if (prev?.ownerName && prev.ownerName !== newOwnerId) {
+    const prevPlayer = players.get(prev.ownerName);
+    if (prevPlayer?.captured) {
+      prevPlayer.captured = prevPlayer.captured.filter(c => c !== key);
+    }
+  }
+}
+
+/**
  * Handle an 'action' message from a connected player.
  * Validates the action against authoritative state, applies it, and responds.
  *
@@ -706,13 +726,7 @@ function _handleAction(ws, id, name, player, msg) {
     const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
     // PvP: remove the settlement from the previous owner's captured list so
     // their state broadcast no longer shows a stale territory overlay.
-    const prevEntry = sharedWorld.settlements.get(key);
-    if (prevEntry?.ownerName && prevEntry.ownerName !== id) {
-      const prevPlayer = players.get(prevEntry.ownerName);
-      if (prevPlayer?.captured) {
-        prevPlayer.captured = prevPlayer.captured.filter(c => c !== key);
-      }
-    }
+    _evictPreviousOwner(key, id);
     sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor });
     // Add to the player's captured list if not already there.
     if (!Array.isArray(player.captured)) player.captured = [];
