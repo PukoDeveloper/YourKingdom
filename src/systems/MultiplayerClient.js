@@ -25,8 +25,9 @@
  * Client → Server
  *   move      { type: 'move', x, y, angle }
  *   info      { type: 'info', appearance: object, kingdom: { name, color } }
- *   territory { type: 'territory', captured: string[], liberated: string[] }
- *   save      { type: 'save', gameState: object|null }
+ *   territory    { type: 'territory', captured: string[], liberated: string[] }
+ *   mapBuildings { type: 'mapBuildings', buildings: { type: string, tx: number, ty: number }[] }
+ *   save         { type: 'save', gameState: object|null }
  *   team      { type: 'team', team: string }    (declare team; '' = no team)
  *   action    { type: 'action', kind: string, ...payload }
  *               Validated kinds: 'capture', 'liberate'
@@ -218,6 +219,21 @@ export class MultiplayerClient {
   sendTerritory(captured, liberated) {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     this._ws.send(JSON.stringify({ type: 'territory', captured, liberated }));
+  }
+
+  /**
+   * Send the player's current list of placed map buildings (lumber camps, mines,
+   * bridges) to the server.  The server re-broadcasts the list in the periodic
+   * 'state' message so other clients can render the buildings and walk on bridges.
+   *
+   * Only the tile position and building type are sent; internal state (phaseTick,
+   * worker assignments, etc.) stays client-local.
+   *
+   * @param {{ type: string, tx: number, ty: number }[]} buildings
+   */
+  sendMapBuildings(buildings) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'mapBuildings', buildings }));
   }
 
   /**

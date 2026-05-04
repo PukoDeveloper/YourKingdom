@@ -12,7 +12,8 @@
  *   { type: 'name_taken',   name }          (then the server closes the connection)
  *   { type: 'name_required' }               (then the server closes the connection)
  *   { type: 'state',      players: {...}, ts, time, weather }
- *                          each player entry includes: team: string
+ *                          each player entry includes: team: string,
+ *                          mapBuildings: { type, tx, ty }[]
  *   { type: 'worldDelta', settlements: { [key]: {ownerName,controllingNationId,ownerColor}|null },
  *                         version: number }
  *   { type: 'correction', x, y, angle }
@@ -25,6 +26,7 @@
  *   { type: 'move',      x, y, angle }
  *   { type: 'info',      appearance: object, kingdom: { name, color } }
  *   { type: 'territory', captured: string[], liberated: string[] }
+ *   { type: 'mapBuildings', buildings: { type: string, tx: number, ty: number }[] }
  *   { type: 'save',      gameState: object|null }
  *   { type: 'team',      team: string }   (declare team name; '' = no team)
  *   { type: 'action',    kind: string, ...payload }
@@ -312,7 +314,7 @@ wss.on('connection', (ws, req) => {
     // Restore existing named session (last-known position, and saved game state).
     const prev = namedSessions.get(nameKey);
     // hasPosition: true – we have the last-known position from namedSessions.
-    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
+    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '', mapBuildings: [] });
 
     // ── Restore this player's territory into sharedWorld ──────────────────
     // Any settlement they previously owned or liberated is restored into the
@@ -353,7 +355,7 @@ wss.on('connection', (ws, req) => {
     console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
   } else {
     // New named player – position unknown until client sends its first 'move'.
-    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
+    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '', mapBuildings: [] });
     namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null });
     ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
     broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
@@ -560,6 +562,28 @@ function _attachHandlers(ws, id, name) {
             console.log(`[🗑] Cleared game state for "${name}"`);
           }
         }
+      }
+    }
+
+    // ─── Map buildings ──────────────────────────────────────────────────────
+    // Clients send { type: 'mapBuildings', buildings: [{type, tx, ty}] } whenever
+    // their placed buildings change (lumber camps, mines, bridges).
+    // The server stores the list per player and includes it in the state broadcast
+    // so other clients can render the buildings and walk on bridges.
+    if (msg.type === 'mapBuildings') {
+      const player = players.get(id);
+      if (!player) return;
+      if (Array.isArray(msg.buildings)) {
+        const VALID_TYPES = new Set(['lumberCamp', 'mine', 'bridge']);
+        player.mapBuildings = msg.buildings
+          .filter(b =>
+            b && typeof b === 'object' &&
+            VALID_TYPES.has(b.type) &&
+            Number.isInteger(b.tx) && b.tx >= 0 &&
+            Number.isInteger(b.ty) && b.ty >= 0,
+          )
+          .map(b => ({ type: b.type, tx: b.tx, ty: b.ty }))
+          .slice(0, 500); // reasonable per-player cap
       }
     }
 
@@ -784,18 +808,19 @@ setInterval(() => {
 
   if (players.size === 0) return;
 
-  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[], team: string }>} */
+  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[], team: string, mapBuildings: {type:string,tx:number,ty:number}[] }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
     // Omit players whose position isn't known yet (no 'move' received).
     if (!data.hasPosition) continue;
     snapshot[pid] = {
       x: data.x, y: data.y, angle: data.angle, name: data.name,
-      appearance: data.appearance ?? null,
-      kingdom:    data.kingdom    ?? null,
-      captured:   data.captured  ?? [],
-      liberated:  data.liberated ?? [],
-      team:       data.team      ?? '',
+      appearance:   data.appearance   ?? null,
+      kingdom:      data.kingdom      ?? null,
+      captured:     data.captured     ?? [],
+      liberated:    data.liberated    ?? [],
+      team:         data.team         ?? '',
+      mapBuildings: data.mapBuildings ?? [],
     };
   }
 

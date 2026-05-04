@@ -429,9 +429,17 @@ export class GameUI {
    * @param {import('../world/MapData.js').MapData|null} [mapData]  Live MapData used for coastal checks.
    * @param {import('../world/PathfinderWorker.js').PathfinderWorker|null} [pathfinderWorker]  Optional async pathfinder.
    */
-  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null, mapData = null, pathfinderWorker = null) {
+  constructor(savedState = null, onSave = null, nationSystem = null, onReset = null, player = null, diplomacySystem = null, dayNightCycle = null, mapData = null, pathfinderWorker = null, isMultiplayer = false) {
     this.inventory = new Inventory();
     this.army      = new Army('主角');
+
+    /**
+     * Whether this session is a multiplayer game.
+     * Used to hide developer-only cheats (gold manipulation) that would be
+     * unfair to other players in a shared world.
+     * @type {boolean}
+     */
+    this._isMultiplayer = isMultiplayer;
 
     /**
      * Assignment system – coordinates assigning army members to regions,
@@ -1951,6 +1959,17 @@ export class GameUI {
 
       <div class="settings-section settings-dev-section">
         <div class="settings-dev-header">🛠 開發者工具</div>
+        ${this._isMultiplayer ? `
+        <div class="settings-row">
+          <div class="settings-row-label">
+            <span class="settings-row-icon">🔒</span>
+            <div>
+              <div class="settings-row-title">開發者工具（已停用）</div>
+              <div class="settings-row-desc">多人模式下為維護公平，金幣操作工具不可用</div>
+            </div>
+          </div>
+        </div>
+        ` : `
         <div class="settings-row">
           <div class="settings-row-label">
             <span class="settings-row-icon">🪙</span>
@@ -1966,6 +1985,7 @@ export class GameUI {
             <button id="dev-btn-sub1000"  class="dev-gold-btn dev-gold-btn-sub">−1000</button>
           </div>
         </div>
+        `}
       </div>
     `;
 
@@ -1977,27 +1997,29 @@ export class GameUI {
       }
     });
 
-    const _refreshDevGold = () => {
-      const el = document.getElementById('dev-gold-display');
-      if (el) el.textContent = this._getGold();
-    };
+    if (!this._isMultiplayer) {
+      const _refreshDevGold = () => {
+        const el = document.getElementById('dev-gold-display');
+        if (el) el.textContent = this._getGold();
+      };
 
-    document.getElementById('dev-btn-add100').addEventListener('click', () => {
-      this._addGold(100);
-      _refreshDevGold();
-    });
-    document.getElementById('dev-btn-add1000').addEventListener('click', () => {
-      this._addGold(1000);
-      _refreshDevGold();
-    });
-    document.getElementById('dev-btn-sub100').addEventListener('click', () => {
-      this._spendGold(100);
-      _refreshDevGold();
-    });
-    document.getElementById('dev-btn-sub1000').addEventListener('click', () => {
-      this._spendGold(1000);
-      _refreshDevGold();
-    });
+      document.getElementById('dev-btn-add100').addEventListener('click', () => {
+        this._addGold(100);
+        _refreshDevGold();
+      });
+      document.getElementById('dev-btn-add1000').addEventListener('click', () => {
+        this._addGold(1000);
+        _refreshDevGold();
+      });
+      document.getElementById('dev-btn-sub100').addEventListener('click', () => {
+        this._spendGold(100);
+        _refreshDevGold();
+      });
+      document.getElementById('dev-btn-sub1000').addEventListener('click', () => {
+        this._spendGold(1000);
+        _refreshDevGold();
+      });
+    }
   }
 
   // -------------------------------------------------------------------------

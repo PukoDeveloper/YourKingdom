@@ -42,6 +42,18 @@ export class Game {
     /** Remote player entities keyed by server id. @type {Map<string, RemotePlayerEntity>} */
     this._remotePlayers = new Map();
     /**
+     * Map buildings received from remote players, keyed by player id.
+     * Used to render their structures on the local world and to make bridges passable.
+     * @type {Map<string, {type:string,tx:number,ty:number}[]>}
+     */
+    this._remoteMapBuildings = new Map();
+    /**
+     * One MapBuildingRenderer per remote player, keyed by player id.
+     * Allows each player's buildings to be cleared independently when they leave.
+     * @type {Map<string, import('./world/MapBuildingRenderer.js').MapBuildingRenderer>}
+     */
+    this._remoteMapBuildingRenderers = new Map();
+    /**
      * The local player's current team name (mirrors what was sent to the server
      * via sendTeam()).  Used when computing ally/hostile relations.
      * @type {string}
@@ -189,6 +201,16 @@ export class Game {
     /** @type {Map<string, import('pixi.js').Graphics>} */
     this._remoteTerritoryGraphics = new Map();
 
+    // Remote map-building overlay – shows bridges, lumber camps and mines placed
+    // by other players.  Each renderer lives in this shared container; one
+    // MapBuildingRenderer instance per remote player is created on demand and
+    // stored in this._remoteMapBuildingRenderers.
+    // Rendered at the same depth as the local map-building overlay (above roads,
+    // below structures and unit sprites), so the visual result is consistent.
+    this._remoteBuildingsContainer = new Container();
+    this._world.addChildAt(this._remoteBuildingsContainer,
+      this._world.getChildIndex(this._mapBuildingRenderer.container) + 1);
+
     // Player
     this._setLoadingStatus('召喚玩家...');
     const { tileX, tileY } = this._mapData.findStartTile();
@@ -278,6 +300,7 @@ export class Game {
       this._dayNight,
       this._mapData,
       this._pathfinderWorker,
+      this._mp !== null, // isMultiplayer: hide dev tools in multiplayer
     );
 
     // Wire the player power callback so DiplomacySystem can factor the player's
@@ -316,7 +339,7 @@ export class Game {
       this._roadRenderer.rebuild(this._gameUI.getBuiltRoadTilePaths());
       this._builtRoadTileSet   = this._gameUI.getBuiltRoadTileSet();
       this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings(), this._mapData);
-      this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
+      this._rebuildBridgeTileSet();
     }
 
     // Rebuild map structures whenever the player captures a new settlement.
@@ -344,9 +367,12 @@ export class Game {
     };
 
     // Rebuild map-building overlay and bridge tile set whenever a map building changes.
+    // In multiplayer, also broadcast the updated list to the server so other
+    // clients can render it and walk on bridges.
     this._gameUI.onMapBuildingChanged = () => {
       this._mapBuildingRenderer.rebuild(this._gameUI.getMapBuildings(), this._mapData);
-      this._builtBridgeTileSet = this._gameUI.getBridgeTileSet();
+      this._rebuildBridgeTileSet();
+      this._mpSendMapBuildings();
     };
 
     // Advance in-game days when resting at an inn.
@@ -389,10 +415,11 @@ export class Game {
       }
       // Apply incremental settlement-control updates broadcast by the server.
       this._mp.onWorldDelta = (delta) => this._applyWorldDelta(delta);
-      // Broadcast our initial appearance, kingdom info and territory immediately
-      // after init so other already-connected players see our look right away.
+      // Broadcast our initial appearance, kingdom info, territory and map buildings
+      // immediately after init so other already-connected players see our look right away.
       this._mpSendInfo();
       this._mpSendTerritory();
+      this._mpSendMapBuildings();
     }
 
     // Hide loading screen
@@ -888,6 +915,11 @@ export class Game {
           state.kingdom?.color ?? '#64b5f6',
         );
       }
+
+      // Update remote map buildings (bridges, lumber camps, mines).
+      if (Array.isArray(state.mapBuildings)) {
+        this._updateRemoteMapBuildings(id, state.mapBuildings);
+      }
     }
 
     // Remove entities that are no longer in the snapshot.
@@ -913,6 +945,16 @@ export class Game {
     if (tg) {
       this._remoteTerritoryContainer?.removeChild(tg);
       this._remoteTerritoryGraphics.delete(id);
+    }
+    // Clean up the map-building overlay and bridge data for this player.
+    const mbr = this._remoteMapBuildingRenderers?.get(id);
+    if (mbr) {
+      this._remoteBuildingsContainer?.removeChild(mbr.container);
+      this._remoteMapBuildingRenderers.delete(id);
+    }
+    if (this._remoteMapBuildings?.delete(id)) {
+      // Removing a player may free bridge tiles – rebuild the merged set.
+      this._rebuildBridgeTileSet();
     }
   }
 
@@ -962,6 +1004,34 @@ export class Game {
     if (!this._mp || !this._gameUI) return;
     const { captured, liberated } = this._gameUI.getTerritoryState();
     this._mp.sendTerritory(captured, liberated);
+  }
+
+  /**
+   * Send the local player's placed map buildings (bridges, lumber camps, mines)
+   * to the server so other clients can render them and walk on bridges.
+   * Only the type and tile position are transmitted; internal state stays local.
+   * No-op when not connected or GameUI not ready.
+   */
+  _mpSendMapBuildings() {
+    if (!this._mp || !this._gameUI) return;
+    const buildings = this._gameUI.getMapBuildings()
+      .map(b => ({ type: b.type, tx: b.tx, ty: b.ty }));
+    this._mp.sendMapBuildings(buildings);
+  }
+
+  /**
+   * Rebuild `_builtBridgeTileSet` from the local player's bridges plus all
+   * remote players' bridges.  Call whenever any bridge list changes so that
+   * `PlayerEntity.update()` receives the merged set and can cross any bridge.
+   */
+  _rebuildBridgeTileSet() {
+    const set = this._gameUI?.getBridgeTileSet() ?? new Set();
+    for (const buildings of this._remoteMapBuildings.values()) {
+      for (const b of buildings) {
+        if (b.type === 'bridge') set.add(`${b.tx},${b.ty}`);
+      }
+    }
+    this._builtBridgeTileSet = set;
   }
 
   // ---------------------------------------------------------------------------
@@ -1036,6 +1106,40 @@ export class Game {
       return { x: (v.x + 1) * TILE_SIZE, y: (v.y + 1) * TILE_SIZE };
     }
     return null;
+  }
+
+  /**
+   * Update the map-building overlay for one remote player and refresh the
+   * merged bridge-tile set so the local player can walk on others' bridges.
+   *
+   * @param {string} id
+   * @param {{ type: string, tx: number, ty: number }[]} buildings
+   */
+  _updateRemoteMapBuildings(id, buildings) {
+    // Check if the building list actually changed to avoid redundant rebuilds.
+    const prev = this._remoteMapBuildings.get(id);
+    if (prev && prev.length === buildings.length) {
+      // Quick structural equality check (sufficient for the common case where
+      // nothing changed and the server keeps re-broadcasting the same list).
+      const same = buildings.every((b, i) =>
+        b.type === prev[i].type && b.tx === prev[i].tx && b.ty === prev[i].ty,
+      );
+      if (same) return;
+    }
+
+    this._remoteMapBuildings.set(id, buildings);
+
+    // Acquire or create a MapBuildingRenderer for this player.
+    let mbr = this._remoteMapBuildingRenderers.get(id);
+    if (!mbr) {
+      mbr = new MapBuildingRenderer();
+      this._remoteBuildingsContainer.addChild(mbr.container);
+      this._remoteMapBuildingRenderers.set(id, mbr);
+    }
+    mbr.rebuild(buildings, this._mapData);
+
+    // Update the merged bridge-tile set whenever any player's buildings change.
+    this._rebuildBridgeTileSet();
   }
 
   /**
