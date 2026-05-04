@@ -423,7 +423,7 @@ wss.on('connection', (ws, req) => {
   } else {
     // New named player – position unknown until client sends its first 'move'.
     players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '', mapBuildings: [], gold: 0 });
-    namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null, gold: null });
+    namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null, gold: 0 });
     ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG, serverGold: 0 }));
     broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
     console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
@@ -898,7 +898,7 @@ function _handleAction(ws, id, name, player, msg) {
     }
     const amount = Math.min(rawAmount, cap);
     player.gold = (player.gold ?? 0) + amount;
-    const ns = namedSessions.get(id);
+    const ns = namedSessions.get(name.toLowerCase());
     if (ns) ns.gold = player.gold;
     _sendGoldSync(ws, player.gold);
     return;
@@ -926,7 +926,7 @@ function _handleAction(ws, id, name, player, msg) {
       return;
     }
     player.gold = current - amount;
-    const ns = namedSessions.get(id);
+    const ns = namedSessions.get(name.toLowerCase());
     if (ns) ns.gold = player.gold;
     // No gold_sync needed for normal spends (client applied it locally already).
     ws.send(JSON.stringify({ type: 'action_ok', kind }));
