@@ -375,6 +375,14 @@ export class Game {
       // When the server corrects our position (speed-violation detected), snap
       // the local player sprite to the authoritative coordinates immediately.
       this._mp.onPositionCorrection = (x, y, angle) => this._onServerCorrection(x, y, angle);
+      // Apply the full canonical world state received in the 'welcome' message.
+      // This ensures settlement control is in sync with the server before the
+      // first frame is rendered.
+      if (this._mp.worldState) {
+        this._applyWorldState(this._mp.worldState);
+      }
+      // Apply incremental settlement-control updates broadcast by the server.
+      this._mp.onWorldDelta = (delta) => this._applyWorldDelta(delta);
       // Broadcast our initial appearance, kingdom info and territory immediately
       // after init so other already-connected players see our look right away.
       this._mpSendInfo();
@@ -702,6 +710,119 @@ export class Game {
   // ---------------------------------------------------------------------------
   // Multiplayer helpers
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // Server-authoritative world state
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Apply the full canonical world state received from the server.
+   * Called once after connect (from the 'welcome' worldState payload).
+   *
+   * For each settlement whose control has changed (captured by a player, or
+   * liberated to neutral), this updates the local NationSystem so that:
+   *   – rendering (StructureRenderer) shows the correct flag/colour;
+   *   – the HUD displays the correct owning entity;
+   *   – GameUI can gate actions (e.g. entering a settlement) correctly.
+   *
+   * @param {{ settlements: Record<string, object>, version: number }} worldState
+   */
+  _applyWorldState(worldState) {
+    if (!worldState?.settlements || !this._nationSystem) return;
+    let changed = false;
+    for (const [key, control] of Object.entries(worldState.settlements)) {
+      if (this._applySettlementControl(key, control)) changed = true;
+    }
+    if (changed) this._structureRenderer?.rebuild();
+  }
+
+  /**
+   * Apply an incremental settlement-control delta broadcast by the server.
+   * Only the settlements that changed are included; null values mean the
+   * settlement returned to its default (NPC) control.
+   *
+   * @param {{ settlements: Record<string, object|null>, version: number }} delta
+   */
+  _applyWorldDelta(delta) {
+    if (!delta?.settlements || !this._nationSystem) return;
+    let changed = false;
+    for (const [key, control] of Object.entries(delta.settlements)) {
+      if (this._applySettlementControl(key, control)) changed = true;
+    }
+    if (changed) this._structureRenderer?.rebuild();
+  }
+
+  /**
+   * Apply a single settlement-control entry from a world state / delta.
+   *
+   * `control` shape:
+   *   { ownerName: string|null, controllingNationId: number, ownerColor: string|null }
+   *   or null (settlement returned to original NPC control).
+   *
+   * Mapping rules:
+   *   controllingNationId = -1 (PLAYER_NATION_ID):
+   *     – If ownerName matches the local player's id → playerOwned = true,
+   *       ownerKingdom = null (StructureRenderer uses the local player's kingdom).
+   *     – Otherwise (remote player)                 → playerOwned = false,
+   *       ownerKingdom = { color: ownerColor, flagApp: null }.
+   *   controllingNationId = -2 (NEUTRAL_NATION_ID):
+   *     – Liberated; playerOwned = false, ownerKingdom = null.
+   *   null control:
+   *     – Return to the settlement's original NPC nation.
+   *
+   * @param {string}       key
+   * @param {object|null}  control
+   * @returns {boolean} true if the settlement state actually changed.
+   */
+  _applySettlementControl(key, control) {
+    if (typeof key !== 'string') return false;
+    const colonIdx = key.indexOf(':');
+    if (colonIdx < 0) return false;
+    const type = key.slice(0, colonIdx);
+    const idx  = parseInt(key.slice(colonIdx + 1), 10);
+    if (isNaN(idx)) return false;
+
+    let settlement;
+    if (type === 'castle') {
+      settlement = this._nationSystem.castleSettlements[idx];
+    } else if (type === 'village') {
+      settlement = this._nationSystem.villageSettlements[idx];
+    }
+    if (!settlement) return false;
+
+    const localId = this._mp?.id ?? null;
+
+    if (control === null) {
+      // Returned to original NPC control.
+      if (settlement.controllingNationId === settlement.nationId && !settlement.ownerKingdom) return false;
+      settlement.controllingNationId = settlement.nationId;
+      settlement.playerOwned  = false;
+      settlement.ownerKingdom = null;
+      return true;
+    }
+
+    const prevId     = settlement.controllingNationId;
+    const prevOwned  = settlement.playerOwned;
+    const newNationId = typeof control.controllingNationId === 'number'
+      ? control.controllingNationId : settlement.nationId;
+
+    settlement.controllingNationId = newNationId;
+
+    if (newNationId === PLAYER_NATION_ID) {
+      const isLocal = control.ownerName === localId;
+      settlement.playerOwned  = isLocal;
+      settlement.ownerKingdom = isLocal
+        ? null
+        : { color: control.ownerColor ?? '#64b5f6', flagApp: null };
+    } else {
+      settlement.playerOwned  = false;
+      settlement.ownerKingdom = null;
+    }
+
+    // Report a change if anything meaningful was updated.
+    return (prevId !== settlement.controllingNationId ||
+            prevOwned !== settlement.playerOwned);
+  }
 
   /**
    * Handle a full state update from the server: create/update/remove remote

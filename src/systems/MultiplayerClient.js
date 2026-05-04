@@ -2,29 +2,44 @@
  * MultiplayerClient – thin WebSocket wrapper that handles the connection
  * lifecycle and message routing for multiplayer mode.
  *
- * Protocol (JSON over WebSocket):
- *   Server → Client  welcome       { type: 'welcome', id: string, seed: number, time: number, weather: number, name: string, gameState: object|null }
- *   Server → Client  name_taken    { type: 'name_taken', name: string }
- *   Server → Client  name_required { type: 'name_required' }
- *   Client → Server  move          { type: 'move', x: number, y: number, angle: number }
- *   Client → Server  info          { type: 'info', appearance: object, kingdom: { name, color } }
- *   Client → Server  territory     { type: 'territory', captured: string[], liberated: string[] }
- *   Client → Server  save          { type: 'save', gameState: object }
- *   Server → Client  join          { type: 'join', id: string, name: string }
- *   Server → Client  state         { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
- *                                   where id is the player's lowercase name
- *   Server → Client  leave         { type: 'leave', id: string, name: string }
+ * ──────────────────────────── Protocol ────────────────────────────────────
+ * Server → Client
+ *   welcome       { type, id, seed, time, weather, name, gameState,
+ *                   worldState: { settlements: object, version: number } }
+ *   name_taken    { type: 'name_taken', name }
+ *   name_required { type: 'name_required' }
+ *   state         { type: 'state', players: { [id]: { x,y,angle,name,
+ *                   appearance,kingdom,captured,liberated } },
+ *                   ts, time, weather }
+ *   worldDelta    { type: 'worldDelta',
+ *                   settlements: { [key]: { ownerName, controllingNationId,
+ *                                           ownerColor }|null },
+ *                   version: number }
+ *   join          { type: 'join', id, name }
+ *   leave         { type: 'leave', id, name }
+ *   correction    { type: 'correction', x, y, angle }
+ *   action_ok     { type: 'action_ok', kind, ...data }
+ *   action_reject { type: 'action_reject', kind, reason, ...data }
  *
- * Reconnection:
- *   On disconnect the client automatically retries with exponential back-off
- *   up to MAX_RECONNECT_TRIES times before onDisconnect is fired.
- *   The player name is sent as ?name=<name> on every connection attempt so
- *   the server can restore the session (last-known position and saved game
- *   state) for the named account.
+ * Client → Server
+ *   move      { type: 'move', x, y, angle }
+ *   info      { type: 'info', appearance: object, kingdom: { name, color } }
+ *   territory { type: 'territory', captured: string[], liberated: string[] }
+ *   save      { type: 'save', gameState: object|null }
+ *   action    { type: 'action', kind: string, ...payload }
+ *               Validated kinds: 'capture', 'liberate'
+ *               Accepted kinds (future): 'buy', 'sell', 'recruit',
+ *                 'declare_war', 'peace', 'trade', 'build_road',
+ *                 'build_map_building', 'constr_building', …
  *
- * Identity:
- *   The player's name is their sole unique identifier.  The server uses it
- *   as the player id and rejects duplicate names from concurrent connections.
+ * ──────────────────────────── Reconnection ────────────────────────────────
+ * On disconnect the client automatically retries with exponential back-off
+ * up to MAX_RECONNECT_TRIES times before onDisconnect is fired.
+ * The player name is sent as ?name=<name> on every attempt so the server can
+ * restore the session (last-known position and saved game state).
+ *
+ * ──────────────────────────── Identity ───────────────────────────────────
+ * The player's name (lowercased) is their sole unique identifier.
  */
 
 /** Base delay for reconnection back-off (ms); doubles on each attempt, capped at 32 s. */
@@ -65,6 +80,14 @@ export class MultiplayerClient {
      */
     this.gameState = null;
 
+    /**
+     * Full world-state snapshot received from the server in the 'welcome'
+     * message.  Contains the canonical settlement-control state for all
+     * settlements that have been captured or liberated by any player.
+     * @type {{ settlements: Record<string, { ownerName: string|null, controllingNationId: number, ownerColor: string|null }>, version: number }|null}
+     */
+    this.worldState = null;
+
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
 
@@ -83,6 +106,22 @@ export class MultiplayerClient {
     /** Called with the authoritative world time and weather on each server state broadcast.
      *  @type {((time: number, weather: number) => void)|null} */
     this.onWorldSync = null;
+
+    /**
+     * Called once after connect, with the full canonical world state sent
+     * in the server's 'welcome' message.  Use this to initialise settlement
+     * control from the server's authoritative snapshot.
+     * @type {((worldState: { settlements: Record<string, object>, version: number }) => void)|null}
+     */
+    this.onWorldState = null;
+
+    /**
+     * Called whenever the server broadcasts a settlement-control change
+     * ('worldDelta' message).  The delta contains only the keys that changed.
+     * null values mean the settlement returned to its default NPC control.
+     * @type {((delta: { settlements: Record<string, object|null>, version: number }) => void)|null}
+     */
+    this.onWorldDelta = null;
 
     /** Called when the chosen name is already taken by an active player.
      *  @type {((name: string) => void)|null} */
@@ -243,6 +282,7 @@ export class MultiplayerClient {
         this.dayTime    = typeof msg.time    === 'number' ? msg.time    : null;
         this.weather    = typeof msg.weather === 'number' ? msg.weather : null;
         this.gameState  = msg.gameState ?? null;
+        this.worldState = msg.worldState ?? null;
         this.playerName = msg.name || this.playerName;
         onWelcome?.();
       } else if ((msg.type === 'name_taken' || msg.type === 'name_required') && !welcomed) {
@@ -298,7 +338,27 @@ export class MultiplayerClient {
           this.onPositionCorrection?.(msg.x, msg.y, msg.angle);
         }
         break;
+      case 'worldDelta':
+        // Incremental settlement-control update broadcast by the server whenever
+        // any player captures or liberates a settlement.
+        if (msg.settlements && typeof msg.settlements === 'object') {
+          this.onWorldDelta?.({ settlements: msg.settlements, version: msg.version ?? 0 });
+        }
+        break;
+      // action_ok / action_reject are handled by per-action callbacks (sendAction).
     }
+  }
+
+  /**
+   * Send a game-action request to the server.
+   * The server validates the action and responds with 'action_ok' or 'action_reject'.
+   *
+   * @param {string} kind    Action kind, e.g. 'capture', 'liberate', 'buy', 'declare_war'.
+   * @param {object} [payload]  Additional action parameters.
+   */
+  sendAction(kind, payload = {}) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'action', kind, ...payload }));
   }
 
   /**

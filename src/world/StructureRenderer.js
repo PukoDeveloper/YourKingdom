@@ -36,8 +36,10 @@ export class StructureRenderer {
 
     /** Return the nation info to use for rendering a settlement. */
     const _nation = (settlement) => {
-      if (settlement?.controllingNationId === PLAYER_NATION_ID && this._getPlayerNation) {
-        return this._getPlayerNation();
+      if (settlement?.controllingNationId === PLAYER_NATION_ID) {
+        // If a remote player owns this settlement, use their kingdom colour/flag.
+        if (settlement.ownerKingdom) return settlement.ownerKingdom;
+        if (this._getPlayerNation) return this._getPlayerNation();
       }
       if (settlement?.controllingNationId === NEUTRAL_NATION_ID) {
         return { color: '#FFFFFF', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } };
