@@ -656,9 +656,13 @@ export class Game {
       if (hit) {
         const settlIcon = hit.settlement.type === 'castle' ? '🏰' : '🏘️';
         let nationLine, regionLine;
-        if (hit.settlement.controllingNationId === PLAYER_NATION_ID) {
+        if (hit.settlement.playerOwned) {
           const pk = this._gameUI.getPlayerNation();
           nationLine = `🏴 ${pk.name}`;
+        } else if (hit.settlement.controllingNationId === PLAYER_NATION_ID) {
+          // Owned by a remote (multiplayer) player – show their kingdom name.
+          const remoteKingdomName = hit.settlement.ownerKingdom?.name || '他國勢力';
+          nationLine = `🏴 ${remoteKingdomName}`;
         } else if (hit.settlement.controllingNationId === NEUTRAL_NATION_ID) {
           nationLine = `🏳 中立`;
         } else {
@@ -854,6 +858,10 @@ export class Game {
     if (control === null) {
       // Returned to original NPC control.
       if (settlement.controllingNationId === settlement.nationId && !settlement.ownerKingdom) return false;
+      // If we thought we owned this, evict it from the local capture list.
+      if (settlement.playerOwned) {
+        this._gameUI?._serverLostSettlement(key);
+      }
       settlement.controllingNationId = settlement.nationId;
       settlement.playerOwned  = false;
       settlement.ownerKingdom = null;
@@ -869,11 +877,24 @@ export class Game {
 
     if (newNationId === PLAYER_NATION_ID) {
       const isLocal = control.ownerName === localId;
+      // If a remote player is taking over a settlement we thought was ours,
+      // evict it from the local capture list so saves and gameplay logic stay correct.
+      if (!isLocal && prevOwned) {
+        this._gameUI?._serverLostSettlement(key);
+      }
       settlement.playerOwned  = isLocal;
       settlement.ownerKingdom = isLocal
         ? null
-        : { color: control.ownerColor ?? '#64b5f6', flagApp: null };
+        : {
+            color:   control.ownerColor       ?? '#64b5f6',
+            name:    control.ownerKingdomName ?? '',
+            flagApp: null,
+          };
     } else {
+      // Settlement returned to an NPC nation; also evict from local captures.
+      if (prevOwned) {
+        this._gameUI?._serverLostSettlement(key);
+      }
       settlement.playerOwned  = false;
       settlement.ownerKingdom = null;
     }

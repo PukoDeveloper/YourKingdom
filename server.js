@@ -15,7 +15,7 @@
  *   { type: 'state',      players: {...}, ts, time, weather }
  *                          each player entry includes: team: string,
  *                          mapBuildings: { type, tx, ty }[]
- *   { type: 'worldDelta', settlements: { [key]: {ownerName,controllingNationId,ownerColor}|null },
+ *   { type: 'worldDelta', settlements: { [key]: {ownerName,controllingNationId,ownerColor,ownerKingdomName}|null },
  *                         version: number }
  *   { type: 'correction', x, y, angle }
  *   { type: 'gold_sync',  balance: number }   (authoritative gold correction)
@@ -287,7 +287,7 @@ const players = new Map();
  * and apply deltas efficiently.
  */
 const sharedWorld = {
-  /** @type {Map<string, { ownerName: string|null, controllingNationId: number, ownerColor: string|null }>} */
+  /** @type {Map<string, { ownerName: string|null, controllingNationId: number, ownerColor: string|null, ownerKingdomName: string }>} */
   settlements: new Map(),
   version: 0,
 };
@@ -396,7 +396,8 @@ wss.on('connection', (ws, req) => {
           if (!existing) {
             // Unclaimed – restore as this player's capture.
             const ownerColor = typeof savedGs.playerKingdom?.color === 'string' ? savedGs.playerKingdom.color : '#64b5f6';
-            sharedWorld.settlements.set(k, { ownerName: nameKey, controllingNationId: -1, ownerColor });
+            const ownerKingdomName = typeof savedGs.playerKingdom?.name === 'string' ? savedGs.playerKingdom.name : '';
+            sharedWorld.settlements.set(k, { ownerName: nameKey, controllingNationId: -1, ownerColor, ownerKingdomName });
             restoredChanged.push(k);
           } else if (existing.ownerName === nameKey) {
             // Already recorded as ours (e.g. from a previous restore in the same session) – keep.
@@ -554,11 +555,12 @@ function _attachHandlers(ws, id, name) {
 
         if (newCaptures.length) {
           const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
+          const ownerKingdomName = typeof player.kingdom?.name === 'string' ? player.kingdom.name : '';
           for (const k of newCaptures) {
             // PvP: remove the settlement from the previous owner's captured list so
             // their state broadcast no longer shows a stale territory overlay.
             _evictPreviousOwner(k, id);
-            sharedWorld.settlements.set(k, { ownerName: id, controllingNationId: -1, ownerColor });
+            sharedWorld.settlements.set(k, { ownerName: id, controllingNationId: -1, ownerColor, ownerKingdomName });
           }
           broadcastWorldDelta(newCaptures);
         }
@@ -839,10 +841,11 @@ function _handleAction(ws, id, name, player, msg) {
       }
     }
     const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
+    const ownerKingdomName = typeof player.kingdom?.name === 'string' ? player.kingdom.name : '';
     // PvP: remove the settlement from the previous owner's captured list so
     // their state broadcast no longer shows a stale territory overlay.
     _evictPreviousOwner(key, id);
-    sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor });
+    sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor, ownerKingdomName });
     // Add to the player's captured list if not already there.
     if (!Array.isArray(player.captured)) player.captured = [];
     if (!player.captured.includes(key)) player.captured.push(key);
