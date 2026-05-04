@@ -2,29 +2,48 @@
  * MultiplayerClient – thin WebSocket wrapper that handles the connection
  * lifecycle and message routing for multiplayer mode.
  *
- * Protocol (JSON over WebSocket):
- *   Server → Client  welcome    { type: 'welcome', id: string, seed: number, time: number, weather: number, sessionToken: string, name: string, gameState: object|null }
- *   Server → Client  name_taken { type: 'name_taken', name: string }
- *   Client → Server  move       { type: 'move', x: number, y: number, angle: number }
- *   Client → Server  info       { type: 'info', appearance: object, kingdom: { name, color } }
- *   Client → Server  territory  { type: 'territory', captured: string[], liberated: string[] }
- *   Client → Server  save       { type: 'save', gameState: object }
- *   Server → Client  join       { type: 'join', id: string, name: string }
- *   Server → Client  state      { type: 'state', players: { [id]: { x, y, angle, name } }, ts: number, time: number, weather: number }
- *   Server → Client  leave      { type: 'leave', id: string, name: string }
+ * ──────────────────────────── Protocol ────────────────────────────────────
+ * Server → Client
+ *   welcome       { type, id, seed, time, weather, name, gameState,
+ *                   worldState: { settlements: object, version: number },
+ *                   serverConfig: { pvpEnabled, teamsEnabled, maxTeamNameLen } }
+ *   name_taken    { type: 'name_taken', name }
+ *   name_required { type: 'name_required' }
+ *   state         { type: 'state', players: { [id]: { x,y,angle,name,
+ *                   appearance,kingdom,captured,liberated,team } },
+ *                   ts, time, weather }
+ *   worldDelta    { type: 'worldDelta',
+ *                   settlements: { [key]: { ownerName, controllingNationId,
+ *                                           ownerColor }|null },
+ *                   version: number }
+ *   join          { type: 'join', id, name }
+ *   leave         { type: 'leave', id, name }
+ *   correction    { type: 'correction', x, y, angle }
+ *   action_ok     { type: 'action_ok', kind, ...data }
+ *   action_reject { type: 'action_reject', kind, reason, ...data }
  *
- * Reconnection:
- *   On disconnect the client stores its sessionToken in localStorage under
- *   SESSION_KEY and automatically appends it as ?token=<sessionToken> on the
- *   next connection attempt so the server can restore the original player id.
- *   Up to MAX_RECONNECT_TRIES are made before onDisconnect is fired.
+ * Client → Server
+ *   move      { type: 'move', x, y, angle }
+ *   info      { type: 'info', appearance: object, kingdom: { name, color } }
+ *   territory { type: 'territory', captured: string[], liberated: string[] }
+ *   save      { type: 'save', gameState: object|null }
+ *   team      { type: 'team', team: string }    (declare team; '' = no team)
+ *   action    { type: 'action', kind: string, ...payload }
+ *               Validated kinds: 'capture', 'liberate'
+ *               Accepted kinds (future): 'buy', 'sell', 'recruit',
+ *                 'declare_war', 'peace', 'trade', 'build_road',
+ *                 'build_map_building', 'constr_building', …
  *
- *   Additionally, the player name is appended as ?name=<name> so the server
- *   can also restore the session by name even after the token has expired.
+ * ──────────────────────────── Reconnection ────────────────────────────────
+ * On disconnect the client automatically retries with exponential back-off
+ * up to MAX_RECONNECT_TRIES times before onDisconnect is fired.
+ * The player name is sent as ?name=<name> on every attempt so the server can
+ * restore the session (last-known position and saved game state).
+ *
+ * ──────────────────────────── Identity ───────────────────────────────────
+ * The player's name (lowercased) is their sole unique identifier.
  */
 
-/** localStorage key used to persist the session token across page reloads. */
-const SESSION_KEY          = 'yk_mp_session';
 /** Base delay for reconnection back-off (ms); doubles on each attempt, capped at 32 s. */
 const RECONNECT_BASE_MS    = 2_000;
 /** Maximum number of automatic reconnection attempts before giving up. */
@@ -63,6 +82,21 @@ export class MultiplayerClient {
      */
     this.gameState = null;
 
+    /**
+     * Full world-state snapshot received from the server in the 'welcome'
+     * message.  Contains the canonical settlement-control state for all
+     * settlements that have been captured or liberated by any player.
+     * @type {{ settlements: Record<string, { ownerName: string|null, controllingNationId: number, ownerColor: string|null }>, version: number }|null}
+     */
+    this.worldState = null;
+
+    /**
+     * Server configuration flags received in the 'welcome' message.
+     * Reflects the server operator's settings (PvP enabled, team system, …).
+     * @type {{ pvpEnabled: boolean, teamsEnabled: boolean, maxTeamNameLen: number }|null}
+     */
+    this.serverConfig = null;
+
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
 
@@ -81,6 +115,22 @@ export class MultiplayerClient {
     /** Called with the authoritative world time and weather on each server state broadcast.
      *  @type {((time: number, weather: number) => void)|null} */
     this.onWorldSync = null;
+
+    /**
+     * Called once after connect, with the full canonical world state sent
+     * in the server's 'welcome' message.  Use this to initialise settlement
+     * control from the server's authoritative snapshot.
+     * @type {((worldState: { settlements: Record<string, object>, version: number }) => void)|null}
+     */
+    this.onWorldState = null;
+
+    /**
+     * Called whenever the server broadcasts a settlement-control change
+     * ('worldDelta' message).  The delta contains only the keys that changed.
+     * null values mean the settlement returned to its default NPC control.
+     * @type {((delta: { settlements: Record<string, object|null>, version: number }) => void)|null}
+     */
+    this.onWorldDelta = null;
 
     /** Called when the chosen name is already taken by an active player.
      *  @type {((name: string) => void)|null} */
@@ -186,17 +236,11 @@ export class MultiplayerClient {
   // ---------------------------------------------------------------------------
 
   /**
-   * Build the WebSocket URL, appending the stored session token and player name.
+   * Build the WebSocket URL, appending the player name.
    * @returns {string}
    */
   _buildUrl() {
     const params = new URLSearchParams();
-    // Prefer the fast-reconnect token when available.
-    try {
-      const token = localStorage.getItem(SESSION_KEY);
-      if (token) params.set('token', token);
-    } catch { /* localStorage unavailable */ }
-    // Always send the player name so the server can do name-based identity lookup.
     if (this.playerName) params.set('name', this.playerName);
     const qs = params.toString();
     return qs ? `${this._baseUrl}?${qs}` : this._baseUrl;
@@ -247,17 +291,20 @@ export class MultiplayerClient {
         this.dayTime    = typeof msg.time    === 'number' ? msg.time    : null;
         this.weather    = typeof msg.weather === 'number' ? msg.weather : null;
         this.gameState  = msg.gameState ?? null;
+        this.worldState = msg.worldState ?? null;
+        this.serverConfig = msg.serverConfig ?? null;
         this.playerName = msg.name || this.playerName;
-        if (msg.sessionToken) {
-          try { localStorage.setItem(SESSION_KEY, msg.sessionToken); } catch { /* ignore */ }
-        }
         onWelcome?.();
-      } else if (msg.type === 'name_taken' && !welcomed) {
-        // Server rejected because the name is already in use.
+      } else if ((msg.type === 'name_taken' || msg.type === 'name_required') && !welcomed) {
+        // Server rejected the connection.
         welcomed = true; // prevent reconnect loop
         this._destroyed = true;
-        this.onNameTaken?.(msg.name);
-        onError?.(new Error(`名稱「${msg.name}」已被其他玩家使用，請換一個名稱`));
+        if (msg.type === 'name_taken') {
+          this.onNameTaken?.(msg.name);
+          onError?.(new Error(`名稱「${msg.name}」已被其他玩家使用，請換一個名稱`));
+        } else {
+          onError?.(new Error('連線需要玩家名稱'));
+        }
       } else {
         this._handleMessage(msg);
       }
@@ -301,7 +348,42 @@ export class MultiplayerClient {
           this.onPositionCorrection?.(msg.x, msg.y, msg.angle);
         }
         break;
+      case 'worldDelta':
+        // Incremental settlement-control update broadcast by the server whenever
+        // any player captures or liberates a settlement.
+        if (msg.settlements && typeof msg.settlements === 'object') {
+          this.onWorldDelta?.({ settlements: msg.settlements, version: msg.version ?? 0 });
+        }
+        break;
+      // action_ok / action_reject are handled by per-action callbacks (sendAction).
     }
+  }
+
+  /**
+   * Send a game-action request to the server.
+   * The server validates the action and responds with 'action_ok' or 'action_reject'.
+   *
+   * @param {string} kind    Action kind, e.g. 'capture', 'liberate', 'buy', 'declare_war'.
+   * @param {object} [payload]  Additional action parameters.
+   */
+  sendAction(kind, payload = {}) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'action', kind, ...payload }));
+  }
+
+  /**
+   * Declare this player's team on the server.
+   * Only meaningful when `serverConfig.teamsEnabled` is true.
+   * Pass an empty string to leave the team (free agent).
+   *
+   * The server sanitises and truncates the name; the confirmed team name
+   * is reflected back via the next 'state' broadcast.
+   *
+   * @param {string} team  Team name (empty = no team).
+   */
+  sendTeam(team) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'team', team: team ?? '' }));
   }
 
   /**

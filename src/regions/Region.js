@@ -74,6 +74,16 @@ export class Region {
      */
     this.playerOwned = false;
 
+    /**
+     * Kingdom info of the player who controls this settlement, set by the
+     * multiplayer world-state sync (Game._applyWorldState / _applyWorldDelta).
+     * null when unset (NPC, neutral) or when controlled by the local player
+     * (StructureRenderer uses the local player's kingdom in that case).
+     * Not persisted – reconstructed from server broadcasts at runtime.
+     * @type {{ color: string, flagApp: object|null }|null}
+     */
+    this.ownerKingdom = null;
+
     // -----------------------------------------------------------------------
     // Region-specific fields
     // -----------------------------------------------------------------------

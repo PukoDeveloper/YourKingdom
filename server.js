@@ -5,57 +5,94 @@
  *   node server.js              # listens on port 3000
  *   PORT=8080 node server.js    # listens on a custom port
  *
- * Each connected client receives one of:
- *   { type: 'welcome',    id, seed, time, weather, sessionToken, name }
- *   { type: 'name_taken', name }   (then the server closes the connection)
+ * ──────────────────────────── Server → Client ─────────────────────────────
+ *   { type: 'welcome',    id, seed, time, weather, name, gameState,
+ *                         worldState: { settlements: object, version: number },
+ *                         serverConfig: { pvpEnabled, teamsEnabled, maxTeamNameLen } }
+ *   { type: 'name_taken',   name }          (then the server closes the connection)
+ *   { type: 'name_required' }               (then the server closes the connection)
+ *   { type: 'state',      players: {...}, ts, time, weather }
+ *                          each player entry includes: team: string
+ *   { type: 'worldDelta', settlements: { [key]: {ownerName,controllingNationId,ownerColor}|null },
+ *                         version: number }
+ *   { type: 'correction', x, y, angle }
+ *   { type: 'join',       id, name }
+ *   { type: 'leave',      id, name }
+ *   { type: 'action_ok',  kind, ...data }   (action accepted by server)
+ *   { type: 'action_reject', kind, reason } (action rejected by server)
  *
- * Clients send:
- *   { type: 'move',      x: <number>, y: <number>, angle: <number> }
- *   { type: 'info',      appearance: <object>, kingdom: { name, color } }
+ * ──────────────────────────── Client → Server ─────────────────────────────
+ *   { type: 'move',      x, y, angle }
+ *   { type: 'info',      appearance: object, kingdom: { name, color } }
  *   { type: 'territory', captured: string[], liberated: string[] }
- *   { type: 'save',      gameState: <object> }   (persists full game state for the named account)
+ *   { type: 'save',      gameState: object|null }
+ *   { type: 'team',      team: string }   (declare team name; '' = no team)
+ *   { type: 'action',    kind: string, ...payload }
+ *       Supported kinds (validated server-side):
+ *         'capture'  – { key: 'castle:N'|'village:N' }
+ *         'liberate' – { key: 'castle:N'|'village:N' }
+ *       Future kinds (accepted and queued; full validation added incrementally):
+ *         'buy', 'sell', 'recruit', 'declare_war', 'peace', 'trade',
+ *         'build_road', 'build_map_building', 'constr_building', …
  *
- * The server broadcasts the current player state to all clients every
- * TICK_MS milliseconds:
- *   { type: 'state', players: { '<id>': { x, y, angle, name,
- *                                                    appearance, kingdom,
- *                                                    captured, liberated } },
- *                   ts: <ms>, time: <number>, weather: <number> }
+ * ────────────────── Server-Authoritative Architecture ─────────────────────
+ *   Shared world state (sharedWorld):
+ *     • settlement control map  – who owns each settlement (all players share one world)
+ *     • version counter         – monotonically increasing; clients use it for change detection
+ *     On connect   : server restores prior captures/liberations from gameState into sharedWorld.
+ *     On territory : server validates proximity + conflict; updates sharedWorld; broadcasts worldDelta.
+ *     On action    : server validates the action against authoritative state; applies; broadcasts.
  *
- * When the server rejects a client's position (teleport / speed violation) it
- * sends a correction directly to that client:
- *   { type: 'correction', x: <number>, y: <number>, angle: <number> }
- *
- * When a player connects the server broadcasts (to existing players only):
- *   { type: 'join', id: '<id>', name: '<name>' }
- *
- * When a client disconnects the server broadcasts:
- *   { type: 'leave', id: '<id>', name: '<name>' }
+ *   Per-player state (namedSessions.gameState):
+ *     Full snapshot including inventory, army, character, kingdom, diplomacy deltas.
+ *     Persisted via the 'save' message.  Sent back on reconnect in the 'welcome' message.
  *
  * Identity:
- *   1. Token-based (fast reconnect within RECONNECT_GRACE_MS):
- *      Client appends ?token=<sessionToken> – server restores id & position.
- *   2. Name-based (persistent across sessions):
- *      Client appends ?name=<playerName> – server looks up namedSessions and
- *      restores the player's last-known position indefinitely (until the server
- *      process restarts).  If the name is already used by an active connection
- *      the server sends { type: 'name_taken', name } and closes.
+ *   Player name is the sole unique identifier.  The client appends
+ *   ?name=<playerName>; the server uses the lowercase name as the player's id.
+ *   Duplicate names are rejected with { type: 'name_taken', name }.
+ *   Anonymous connections receive { type: 'name_required' } and are closed.
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
-import { randomBytes }               from 'crypto';
 import { MapData }                   from './src/world/MapData.js';
 import { TILE_SIZE }                 from './src/world/constants.js';
 
 const PORT                = Number(process.env.PORT ?? 3000);
 const TICK_MS             = 50;     // broadcast interval (20 Hz)
-const RECONNECT_GRACE_MS  = 30_000; // token-based grace period after disconnect
 /** Maximum length accepted for a player name. */
 const MAX_NAME_LEN        = 20;
 
 // World seed: fixed for the lifetime of this server process so every client
 // that connects (or reconnects) generates the same deterministic map.
 const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
+
+// ---------------------------------------------------------------------------
+// Server configuration (read from environment variables)
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-side feature flags that server operators set via environment variables.
+ *
+ * Environment variables:
+ *   PVP_ENABLED=true          – players may attack each other and capture
+ *                                each other's settlements.  Default: false.
+ *   TEAMS_ENABLED=true          – team system is active.  Players can declare a
+ *                                team name; same-team players cannot attack each
+ *                                other regardless of PVP_ENABLED.  Default: false.
+ *   MAX_TEAM_NAME_LEN=20       – maximum characters in a team name.  Default: 20.
+ *
+ * The full config object is sent to every client in the 'welcome' message so
+ * the game can display appropriate UI cues (e.g. hostile tint on enemy players).
+ */
+const SERVER_CONFIG = Object.freeze({
+  /** Whether PvP is enabled: players can capture each other's settlements. */
+  pvpEnabled:      process.env.PVP_ENABLED      === 'true',
+  /** Whether the team system is active. */
+  teamsEnabled:    process.env.TEAMS_ENABLED     === 'true',
+  /** Maximum length of a team name (characters). */
+  maxTeamNameLen:  Math.max(1, Number(process.env.MAX_TEAM_NAME_LEN ?? 20)),
+});
 
 // ---------------------------------------------------------------------------
 // Server-authoritative world geometry (for validation)
@@ -140,6 +177,7 @@ let _weatherTimer = MIN_WEATHER_DURATION + Math.random() * (MAX_WEATHER_DURATION
 const wss = new WebSocketServer({ port: PORT });
 
 /**
+ * Active players keyed by their (canonical) player name.
  * @type {Map<string, {
  *   ws: import('ws').WebSocket,
  *   x: number, y: number, angle: number,
@@ -150,44 +188,85 @@ const wss = new WebSocketServer({ port: PORT });
  *   kingdom: { name: string, color: string }|null,
  *   captured: string[],
  *   liberated: string[],
+ *   team: string,
  * }>}
  * hasPosition: false until the client sends its first 'move' message, so we
  * don't broadcast the placeholder (0,0) position to other players.
  * lastMoveMs: server timestamp (ms) of the last accepted 'move' message, used
  * for movement-speed validation.
+ * team: team name declared by the player via the 'team' message (empty = no team).
  */
 const players = new Map();
 
 /**
- * Token-based sessions kept alive during the reconnection grace period.
- * Key: sessionToken  Value: { id, name, x, y, angle, timer }
- * @type {Map<string, { id: string, name: string, x: number, y: number, angle: number, timer: ReturnType<typeof setTimeout> }>}
+ * Shared world state – the single authoritative source of truth for everything
+ * that is visible to all connected players.
+ *
+ * sharedWorld.settlements is a Map keyed by settlement key ('castle:N' / 'village:N').
+ * Only non-default entries are stored (NPC-controlled settlements in their original
+ * nation are the default and therefore absent from the map):
+ *   { ownerName: string, controllingNationId: -1, ownerColor: string }
+ *     – settlement is owned by the named player
+ *   { ownerName: null, controllingNationId: -2, ownerColor: null }
+ *     – settlement was liberated (neutral)
+ *
+ * sharedWorld.version increments on every change; clients use it to detect
+ * and apply deltas efficiently.
  */
-const pendingReconnect = new Map();
+const sharedWorld = {
+  /** @type {Map<string, { ownerName: string|null, controllingNationId: number, ownerColor: string|null }>} */
+  settlements: new Map(),
+  version: 0,
+};
+
+/** Serialize sharedWorld.settlements to a plain object for JSON broadcast. */
+function _worldSnapshot() {
+  const out = {};
+  for (const [k, v] of sharedWorld.settlements) out[k] = v;
+  return out;
+}
+
+/**
+ * Increment the world version and broadcast a settlement-control delta to all clients.
+ * @param {string[]} changedKeys  Settlement keys whose control state changed.
+ */
+function broadcastWorldDelta(changedKeys) {
+  if (changedKeys.length === 0) return;
+  sharedWorld.version += 1;
+  const delta = {};
+  for (const k of changedKeys) {
+    // null = returned to default NPC control (key removed from map)
+    delta[k] = sharedWorld.settlements.has(k) ? sharedWorld.settlements.get(k) : null;
+  }
+  broadcast(JSON.stringify({ type: 'worldDelta', settlements: delta, version: sharedWorld.version }));
+}
+
+/** Validate settlement key format. */
+const _isValidSettlementKey = k => typeof k === 'string' && /^(castle|village):\d+$/.test(k);
 
 /**
  * Persistent name-based identity store.
- * Key: playerName (lowercase)  Value: { id, x, y, angle, gameState }
+ * Key: playerName (lowercase)  Value: { x, y, angle, gameState }
  * Entries are never deleted – they persist for the lifetime of the server process.
  * gameState holds the full serialised game snapshot uploaded by the client via a
  * 'save' message, or null when no save has been received yet.
- * @type {Map<string, { id: string, x: number, y: number, angle: number, gameState: object|null }>}
+ * @type {Map<string, { x: number, y: number, angle: number, gameState: object|null }>}
  */
 const namedSessions = new Map();
-
-let _idCounter = 0;
-function generateId() {
-  _idCounter += 1;
-  return `p${Date.now().toString(36)}${_idCounter}`;
-}
-
-function generateToken() {
-  return randomBytes(24).toString('hex');
-}
 
 /** Sanitise a player name: trim, limit length, strip control chars. */
 function sanitiseName(raw) {
   return String(raw).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, MAX_NAME_LEN);
+}
+
+/**
+ * Sanitise a team name: strip control chars, trim, and limit to the
+ * server-configured maximum length.
+ * @param {string} raw
+ * @returns {string}
+ */
+function sanitiseTeamName(raw) {
+  return String(raw).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, SERVER_CONFIG.maxTeamNameLen);
 }
 
 // ---------------------------------------------------------------------------
@@ -195,100 +274,92 @@ function sanitiseName(raw) {
 // ---------------------------------------------------------------------------
 
 wss.on('connection', (ws, req) => {
-  const qs            = new URLSearchParams(req.url.split('?')[1] ?? '');
-  const incomingToken = qs.get('token') ?? null;
-  const incomingName  = qs.has('name') ? sanitiseName(qs.get('name')) : '';
+  const qs           = new URLSearchParams(req.url.split('?')[1] ?? '');
+  const incomingName = qs.has('name') ? sanitiseName(qs.get('name')) : '';
 
-  // --- Token-based reconnect (highest priority: within grace period) ---
-  if (incomingToken && pendingReconnect.has(incomingToken)) {
-    const session = pendingReconnect.get(incomingToken);
-    clearTimeout(session.timer);
-    pendingReconnect.delete(incomingToken);
-
-    const { id, name } = session;
-    // hasPosition: true – the server already has a valid last-known position.
-    players.set(id, { ws, x: session.x, y: session.y, angle: session.angle, name, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
-    // Keep the namedSession in sync with the restored position; preserve existing gameState.
-    const existingNs = name ? namedSessions.get(name.toLowerCase()) : null;
-    if (name) namedSessions.set(name.toLowerCase(), { id, x: session.x, y: session.y, angle: session.angle, gameState: existingNs?.gameState ?? null });
-    const tokenGameState = existingNs?.gameState ?? null;
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken: incomingToken, name, gameState: tokenGameState }));
-    broadcastExcept(id, JSON.stringify({ type: 'join', id, name }));
-    console.log(`[~] Player "${name || id}" reconnected via token (total: ${players.size})`);
-    _attachHandlers(ws, id, incomingToken, name);
+  // --- Reject connections without a player name ---
+  if (!incomingName) {
+    ws.send(JSON.stringify({ type: 'name_required' }));
+    ws.close();
+    console.log(`[!] Anonymous connection rejected – name required`);
     return;
   }
 
-  // --- Name-based reconnect / new named connection ---
-  if (incomingName) {
-    const nameKey = incomingName.toLowerCase();
+  const nameKey = incomingName.toLowerCase();
 
-    // Reject if this name is already held by an active (connected) player.
-    const activeEntry = [...players.values()].find(p => p.name.toLowerCase() === nameKey);
-    if (activeEntry) {
-      ws.send(JSON.stringify({ type: 'name_taken', name: incomingName }));
-      ws.close();
-      console.log(`[!] Name "${incomingName}" is already taken – rejected new connection`);
-      return;
-    }
+  // --- Reject if this name is already held by an active (connected) player ---
+  if (players.has(nameKey)) {
+    ws.send(JSON.stringify({ type: 'name_taken', name: incomingName }));
+    ws.close();
+    console.log(`[!] Name "${incomingName}" is already taken – rejected new connection`);
+    return;
+  }
 
-    // If a pendingReconnect session exists for this name, cancel it so the old
-    // token can no longer be used to steal back the identity after the new player
-    // has taken it.  This prevents a race where both the old token and the new
-    // name-based connection resolve to the same player id simultaneously.
-    for (const [token, session] of pendingReconnect) {
-      if (session.name && session.name.toLowerCase() === nameKey) {
-        clearTimeout(session.timer);
-        pendingReconnect.delete(token);
-        console.log(`[~] Cancelled pending token for "${incomingName}" (name-based reconnect)`);
-        break;
+  // The player's lowercase name is their unique id.
+  const id = nameKey;
+
+  if (namedSessions.has(nameKey)) {
+    // Restore existing named session (last-known position, and saved game state).
+    const prev = namedSessions.get(nameKey);
+    // hasPosition: true – we have the last-known position from namedSessions.
+    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
+
+    // ── Restore this player's territory into sharedWorld ──────────────────
+    // Any settlement they previously owned or liberated is restored into the
+    // canonical world state, provided no other player has since claimed it.
+    const savedGs = prev.gameState;
+    const restoredChanged = [];
+    if (savedGs) {
+      if (Array.isArray(savedGs.capturedSettlements)) {
+        for (const k of savedGs.capturedSettlements) {
+          if (!_isValidSettlementKey(k)) continue;
+          const existing = sharedWorld.settlements.get(k);
+          if (!existing) {
+            // Unclaimed – restore as this player's capture.
+            const ownerColor = typeof savedGs.playerKingdom?.color === 'string' ? savedGs.playerKingdom.color : '#64b5f6';
+            sharedWorld.settlements.set(k, { ownerName: nameKey, controllingNationId: -1, ownerColor });
+            restoredChanged.push(k);
+          } else if (existing.ownerName === nameKey) {
+            // Already recorded as ours (e.g. from a previous restore in the same session) – keep.
+          }
+          // else: another player already owns it – skip silently.
+        }
+      }
+      if (Array.isArray(savedGs.liberatedSettlements)) {
+        for (const k of savedGs.liberatedSettlements) {
+          if (!_isValidSettlementKey(k)) continue;
+          // Only mark neutral if no player currently owns it.
+          if (!sharedWorld.settlements.has(k)) {
+            sharedWorld.settlements.set(k, { ownerName: null, controllingNationId: -2, ownerColor: null });
+            restoredChanged.push(k);
+          }
+        }
       }
     }
+    if (restoredChanged.length) broadcastWorldDelta(restoredChanged);
 
-    const sessionToken = generateToken();
-
-    if (namedSessions.has(nameKey)) {
-      // Restore existing named session (same id, last-known position, and saved game state).
-      const prev = namedSessions.get(nameKey);
-      const { id } = prev;
-      // hasPosition: true – we have the last-known position from namedSessions.
-      players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: prev.gameState ?? null }));
-      broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
-      console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
-      _attachHandlers(ws, id, sessionToken, incomingName);
-    } else {
-      // New named player – position unknown until client sends its first 'move'.
-      const id = generateId();
-      players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
-      namedSessions.set(nameKey, { id, x: 0, y: 0, angle: 0, gameState: null });
-      ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: incomingName, gameState: null }));
-      broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
-      console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
-      _attachHandlers(ws, id, sessionToken, incomingName);
-    }
-    return;
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: prev.gameState ?? null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
+    broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
+    console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
+  } else {
+    // New named player – position unknown until client sends its first 'move'.
+    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
+    namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null });
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
+    broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
+    console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
   }
-
-  // --- Anonymous connection (no name) ---
-  const id           = generateId();
-  const sessionToken = generateToken();
-  // hasPosition: false until the client sends its first 'move'.
-  players.set(id, { ws, x: 0, y: 0, angle: 0, name: '', hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
-  ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, sessionToken, name: '' }));
-  broadcastExcept(id, JSON.stringify({ type: 'join', id, name: '' }));
-  console.log(`[+] Anonymous player ${id} connected (total: ${players.size})`);
-  _attachHandlers(ws, id, sessionToken, '');
+  _attachHandlers(ws, id, incomingName);
 });
 
 /**
- * Attach message / close / error event handlers to a WebSocket for player `id`.
+ * Attach message / close / error event handlers to a WebSocket for player `name`.
+ * The player's lowercase name serves as their unique id in the `players` map.
  * @param {import('ws').WebSocket} ws
- * @param {string} id
- * @param {string} sessionToken
- * @param {string} name
+ * @param {string} id    Lowercase player name used as the map key.
+ * @param {string} name  Canonical player name (display / broadcast).
  */
-function _attachHandlers(ws, id, sessionToken, name) {
+function _attachHandlers(ws, id, name) {
   ws.on('message', (raw) => {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
@@ -339,10 +410,8 @@ function _attachHandlers(ws, id, sessionToken, name) {
       }
 
       // Keep the persistent named session position up to date.
-      if (name) {
-        const ns = namedSessions.get(name.toLowerCase());
-        if (ns) { ns.x = player.x; ns.y = player.y; ns.angle = player.angle; }
-      }
+      const ns = namedSessions.get(name.toLowerCase());
+      if (ns) { ns.x = player.x; ns.y = player.y; ns.angle = player.angle; }
     }
 
     if (msg.type === 'info') {
@@ -364,25 +433,69 @@ function _attachHandlers(ws, id, sessionToken, name) {
       const player = players.get(id);
       if (!player) return;
 
-      const isValidKey = k => typeof k === 'string' && /^(castle|village):\d+$/.test(k);
+      const isValidKey = _isValidSettlementKey;
 
       if (Array.isArray(msg.captured)) {
         const oldCapturedSet = new Set(player.captured ?? []);
-        // Re-validate every key in the incoming list:
-        //   • Keys the player already held are preserved without a proximity check
-        //     (they could be far from those settlements after capturing them earlier).
-        //   • Newly added keys are accepted only when the player is currently
-        //     within TERRITORY_CAPTURE_RADIUS_PX of the settlement centre.
+        const newCaptures    = [];
+
         player.captured = msg.captured
-          .filter(k => isValidKey(k) && (oldCapturedSet.has(k) || _isNearSettlement(player, k)))
+          .filter(k => {
+            if (!isValidKey(k)) return false;
+            if (oldCapturedSet.has(k)) return true; // player already held this – keep without re-check
+
+            // New capture: require proximity.
+            if (!_isNearSettlement(player, k)) return false;
+
+            const existing = sharedWorld.settlements.get(k);
+            if (existing?.ownerName && existing.ownerName !== id) {
+              // This settlement is already owned by another player.
+              // Only allow if PvP is enabled AND the two players are not on the same team.
+              if (!SERVER_CONFIG.pvpEnabled) return false;
+              if (SERVER_CONFIG.teamsEnabled) {
+                const ownerPlayer = players.get(existing.ownerName);
+                const ownerTeam   = ownerPlayer?.team ?? '';
+                const myTeam      = player.team ?? '';
+                // Same non-empty team = friendly fire prevention.
+                if (myTeam && ownerTeam && myTeam === ownerTeam) return false;
+              }
+            }
+            newCaptures.push(k);
+            return true;
+          })
           .slice(0, 200);
+
+        if (newCaptures.length) {
+          const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
+          for (const k of newCaptures) {
+            sharedWorld.settlements.set(k, { ownerName: id, controllingNationId: -1, ownerColor });
+          }
+          broadcastWorldDelta(newCaptures);
+        }
       }
+
       if (Array.isArray(msg.liberated)) {
-        // Liberation (neutralising a settlement) is accepted without a proximity
-        // check; there is no incentive to fake-liberate one's own territory.
+        const oldLiberatedSet = new Set(player.liberated ?? []);
+        const newlyLiberated  = [];
+
         player.liberated = msg.liberated
           .filter(isValidKey)
           .slice(0, 200);
+
+        for (const k of player.liberated) {
+          if (!oldLiberatedSet.has(k)) newlyLiberated.push(k);
+        }
+
+        // Remove liberated settlements from this player's captured list.
+        const liberatedSet  = new Set(player.liberated);
+        player.captured = (player.captured ?? []).filter(k => !liberatedSet.has(k));
+
+        if (newlyLiberated.length) {
+          for (const k of newlyLiberated) {
+            sharedWorld.settlements.set(k, { ownerName: null, controllingNationId: -2, ownerColor: null });
+          }
+          broadcastWorldDelta(newlyLiberated);
+        }
       }
     }
 
@@ -398,10 +511,47 @@ function _attachHandlers(ws, id, sessionToken, name) {
           if (msg.gameState) {
             console.log(`[💾] Saved game state for "${name}"`);
           } else {
+            // Clear this player's territory from sharedWorld when they reset.
+            const removedKeys = [];
+            for (const [k, v] of sharedWorld.settlements) {
+              if (v.ownerName === id) {
+                sharedWorld.settlements.delete(k);
+                removedKeys.push(k);
+              }
+            }
+            if (removedKeys.length) broadcastWorldDelta(removedKeys);
             console.log(`[🗑] Cleared game state for "${name}"`);
           }
         }
       }
+    }
+
+    // ─── Team declaration ───────────────────────────────────────────────────
+    // Clients send { type: 'team', team: string } to join or leave a team.
+    // Only processed when SERVER_CONFIG.teamsEnabled is true.
+    // Empty string means no team (free agent).
+    if (msg.type === 'team' && SERVER_CONFIG.teamsEnabled) {
+      const player = players.get(id);
+      if (!player) return;
+      const raw = typeof msg.team === 'string' ? msg.team : '';
+      player.team = sanitiseTeamName(raw);
+    }
+
+    // ─── Action protocol ────────────────────────────────────────────────────
+    // Clients send { type: 'action', kind: string, ...payload } for any
+    // game-modifying operation.  The server validates the action against
+    // authoritative state, applies it, and broadcasts the result.
+    //
+    // Current server-validated kinds:
+    //   'capture'  – claim a settlement (same validation as the 'territory' message)
+    //   'liberate' – release a settlement to neutral
+    //
+    // All other kinds are accepted optimistically and are validated on an ongoing
+    // basis as server-side game-logic is expanded.
+    if (msg.type === 'action') {
+      const player = players.get(id);
+      if (!player) return;
+      _handleAction(ws, id, name, player, msg);
     }
   });
 
@@ -411,26 +561,17 @@ function _attachHandlers(ws, id, sessionToken, name) {
       ? { x: player.x, y: player.y, angle: player.angle }
       : { x: 0, y: 0, angle: 0 };
     players.delete(id);
-    console.log(`[-] Player "${name || id}" disconnected (total: ${players.size})`);
+    console.log(`[-] Player "${name}" disconnected (total: ${players.size})`);
     broadcast(JSON.stringify({ type: 'leave', id, name }));
 
     // Persist latest position in namedSessions so the player can rejoin by name.
     // Preserve the existing gameState so it survives the disconnect.
-    if (name) {
-      const prevNs = namedSessions.get(name.toLowerCase());
-      namedSessions.set(name.toLowerCase(), { id, ...snapshot, gameState: prevNs?.gameState ?? null });
-    }
-
-    // Also keep the short-lived token-based session for fast reconnect.
-    const timer = setTimeout(() => {
-      pendingReconnect.delete(sessionToken);
-      console.log(`[x] Token session for "${name || id}" expired`);
-    }, RECONNECT_GRACE_MS);
-    pendingReconnect.set(sessionToken, { id, name, ...snapshot, timer });
+    const prevNs = namedSessions.get(name.toLowerCase());
+    namedSessions.set(name.toLowerCase(), { ...snapshot, gameState: prevNs?.gameState ?? null });
   });
 
   ws.on('error', (err) => {
-    console.error(`[!] Error from "${name || id}":`, err.message);
+    console.error(`[!] Error from "${name}":`, err.message);
   });
 }
 
@@ -481,9 +622,95 @@ function _isNearSettlement(player, key) {
   return Math.sqrt(dx * dx + dy * dy) <= TERRITORY_CAPTURE_RADIUS_PX;
 }
 
-// ---------------------------------------------------------------------------
-// Broadcast tick
-// ---------------------------------------------------------------------------
+/**
+ * Handle an 'action' message from a connected player.
+ * Validates the action against authoritative state, applies it, and responds.
+ *
+ * The function is intentionally written to be extended: add new `kind` cases
+ * here as server-side validation for additional game mechanics is implemented.
+ *
+ * @param {import('ws').WebSocket} ws     Sending client socket.
+ * @param {string}                 id     Lowercase player id.
+ * @param {string}                 name   Canonical player name.
+ * @param {object}                 player Live player object from `players` map.
+ * @param {object}                 msg    Parsed action message.
+ */
+function _handleAction(ws, id, name, player, msg) {
+  const kind = typeof msg.kind === 'string' ? msg.kind : '';
+
+  // ── capture ────────────────────────────────────────────────────────────────
+  // Claim a settlement as player territory.
+  // Validates: valid key, player proximity, not already owned by another player.
+  if (kind === 'capture') {
+    const key = msg.key;
+    if (!_isValidSettlementKey(key)) {
+      ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'invalid_key' }));
+      return;
+    }
+    if (!_isNearSettlement(player, key)) {
+      ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'not_near' }));
+      return;
+    }
+    const existing = sharedWorld.settlements.get(key);
+    if (existing?.ownerName && existing.ownerName !== id) {
+      // Settlement owned by another player.
+      if (!SERVER_CONFIG.pvpEnabled) {
+        ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'pvp_disabled' }));
+        return;
+      }
+      if (SERVER_CONFIG.teamsEnabled) {
+        const ownerPlayer = players.get(existing.ownerName);
+        const ownerTeam   = ownerPlayer?.team ?? '';
+        const myTeam      = player.team ?? '';
+        if (myTeam && ownerTeam && myTeam === ownerTeam) {
+          ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'friendly_fire' }));
+          return;
+        }
+      }
+    }
+    const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
+    sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor });
+    // Add to the player's captured list if not already there.
+    if (!Array.isArray(player.captured)) player.captured = [];
+    if (!player.captured.includes(key)) player.captured.push(key);
+    broadcastWorldDelta([key]);
+    ws.send(JSON.stringify({ type: 'action_ok', kind, key }));
+    return;
+  }
+
+  // ── liberate ───────────────────────────────────────────────────────────────
+  // Release a settlement to neutral status.
+  // Validates: valid key, player must currently own it.
+  if (kind === 'liberate') {
+    const key = msg.key;
+    if (!_isValidSettlementKey(key)) {
+      ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'invalid_key' }));
+      return;
+    }
+    const existing = sharedWorld.settlements.get(key);
+    if (existing?.ownerName !== id) {
+      ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'not_owner' }));
+      return;
+    }
+    sharedWorld.settlements.set(key, { ownerName: null, controllingNationId: -2, ownerColor: null });
+    player.captured  = (player.captured  ?? []).filter(k => k !== key);
+    if (!Array.isArray(player.liberated)) player.liberated = [];
+    if (!player.liberated.includes(key)) player.liberated.push(key);
+    broadcastWorldDelta([key]);
+    ws.send(JSON.stringify({ type: 'action_ok', kind, key }));
+    return;
+  }
+
+  // ── All other actions ──────────────────────────────────────────────────────
+  // Accepted optimistically.  The server records the action for auditing and
+  // future validation expansion (diplomacy, building, trade, recruitment, etc.).
+  // No immediate state change here; the client applies the change locally and
+  // the authoritative state is reconciled via the 'save' / 'worldDelta' flow.
+  console.log(`[⚡] Action "${kind}" from "${name}" (pending server validation)`);
+  ws.send(JSON.stringify({ type: 'action_ok', kind }));
+}
+
+
 
 setInterval(() => {
   // Advance authoritative world time (always, even with no players connected).
@@ -499,7 +726,7 @@ setInterval(() => {
 
   if (players.size === 0) return;
 
-  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[] }>} */
+  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[], team: string }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
     // Omit players whose position isn't known yet (no 'move' received).
@@ -510,6 +737,7 @@ setInterval(() => {
       kingdom:    data.kingdom    ?? null,
       captured:   data.captured  ?? [],
       liberated:  data.liberated ?? [],
+      team:       data.team      ?? '',
     };
   }
 
@@ -545,4 +773,11 @@ function broadcastExcept(excludeId, payload) {
 wss.on('listening', () => {
   console.log(`YourKingdom 伺服器已啟動，監聽埠口 ${PORT}  世界種子：${WORLD_SEED}`);
   console.log(`客戶端連線位址：ws://<你的IP>:${PORT}`);
+  console.log(`伺服器設定：PvP=${SERVER_CONFIG.pvpEnabled ? '開啟' : '關閉'}  隊伍系統=${SERVER_CONFIG.teamsEnabled ? '開啟' : '關閉'}`);
+  if (!SERVER_CONFIG.pvpEnabled) {
+    console.log(`  ℹ️  設定 PVP_ENABLED=true 以啟用玩家互相攻擊`);
+  }
+  if (!SERVER_CONFIG.teamsEnabled) {
+    console.log(`  ℹ️  設定 TEAMS_ENABLED=true 以啟用隊伍系統`);
+  }
 });

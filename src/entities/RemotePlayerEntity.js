@@ -10,6 +10,11 @@
  * The directional sprite is placed in an inner container that rotates with the
  * player's facing angle, while the name/kingdom labels stay in the outer
  * container and always remain upright on-screen.
+ *
+ * When PvP is enabled, a coloured relation ring is drawn around the sprite:
+ *   🟥 red   – hostile (PvP on, different team or no teams)
+ *   🟩 green – ally    (same non-empty team)
+ *   ⬜ none  – PvP disabled (neutral / co-op)
  */
 
 import { Container, Graphics, Text } from 'pixi.js';
@@ -23,6 +28,20 @@ const DEFAULT_COLOUR = 0x64b5f6; // light blue
 
 /** Circle radius in world pixels – matches MovingEntity's RADIUS. */
 const RADIUS = 12;
+
+/**
+ * Relation values used by setRelation().
+ * @readonly
+ * @enum {string}
+ */
+export const RELATION = Object.freeze({
+  /** PvP disabled – no hostility indicator shown. */
+  NEUTRAL: 'neutral',
+  /** Same team – green ally ring. */
+  ALLY:    'ally',
+  /** Different team or no teams, PvP enabled – red hostile ring. */
+  HOSTILE: 'hostile',
+});
 
 export class RemotePlayerEntity {
   /**
@@ -57,6 +76,12 @@ export class RemotePlayerEntity {
     // Outer container – moves with the player's world position; labels live here
     // so they never rotate.
     const c = new Container();
+
+    // Relation ring – drawn behind the sprite; colour depends on PvP relation.
+    // Hidden by default (when PvP is disabled or relation is neutral).
+    this._relationRing = new Graphics();
+    this._relation     = RELATION.NEUTRAL;
+    c.addChild(this._relationRing);
 
     // Inner container – rotates with the player's facing angle.
     this._spriteContainer = new Container();
@@ -168,6 +193,27 @@ export class RemotePlayerEntity {
       }
       this._kingdomLabel.style.fill = colorHex;
     }
+  }
+
+  /**
+   * Set the relation ring colour based on PvP status.
+   *
+   * @param {RELATION[keyof RELATION]} relation
+   *   RELATION.NEUTRAL – hide the ring (PvP off or same-world co-op)
+   *   RELATION.ALLY    – green ring (same team)
+   *   RELATION.HOSTILE – red ring (enemy in PvP)
+   */
+  setRelation(relation) {
+    if (this._relation === relation) return;
+    this._relation = relation;
+    const g = this._relationRing;
+    g.clear();
+    if (relation === RELATION.ALLY) {
+      g.circle(0, 0, RADIUS + 4).stroke({ color: 0x66bb6a, alpha: 0.9, width: 3 });
+    } else if (relation === RELATION.HOSTILE) {
+      g.circle(0, 0, RADIUS + 4).stroke({ color: 0xef5350, alpha: 0.9, width: 3 });
+    }
+    // NEUTRAL: ring stays cleared (invisible)
   }
 
   /**

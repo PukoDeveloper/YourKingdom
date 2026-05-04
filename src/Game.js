@@ -1,5 +1,5 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { RemotePlayerEntity } from './entities/RemotePlayerEntity.js';
+import { RemotePlayerEntity, RELATION } from './entities/RemotePlayerEntity.js';
 import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
@@ -41,6 +41,12 @@ export class Game {
     this._mp = multiplayerClient;
     /** Remote player entities keyed by server id. @type {Map<string, RemotePlayerEntity>} */
     this._remotePlayers = new Map();
+    /**
+     * The local player's current team name (mirrors what was sent to the server
+     * via sendTeam()).  Used when computing ally/hostile relations.
+     * @type {string}
+     */
+    this._myTeam = '';
   }
 
   async init() {
@@ -375,6 +381,14 @@ export class Game {
       // When the server corrects our position (speed-violation detected), snap
       // the local player sprite to the authoritative coordinates immediately.
       this._mp.onPositionCorrection = (x, y, angle) => this._onServerCorrection(x, y, angle);
+      // Apply the full canonical world state received in the 'welcome' message.
+      // This ensures settlement control is in sync with the server before the
+      // first frame is rendered.
+      if (this._mp.worldState) {
+        this._applyWorldState(this._mp.worldState);
+      }
+      // Apply incremental settlement-control updates broadcast by the server.
+      this._mp.onWorldDelta = (delta) => this._applyWorldDelta(delta);
       // Broadcast our initial appearance, kingdom info and territory immediately
       // after init so other already-connected players see our look right away.
       this._mpSendInfo();
@@ -703,6 +717,142 @@ export class Game {
   // Multiplayer helpers
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // Server-authoritative world state
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Apply the full canonical world state received from the server.
+   * Called once after connect (from the 'welcome' worldState payload).
+   *
+   * For each settlement whose control has changed (captured by a player, or
+   * liberated to neutral), this updates the local NationSystem so that:
+   *   – rendering (StructureRenderer) shows the correct flag/colour;
+   *   – the HUD displays the correct owning entity;
+   *   – GameUI can gate actions (e.g. entering a settlement) correctly.
+   *
+   * @param {{ settlements: Record<string, object>, version: number }} worldState
+   */
+  _applyWorldState(worldState) {
+    if (!worldState?.settlements || !this._nationSystem) return;
+    let changed = false;
+    for (const [key, control] of Object.entries(worldState.settlements)) {
+      if (this._applySettlementControl(key, control)) changed = true;
+    }
+    if (changed) this._structureRenderer?.rebuild();
+  }
+
+  /**
+   * Apply an incremental settlement-control delta broadcast by the server.
+   * Only the settlements that changed are included; null values mean the
+   * settlement returned to its default (NPC) control.
+   *
+   * @param {{ settlements: Record<string, object|null>, version: number }} delta
+   */
+  _applyWorldDelta(delta) {
+    if (!delta?.settlements || !this._nationSystem) return;
+    let changed = false;
+    for (const [key, control] of Object.entries(delta.settlements)) {
+      if (this._applySettlementControl(key, control)) changed = true;
+    }
+    if (changed) this._structureRenderer?.rebuild();
+  }
+
+  /**
+   * Apply a single settlement-control entry from a world state / delta.
+   *
+   * `control` shape:
+   *   { ownerName: string|null, controllingNationId: number, ownerColor: string|null }
+   *   or null (settlement returned to original NPC control).
+   *
+   * Mapping rules:
+   *   controllingNationId = -1 (PLAYER_NATION_ID):
+   *     – If ownerName matches the local player's id → playerOwned = true,
+   *       ownerKingdom = null (StructureRenderer uses the local player's kingdom).
+   *     – Otherwise (remote player)                 → playerOwned = false,
+   *       ownerKingdom = { color: ownerColor, flagApp: null }.
+   *   controllingNationId = -2 (NEUTRAL_NATION_ID):
+   *     – Liberated; playerOwned = false, ownerKingdom = null.
+   *   null control:
+   *     – Return to the settlement's original NPC nation.
+   *
+   * @param {string}       key
+   * @param {object|null}  control
+   * @returns {boolean} true if the settlement state actually changed.
+   */
+  _applySettlementControl(key, control) {
+    if (typeof key !== 'string') return false;
+    const colonIdx = key.indexOf(':');
+    if (colonIdx < 0) return false;
+    const type = key.slice(0, colonIdx);
+    const idx  = parseInt(key.slice(colonIdx + 1), 10);
+    if (isNaN(idx)) return false;
+
+    let settlement;
+    if (type === 'castle') {
+      settlement = this._nationSystem.castleSettlements[idx];
+    } else if (type === 'village') {
+      settlement = this._nationSystem.villageSettlements[idx];
+    }
+    if (!settlement) return false;
+
+    const localId = this._mp?.id ?? null;
+
+    if (control === null) {
+      // Returned to original NPC control.
+      if (settlement.controllingNationId === settlement.nationId && !settlement.ownerKingdom) return false;
+      settlement.controllingNationId = settlement.nationId;
+      settlement.playerOwned  = false;
+      settlement.ownerKingdom = null;
+      return true;
+    }
+
+    const prevId     = settlement.controllingNationId;
+    const prevOwned  = settlement.playerOwned;
+    const newNationId = typeof control.controllingNationId === 'number'
+      ? control.controllingNationId : settlement.nationId;
+
+    settlement.controllingNationId = newNationId;
+
+    if (newNationId === PLAYER_NATION_ID) {
+      const isLocal = control.ownerName === localId;
+      settlement.playerOwned  = isLocal;
+      settlement.ownerKingdom = isLocal
+        ? null
+        : { color: control.ownerColor ?? '#64b5f6', flagApp: null };
+    } else {
+      settlement.playerOwned  = false;
+      settlement.ownerKingdom = null;
+    }
+
+    // Report a change if anything meaningful was updated.
+    return (prevId !== settlement.controllingNationId ||
+            prevOwned !== settlement.playerOwned);
+  }
+
+  /**
+   * Compute the relation of a remote player to the local player, based on
+   * the server's PvP and team configuration.
+   *
+   * Rules:
+   *   – PvP disabled                        → NEUTRAL (no ring)
+   *   – PvP enabled, teams enabled,
+   *     both have the same non-empty team   → ALLY    (green ring)
+   *   – PvP enabled, otherwise              → HOSTILE (red ring)
+   *
+   * @param {string} remoteTeam  The remote player's team name (empty = no team).
+   * @returns {RELATION[keyof RELATION]}
+   */
+  _computeRelation(remoteTeam) {
+    const cfg = this._mp?.serverConfig;
+    if (!cfg?.pvpEnabled) return RELATION.NEUTRAL;
+    if (cfg.teamsEnabled) {
+      const myTeam = this._myTeam ?? '';
+      if (myTeam && remoteTeam && myTeam === remoteTeam) return RELATION.ALLY;
+    }
+    return RELATION.HOSTILE;
+  }
+
   /**
    * Handle a full state update from the server: create/update/remove remote
    * player entities as needed.
@@ -725,6 +875,9 @@ export class Game {
       if (state.name       !== undefined) rp.setName(state.name);
       if (state.appearance)               rp.setAppearance(state.appearance);
       if (state.kingdom)                  rp.setKingdom(state.kingdom.name, state.kingdom.color);
+
+      // Compute and apply the relation ring (ally / hostile / neutral).
+      rp.setRelation(this._computeRelation(state.team ?? ''));
 
       // Update the territory overlay whenever captured/liberated lists are present.
       if (state.captured !== undefined || state.liberated !== undefined) {
