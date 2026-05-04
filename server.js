@@ -7,10 +7,12 @@
  *
  * ──────────────────────────── Server → Client ─────────────────────────────
  *   { type: 'welcome',    id, seed, time, weather, name, gameState,
- *                         worldState: { settlements: object, version: number } }
+ *                         worldState: { settlements: object, version: number },
+ *                         serverConfig: { pvpEnabled, teamsEnabled, maxTeamNameLen } }
  *   { type: 'name_taken',   name }          (then the server closes the connection)
  *   { type: 'name_required' }               (then the server closes the connection)
  *   { type: 'state',      players: {...}, ts, time, weather }
+ *                          each player entry includes: team: string
  *   { type: 'worldDelta', settlements: { [key]: {ownerName,controllingNationId,ownerColor}|null },
  *                         version: number }
  *   { type: 'correction', x, y, angle }
@@ -24,6 +26,7 @@
  *   { type: 'info',      appearance: object, kingdom: { name, color } }
  *   { type: 'territory', captured: string[], liberated: string[] }
  *   { type: 'save',      gameState: object|null }
+ *   { type: 'team',      team: string }   (declare team name; '' = no team)
  *   { type: 'action',    kind: string, ...payload }
  *       Supported kinds (validated server-side):
  *         'capture'  – { key: 'castle:N'|'village:N' }
@@ -63,6 +66,33 @@ const MAX_NAME_LEN        = 20;
 // World seed: fixed for the lifetime of this server process so every client
 // that connects (or reconnects) generates the same deterministic map.
 const WORLD_SEED = Math.floor(Math.random() * 0xFFFFFF);
+
+// ---------------------------------------------------------------------------
+// Server configuration (read from environment variables)
+// ---------------------------------------------------------------------------
+
+/**
+ * Server-side feature flags that server operators set via environment variables.
+ *
+ * Environment variables:
+ *   PVP_ENABLED=true          – players may attack each other and capture
+ *                                each other's settlements.  Default: false.
+ *   TEAMS_ENABLED=true          – team system is active.  Players can declare a
+ *                                team name; same-team players cannot attack each
+ *                                other regardless of PVP_ENABLED.  Default: false.
+ *   MAX_TEAM_NAME_LEN=20       – maximum characters in a team name.  Default: 20.
+ *
+ * The full config object is sent to every client in the 'welcome' message so
+ * the game can display appropriate UI cues (e.g. hostile tint on enemy players).
+ */
+const SERVER_CONFIG = Object.freeze({
+  /** Whether PvP is enabled: players can capture each other's settlements. */
+  pvpEnabled:      process.env.PVP_ENABLED      === 'true',
+  /** Whether the team system is active. */
+  teamsEnabled:    process.env.TEAMS_ENABLED     === 'true',
+  /** Maximum length of a team name (characters). */
+  maxTeamNameLen:  Math.max(1, Number(process.env.MAX_TEAM_NAME_LEN ?? 20)),
+});
 
 // ---------------------------------------------------------------------------
 // Server-authoritative world geometry (for validation)
@@ -158,11 +188,13 @@ const wss = new WebSocketServer({ port: PORT });
  *   kingdom: { name: string, color: string }|null,
  *   captured: string[],
  *   liberated: string[],
+ *   team: string,
  * }>}
  * hasPosition: false until the client sends its first 'move' message, so we
  * don't broadcast the placeholder (0,0) position to other players.
  * lastMoveMs: server timestamp (ms) of the last accepted 'move' message, used
  * for movement-speed validation.
+ * team: team name declared by the player via the 'team' message (empty = no team).
  */
 const players = new Map();
 
@@ -227,6 +259,16 @@ function sanitiseName(raw) {
   return String(raw).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, MAX_NAME_LEN);
 }
 
+/**
+ * Sanitise a team name: strip control chars, trim, and limit to the
+ * server-configured maximum length.
+ * @param {string} raw
+ * @returns {string}
+ */
+function sanitiseTeamName(raw) {
+  return String(raw).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, SERVER_CONFIG.maxTeamNameLen);
+}
+
 // ---------------------------------------------------------------------------
 // Connection handler
 // ---------------------------------------------------------------------------
@@ -260,7 +302,7 @@ wss.on('connection', (ws, req) => {
     // Restore existing named session (last-known position, and saved game state).
     const prev = namedSessions.get(nameKey);
     // hasPosition: true – we have the last-known position from namedSessions.
-    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
+    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
 
     // ── Restore this player's territory into sharedWorld ──────────────────
     // Any settlement they previously owned or liberated is restored into the
@@ -272,12 +314,15 @@ wss.on('connection', (ws, req) => {
         for (const k of savedGs.capturedSettlements) {
           if (!_isValidSettlementKey(k)) continue;
           const existing = sharedWorld.settlements.get(k);
-          // Restore only if unclaimed or was previously ours.
-          if (!existing || existing.ownerName === nameKey) {
-            if (!existing) restoredChanged.push(k);
+          if (!existing) {
+            // Unclaimed – restore as this player's capture.
             const ownerColor = typeof savedGs.playerKingdom?.color === 'string' ? savedGs.playerKingdom.color : '#64b5f6';
             sharedWorld.settlements.set(k, { ownerName: nameKey, controllingNationId: -1, ownerColor });
+            restoredChanged.push(k);
+          } else if (existing.ownerName === nameKey) {
+            // Already recorded as ours (e.g. from a previous restore in the same session) – keep.
           }
+          // else: another player already owns it – skip silently.
         }
       }
       if (Array.isArray(savedGs.liberatedSettlements)) {
@@ -293,14 +338,14 @@ wss.on('connection', (ws, req) => {
     }
     if (restoredChanged.length) broadcastWorldDelta(restoredChanged);
 
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: prev.gameState ?? null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version } }));
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: prev.gameState ?? null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
     broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
     console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
   } else {
     // New named player – position unknown until client sends its first 'move'.
-    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [] });
+    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
     namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null });
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version } }));
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
     broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
     console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
   }
@@ -399,10 +444,22 @@ function _attachHandlers(ws, id, name) {
             if (!isValidKey(k)) return false;
             if (oldCapturedSet.has(k)) return true; // player already held this – keep without re-check
 
-            // New capture: require proximity and that no other player owns it.
+            // New capture: require proximity.
             if (!_isNearSettlement(player, k)) return false;
+
             const existing = sharedWorld.settlements.get(k);
-            if (existing?.ownerName && existing.ownerName !== id) return false; // owned by someone else
+            if (existing?.ownerName && existing.ownerName !== id) {
+              // This settlement is already owned by another player.
+              // Only allow if PvP is enabled AND the two players are not on the same team.
+              if (!SERVER_CONFIG.pvpEnabled) return false;
+              if (SERVER_CONFIG.teamsEnabled) {
+                const ownerPlayer = players.get(existing.ownerName);
+                const ownerTeam   = ownerPlayer?.team ?? '';
+                const myTeam      = player.team ?? '';
+                // Same non-empty team = friendly fire prevention.
+                if (myTeam && ownerTeam && myTeam === ownerTeam) return false;
+              }
+            }
             newCaptures.push(k);
             return true;
           })
@@ -467,6 +524,17 @@ function _attachHandlers(ws, id, name) {
           }
         }
       }
+    }
+
+    // ─── Team declaration ───────────────────────────────────────────────────
+    // Clients send { type: 'team', team: string } to join or leave a team.
+    // Only processed when SERVER_CONFIG.teamsEnabled is true.
+    // Empty string means no team (free agent).
+    if (msg.type === 'team' && SERVER_CONFIG.teamsEnabled) {
+      const player = players.get(id);
+      if (!player) return;
+      const raw = typeof msg.team === 'string' ? msg.team : '';
+      player.team = sanitiseTeamName(raw);
     }
 
     // ─── Action protocol ────────────────────────────────────────────────────
@@ -585,8 +653,20 @@ function _handleAction(ws, id, name, player, msg) {
     }
     const existing = sharedWorld.settlements.get(key);
     if (existing?.ownerName && existing.ownerName !== id) {
-      ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'already_owned', ownerName: existing.ownerName }));
-      return;
+      // Settlement owned by another player.
+      if (!SERVER_CONFIG.pvpEnabled) {
+        ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'pvp_disabled' }));
+        return;
+      }
+      if (SERVER_CONFIG.teamsEnabled) {
+        const ownerPlayer = players.get(existing.ownerName);
+        const ownerTeam   = ownerPlayer?.team ?? '';
+        const myTeam      = player.team ?? '';
+        if (myTeam && ownerTeam && myTeam === ownerTeam) {
+          ws.send(JSON.stringify({ type: 'action_reject', kind, key, reason: 'friendly_fire' }));
+          return;
+        }
+      }
     }
     const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
     sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor });
@@ -646,7 +726,7 @@ setInterval(() => {
 
   if (players.size === 0) return;
 
-  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[] }>} */
+  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[], team: string }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
     // Omit players whose position isn't known yet (no 'move' received).
@@ -657,6 +737,7 @@ setInterval(() => {
       kingdom:    data.kingdom    ?? null,
       captured:   data.captured  ?? [],
       liberated:  data.liberated ?? [],
+      team:       data.team      ?? '',
     };
   }
 
@@ -692,4 +773,11 @@ function broadcastExcept(excludeId, payload) {
 wss.on('listening', () => {
   console.log(`YourKingdom 伺服器已啟動，監聽埠口 ${PORT}  世界種子：${WORLD_SEED}`);
   console.log(`客戶端連線位址：ws://<你的IP>:${PORT}`);
+  console.log(`伺服器設定：PvP=${SERVER_CONFIG.pvpEnabled ? '開啟' : '關閉'}  隊伍系統=${SERVER_CONFIG.teamsEnabled ? '開啟' : '關閉'}`);
+  if (!SERVER_CONFIG.pvpEnabled) {
+    console.log(`  ℹ️  設定 PVP_ENABLED=true 以啟用玩家互相攻擊`);
+  }
+  if (!SERVER_CONFIG.teamsEnabled) {
+    console.log(`  ℹ️  設定 TEAMS_ENABLED=true 以啟用隊伍系統`);
+  }
 });

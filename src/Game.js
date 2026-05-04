@@ -1,5 +1,5 @@
 import { Application, Container, Graphics } from 'pixi.js';
-import { RemotePlayerEntity } from './entities/RemotePlayerEntity.js';
+import { RemotePlayerEntity, RELATION } from './entities/RemotePlayerEntity.js';
 import { MapData }          from './world/MapData.js';
 import { MapRenderer }      from './world/MapRenderer.js';
 import { StructureRenderer } from './world/StructureRenderer.js';
@@ -41,6 +41,12 @@ export class Game {
     this._mp = multiplayerClient;
     /** Remote player entities keyed by server id. @type {Map<string, RemotePlayerEntity>} */
     this._remotePlayers = new Map();
+    /**
+     * The local player's current team name (mirrors what was sent to the server
+     * via sendTeam()).  Used when computing ally/hostile relations.
+     * @type {string}
+     */
+    this._myTeam = '';
   }
 
   async init() {
@@ -825,6 +831,29 @@ export class Game {
   }
 
   /**
+   * Compute the relation of a remote player to the local player, based on
+   * the server's PvP and team configuration.
+   *
+   * Rules:
+   *   – PvP disabled                        → NEUTRAL (no ring)
+   *   – PvP enabled, teams enabled,
+   *     both have the same non-empty team   → ALLY    (green ring)
+   *   – PvP enabled, otherwise              → HOSTILE (red ring)
+   *
+   * @param {string} remoteTeam  The remote player's team name (empty = no team).
+   * @returns {RELATION[keyof RELATION]}
+   */
+  _computeRelation(remoteTeam) {
+    const cfg = this._mp?.serverConfig;
+    if (!cfg?.pvpEnabled) return RELATION.NEUTRAL;
+    if (cfg.teamsEnabled) {
+      const myTeam = this._myTeam ?? '';
+      if (myTeam && remoteTeam && myTeam === remoteTeam) return RELATION.ALLY;
+    }
+    return RELATION.HOSTILE;
+  }
+
+  /**
    * Handle a full state update from the server: create/update/remove remote
    * player entities as needed.
    * @param {Record<string, {x:number, y:number, angle:number}>} players
@@ -846,6 +875,9 @@ export class Game {
       if (state.name       !== undefined) rp.setName(state.name);
       if (state.appearance)               rp.setAppearance(state.appearance);
       if (state.kingdom)                  rp.setKingdom(state.kingdom.name, state.kingdom.color);
+
+      // Compute and apply the relation ring (ally / hostile / neutral).
+      rp.setRelation(this._computeRelation(state.team ?? ''));
 
       // Update the territory overlay whenever captured/liberated lists are present.
       if (state.captured !== undefined || state.liberated !== undefined) {

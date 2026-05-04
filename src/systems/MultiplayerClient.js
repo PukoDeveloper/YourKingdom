@@ -5,11 +5,12 @@
  * ──────────────────────────── Protocol ────────────────────────────────────
  * Server → Client
  *   welcome       { type, id, seed, time, weather, name, gameState,
- *                   worldState: { settlements: object, version: number } }
+ *                   worldState: { settlements: object, version: number },
+ *                   serverConfig: { pvpEnabled, teamsEnabled, maxTeamNameLen } }
  *   name_taken    { type: 'name_taken', name }
  *   name_required { type: 'name_required' }
  *   state         { type: 'state', players: { [id]: { x,y,angle,name,
- *                   appearance,kingdom,captured,liberated } },
+ *                   appearance,kingdom,captured,liberated,team } },
  *                   ts, time, weather }
  *   worldDelta    { type: 'worldDelta',
  *                   settlements: { [key]: { ownerName, controllingNationId,
@@ -26,6 +27,7 @@
  *   info      { type: 'info', appearance: object, kingdom: { name, color } }
  *   territory { type: 'territory', captured: string[], liberated: string[] }
  *   save      { type: 'save', gameState: object|null }
+ *   team      { type: 'team', team: string }    (declare team; '' = no team)
  *   action    { type: 'action', kind: string, ...payload }
  *               Validated kinds: 'capture', 'liberate'
  *               Accepted kinds (future): 'buy', 'sell', 'recruit',
@@ -87,6 +89,13 @@ export class MultiplayerClient {
      * @type {{ settlements: Record<string, { ownerName: string|null, controllingNationId: number, ownerColor: string|null }>, version: number }|null}
      */
     this.worldState = null;
+
+    /**
+     * Server configuration flags received in the 'welcome' message.
+     * Reflects the server operator's settings (PvP enabled, team system, …).
+     * @type {{ pvpEnabled: boolean, teamsEnabled: boolean, maxTeamNameLen: number }|null}
+     */
+    this.serverConfig = null;
 
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
@@ -283,6 +292,7 @@ export class MultiplayerClient {
         this.weather    = typeof msg.weather === 'number' ? msg.weather : null;
         this.gameState  = msg.gameState ?? null;
         this.worldState = msg.worldState ?? null;
+        this.serverConfig = msg.serverConfig ?? null;
         this.playerName = msg.name || this.playerName;
         onWelcome?.();
       } else if ((msg.type === 'name_taken' || msg.type === 'name_required') && !welcomed) {
@@ -359,6 +369,21 @@ export class MultiplayerClient {
   sendAction(kind, payload = {}) {
     if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
     this._ws.send(JSON.stringify({ type: 'action', kind, ...payload }));
+  }
+
+  /**
+   * Declare this player's team on the server.
+   * Only meaningful when `serverConfig.teamsEnabled` is true.
+   * Pass an empty string to leave the team (free agent).
+   *
+   * The server sanitises and truncates the name; the confirmed team name
+   * is reflected back via the next 'state' broadcast.
+   *
+   * @param {string} team  Team name (empty = no team).
+   */
+  sendTeam(team) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'team', team: team ?? '' }));
   }
 
   /**
