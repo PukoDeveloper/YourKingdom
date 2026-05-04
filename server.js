@@ -40,12 +40,22 @@
  *     • settlement control map  – who owns each settlement (all players share one world)
  *     • version counter         – monotonically increasing; clients use it for change detection
  *     On connect   : server restores prior captures/liberations from gameState into sharedWorld.
- *     On territory : server validates proximity + conflict; updates sharedWorld; broadcasts worldDelta.
+ *     On territory : server validates proximity (captures) + ownership (liberations) + conflict;
+ *                    updates sharedWorld; broadcasts worldDelta.
+ *                    'liberate' entries are only accepted when sharedWorld confirms the requesting
+ *                    player is the current owner, preventing any client from wiping rivals' territory.
+ *                    'capture' re-validates already-held entries against sharedWorld so stale lists
+ *                    are cleaned up automatically when another player takes a settlement via PvP.
  *     On action    : server validates the action against authoritative state; applies; broadcasts.
+ *                    PvP captures also clear the settlement from the previous owner's live
+ *                    player.captured list, keeping state broadcasts accurate.
  *
  *   Per-player state (namedSessions.gameState):
  *     Full snapshot including inventory, army, character, kingdom, diplomacy deltas.
  *     Persisted via the 'save' message.  Sent back on reconnect in the 'welcome' message.
+ *     NOTE: economic and construction actions (buy, sell, recruit, build_road, etc.) are currently
+ *     applied client-side only and persisted via the save-blob model.  Server-side validation for
+ *     these mechanics is pending and will be added incrementally via the 'action' protocol.
  *
  * Identity:
  *   Player name is the sole unique identifier.  The client appends
@@ -442,7 +452,15 @@ function _attachHandlers(ws, id, name) {
         player.captured = msg.captured
           .filter(k => {
             if (!isValidKey(k)) return false;
-            if (oldCapturedSet.has(k)) return true; // player already held this – keep without re-check
+
+            if (oldCapturedSet.has(k)) {
+              // Settlement was previously recorded as held by this player.
+              // Re-validate: if another player now owns it (PvP capture while we weren't
+              // watching), remove it from our list to keep server state consistent.
+              const w = sharedWorld.settlements.get(k);
+              if (w?.ownerName && w.ownerName !== id) return false;
+              return true;
+            }
 
             // New capture: require proximity.
             if (!_isNearSettlement(player, k)) return false;
@@ -468,6 +486,15 @@ function _attachHandlers(ws, id, name) {
         if (newCaptures.length) {
           const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
           for (const k of newCaptures) {
+            // PvP: remove the settlement from the previous owner's captured list so
+            // their state broadcast no longer shows a stale territory overlay.
+            const prev = sharedWorld.settlements.get(k);
+            if (prev?.ownerName && prev.ownerName !== id) {
+              const prevPlayer = players.get(prev.ownerName);
+              if (prevPlayer?.captured) {
+                prevPlayer.captured = prevPlayer.captured.filter(c => c !== k);
+              }
+            }
             sharedWorld.settlements.set(k, { ownerName: id, controllingNationId: -1, ownerColor });
           }
           broadcastWorldDelta(newCaptures);
@@ -479,12 +506,20 @@ function _attachHandlers(ws, id, name) {
         const newlyLiberated  = [];
 
         player.liberated = msg.liberated
-          .filter(isValidKey)
-          .slice(0, 200);
+          .filter(k => {
+            if (!isValidKey(k)) return false;
+            if (oldLiberatedSet.has(k)) return true; // already liberated – keep without re-check
 
-        for (const k of player.liberated) {
-          if (!oldLiberatedSet.has(k)) newlyLiberated.push(k);
-        }
+            // New liberation: the player must currently own this settlement in the
+            // shared world.  Accepting liberations for settlements owned by other
+            // players (or NPC-only settlements the player never captured) would
+            // allow any client to wipe other players' territory.
+            if (sharedWorld.settlements.get(k)?.ownerName !== id) return false;
+
+            newlyLiberated.push(k);
+            return true;
+          })
+          .slice(0, 200);
 
         // Remove liberated settlements from this player's captured list.
         const liberatedSet  = new Set(player.liberated);
@@ -669,6 +704,15 @@ function _handleAction(ws, id, name, player, msg) {
       }
     }
     const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
+    // PvP: remove the settlement from the previous owner's captured list so
+    // their state broadcast no longer shows a stale territory overlay.
+    const prevEntry = sharedWorld.settlements.get(key);
+    if (prevEntry?.ownerName && prevEntry.ownerName !== id) {
+      const prevPlayer = players.get(prevEntry.ownerName);
+      if (prevPlayer?.captured) {
+        prevPlayer.captured = prevPlayer.captured.filter(c => c !== key);
+      }
+    }
     sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor });
     // Add to the player's captured list if not already there.
     if (!Array.isArray(player.captured)) player.captured = [];
