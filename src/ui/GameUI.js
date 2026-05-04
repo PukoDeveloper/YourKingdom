@@ -1585,8 +1585,11 @@ export class GameUI {
     for (const { s, tilePos, size } of allSettlements) {
       if (!tilePos) continue;
       let color;
-      if (s.controllingNationId === PLAYER_NATION_ID) {
+      if (s.playerOwned) {
         color = pk.color;
+      } else if (s.controllingNationId === PLAYER_NATION_ID) {
+        // Remote player's settlement in multiplayer – use their kingdom colour.
+        color = s.ownerKingdom?.color ?? '#64b5f6';
       } else if (s.controllingNationId === NEUTRAL_NATION_ID) {
         color = '#FFFFFF';
       } else {
@@ -1610,8 +1613,11 @@ export class GameUI {
 
       // Small label for the controlling nation
       let label;
-      if (s.controllingNationId === PLAYER_NATION_ID) {
+      if (s.playerOwned) {
         label = pk.name;
+      } else if (s.controllingNationId === PLAYER_NATION_ID) {
+        // Remote player's settlement in multiplayer.
+        label = s.ownerKingdom?.name || '他國';
       } else if (s.controllingNationId === NEUTRAL_NATION_ID) {
         label = '中立';
       } else {
@@ -2369,8 +2375,8 @@ export class GameUI {
     // Player nation card (shown when the player controls any settlement)
     // -----------------------------------------------------------------------
     const pk = this.getPlayerNation();
-    const playerCastles  = castlesByController[PLAYER_NATION_ID]  ?? [];
-    const playerVillages = villagesByController[PLAYER_NATION_ID] ?? [];
+    const playerCastles  = (castlesByController[PLAYER_NATION_ID]  ?? []).filter(({ s }) => s.playerOwned);
+    const playerVillages = (villagesByController[PLAYER_NATION_ID] ?? []).filter(({ s }) => s.playerOwned);
     let playerSectionHTML = '';
 
     if (playerCastles.length > 0 || playerVillages.length > 0) {
@@ -2617,13 +2623,21 @@ export class GameUI {
    * @param {import('../systems/NationSystem.js').Settlement} settlement
    */
   _openSettlementDetail(settlement) {
-    const isPlayer  = settlement.controllingNationId === PLAYER_NATION_ID;
+    const isPlayer  = settlement.playerOwned;
+    const isRemote  = !isPlayer && settlement.controllingNationId === PLAYER_NATION_ID;
     const isNeutral = settlement.controllingNationId === NEUTRAL_NATION_ID;
-    const nation    = isPlayer
-      ? this.getPlayerNation()
-      : isNeutral
-        ? { name: '中立自治', color: '#9e9e9e', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } }
-        : this.nationSystem.getNation(settlement);
+    let nation;
+    if (isPlayer) {
+      nation = this.getPlayerNation();
+    } else if (isRemote) {
+      // Another player's settlement in multiplayer – use their stored kingdom info.
+      const ok = settlement.ownerKingdom;
+      nation = { name: ok?.name || '他國勢力', color: ok?.color ?? '#64b5f6', emblem: '🏴', flagApp: ok?.flagApp ?? null };
+    } else if (isNeutral) {
+      nation = { name: '中立自治', color: '#9e9e9e', emblem: '🏳', flagApp: { bgColor: '#FFFFFF', stripeStyle: 'none', stripeColor: '#FFFFFF', symbol: '🏳', symbolShape: 'circle' } };
+    } else {
+      nation = this.nationSystem.getNation(settlement);
+    }
     const ruler     = this._getEffectiveRuler(settlement);
     const ecoStars  = '⭐'.repeat(settlement.economyLevel) + '☆'.repeat(5 - settlement.economyLevel);
     const popStr    = settlement.population.toLocaleString();
@@ -2637,7 +2651,7 @@ export class GameUI {
 
     // Diplomacy relation info (only for NPC castle settlements that are not neutral)
     let diplomacyHTML = '';
-    if (!isPlayer && !isNeutral && settlement.type === 'castle' && this.diplomacySystem && this.nationSystem) {
+    if (!isPlayer && !isRemote && !isNeutral && settlement.type === 'castle' && this.diplomacySystem && this.nationSystem) {
       const nationId = settlement.nationId;
       const relVal   = this.diplomacySystem.getPlayerRelation(nationId);
       const relLevel = this.diplomacySystem.getRelationLevel(relVal);
@@ -2850,7 +2864,7 @@ export class GameUI {
    */
   _canEstablishTradeWith(toSettlement) {
     const cid = toSettlement.controllingNationId;
-    if (cid === PLAYER_NATION_ID) return { ok: true, reason: '' };
+    if (cid === PLAYER_NATION_ID && toSettlement.playerOwned) return { ok: true, reason: '' };
     if (cid === NEUTRAL_NATION_ID) {
       const playerStr = this._getPlayerStrength();
       const settlStr  = toSettlement.economyLevel * ECONOMY_STRENGTH_MULTIPLIER
@@ -3255,8 +3269,8 @@ export class GameUI {
           brokenRoutes.push({ routeId, name: `${route.fromName ?? route.fromKey} → ${route.toName ?? route.toKey}` });
           continue;
         }
-        const fromIsPlayer = fromSett.controllingNationId === PLAYER_NATION_ID;
-        const toIsPlayer   = toSett.controllingNationId   === PLAYER_NATION_ID;
+        const fromIsPlayer = fromSett.playerOwned;
+        const toIsPlayer   = toSett.playerOwned;
 
         if (route.isImport) {
           // Import route: foreign → player.  Break if destination is no longer player-owned.
@@ -3357,7 +3371,7 @@ export class GameUI {
     // free the assigned ruler and notify the player.
     for (const [key] of [...this._assignedRulers]) {
       const sett = this._getSettlementByKey(key);
-      if (sett && sett.controllingNationId !== PLAYER_NATION_ID) {
+      if (sett && !sett.playerOwned) {
         this._assignedRulers.delete(key);
         this._addInboxMessage('👑', `${sett.name} 失守，指派的統治者已撤離！`);
       }
@@ -3366,7 +3380,7 @@ export class GameUI {
     // Release garrison assignments for any lost settlements.
     for (const [key] of [...this._playerGarrisons]) {
       const sett = this._getSettlementByKey(key);
-      if (sett && sett.controllingNationId !== PLAYER_NATION_ID) {
+      if (sett && !sett.playerOwned) {
         const hadUnits = (this._playerGarrisons.get(key) ?? []).length > 0;
         this._playerGarrisons.delete(key);
         if (hadUnits) this._addInboxMessage('🛡', `${sett.name} 失守，駐軍已解散！`);
@@ -3406,7 +3420,7 @@ export class GameUI {
     const currentDay = this.diplomacySystem?._currentDay ?? 0;
     for (const [key, plan] of this._cityPlans) {
       const settlement = this._getSettlementByKey(key);
-      if (!settlement || settlement.controllingNationId !== PLAYER_NATION_ID) continue;
+      if (!settlement || !settlement.playerOwned) continue;
 
       const sat = this._satisfactionMap.get(key) ?? -50;
       const minSat = plan.minSatisfaction ?? -100;
@@ -4101,7 +4115,7 @@ export class GameUI {
       if (attackBtn) {
         const s = this._nearbySettlement;
         const isAttackable = (s.type === 'castle' || s.type === 'village')
-          && s.controllingNationId !== PLAYER_NATION_ID;
+          && !s.playerOwned;
         attackBtn.classList.toggle('visible', isAttackable);
       }
     } else {
@@ -4151,9 +4165,15 @@ export class GameUI {
 
     let subtitle = '';
     if (s.type === 'castle' && this.nationSystem) {
-      const nation = s.controllingNationId === PLAYER_NATION_ID
-        ? this.getPlayerNation()
-        : this.nationSystem.getNation(s);
+      let nation;
+      if (s.playerOwned) {
+        nation = this.getPlayerNation();
+      } else if (s.controllingNationId === PLAYER_NATION_ID) {
+        const ok = s.ownerKingdom;
+        nation = { name: ok?.name || '他國勢力', flagApp: ok?.flagApp ?? null, emblem: '🏴' };
+      } else {
+        nation = this.nationSystem.getNation(s);
+      }
       subtitle = `${nation.flagApp ? renderFlagHTML(nation.flagApp, 18) : nation.emblem} ${nation.name}`;
     } else if (s.type === 'village') {
       subtitle = '村落';
@@ -4171,8 +4191,12 @@ export class GameUI {
   _renderLocationGate(settlement) {
     let nation = null;
     if (this.nationSystem) {
-      if (settlement.controllingNationId === PLAYER_NATION_ID) {
+      if (settlement.playerOwned) {
         nation = this.getPlayerNation();
+      } else if (settlement.controllingNationId === PLAYER_NATION_ID) {
+        // Remote player's settlement in multiplayer.
+        const ok = settlement.ownerKingdom;
+        nation = { name: ok?.name || '他國勢力', emblem: '🏴' };
       } else if (settlement.controllingNationId === NEUTRAL_NATION_ID) {
         nation = { name: '中立', emblem: '🏳' };
       } else {
@@ -4181,7 +4205,7 @@ export class GameUI {
     }
     const nationName = nation ? nation.name : settlement.name;
 
-    const isPlayerOwned = settlement.controllingNationId === PLAYER_NATION_ID;
+    const isPlayerOwned = settlement.playerOwned;
     const isNeutral     = settlement.controllingNationId === NEUTRAL_NATION_ID;
     const gateArt = isPlayerOwned ? '🛡️🏴🛡️' : isNeutral ? '🏳🕊️🏳' : '🛡️⚔️🛡️';
     const gateMsg = isPlayerOwned
@@ -5682,8 +5706,8 @@ export class GameUI {
 
     // Connecting road proposal: needs friendly relation and player to own at least one settlement
     const playerHasSettlement = this.nationSystem && (
-      this.nationSystem.castleSettlements.some(s => s.controllingNationId === PLAYER_NATION_ID) ||
-      this.nationSystem.villageSettlements.some(s => s.controllingNationId === PLAYER_NATION_ID)
+      this.nationSystem.castleSettlements.some(s => s.playerOwned) ||
+      this.nationSystem.villageSettlements.some(s => s.playerOwned)
     );
     const canConnectRoad = !atWar && relVal >= CONNECT_ROAD_MIN_RELATION && playerHasSettlement
                            && this._getGold() >= CONNECT_ROAD_PROPOSAL_COST;
@@ -5911,7 +5935,8 @@ export class GameUI {
       const { ok, reason }   = this._canEstablishTradeWith(s);
       // Determine label by ownership
       let typeLabel = '', typeColor = '#9e9e9e';
-      if (s.controllingNationId === PLAYER_NATION_ID) { typeLabel = '己方'; typeColor = '#e2c97e'; }
+      if (s.playerOwned) { typeLabel = '己方'; typeColor = '#e2c97e'; }
+      else if (s.controllingNationId === PLAYER_NATION_ID) { typeLabel = '他國'; typeColor = '#64b5f6'; }
       else if (s.controllingNationId === NEUTRAL_NATION_ID) { typeLabel = '中立'; typeColor = '#90a4ae'; }
       else { typeLabel = '外國'; typeColor = '#64b5f6'; }
       return { s, k, dist, ok, reason, alreadyConnected, typeLabel, typeColor };
@@ -7178,7 +7203,7 @@ export class GameUI {
   _hasPlayerCityInRange(tx, ty) {
     if (!this.nationSystem) return false;
     const inRange = (arr) => arr.some(s => {
-      if (s.controllingNationId !== PLAYER_NATION_ID) return false;
+      if (!s.playerOwned) return false;
       const center = this._getSettlementCenter(s);
       return Math.abs(center.tx - tx) + Math.abs(center.ty - ty) <= MAP_BLDG_WORKER_REACH;
     });
@@ -7398,7 +7423,7 @@ export class GameUI {
       let bestDist = Infinity;
       const checkList = (arr, prefix) => {
         arr.forEach((s, i) => {
-          if (s.controllingNationId !== PLAYER_NATION_ID) return;
+          if (!s.playerOwned) return;
           const center = this._getSettlementCenter(s);
           const dist   = Math.abs(center.tx - bldg.tx) + Math.abs(center.ty - bldg.ty);
           if (dist <= MAP_BLDG_WORKER_REACH && dist < bestDist) {
@@ -7512,7 +7537,7 @@ export class GameUI {
 
     const checkList = (arr, prefix) => {
       arr.forEach((s, i) => {
-        if (s.controllingNationId !== PLAYER_NATION_ID) return;
+        if (!s.playerOwned) return;
         const center = this._getSettlementCenter(s);
         const dist   = Math.abs(center.tx - bldg.tx) + Math.abs(center.ty - bldg.ty);
         if (dist <= MAP_BLDG_WORKER_REACH && dist < bestDist) {
@@ -7521,7 +7546,6 @@ export class GameUI {
         }
       });
     };
-
     checkList(this.nationSystem.castleSettlements, 'castle');
     checkList(this.nationSystem.villageSettlements, 'village');
 
@@ -8036,13 +8060,13 @@ export class GameUI {
     if (this.nationSystem) {
       this.nationSystem.castleSettlements.forEach((s, i) => {
         const tkey = `castle:${i}`;
-        if (tkey !== key && s.controllingNationId === PLAYER_NATION_ID) {
+        if (tkey !== key && s.playerOwned) {
           targets.push({ settlement: s, key: tkey, label: `🏰 ${s.name}` });
         }
       });
       this.nationSystem.villageSettlements.forEach((s, i) => {
         const tkey = `village:${i}`;
-        if (tkey !== key && s.controllingNationId === PLAYER_NATION_ID) {
+        if (tkey !== key && s.playerOwned) {
           targets.push({ settlement: s, key: tkey, label: `🏘️ ${s.name}` });
         }
       });
@@ -9785,6 +9809,8 @@ export class GameUI {
   _setSettlementOwnership(settlement, isOwned) {
     settlement.playerOwned = isOwned;
     settlement.controllingNationId = isOwned ? PLAYER_NATION_ID : settlement.nationId;
+    // When the local player takes ownership, clear any stale remote-player kingdom data.
+    if (isOwned) settlement.ownerKingdom = null;
   }
 
   /**
@@ -9809,7 +9835,10 @@ export class GameUI {
         // Regenerate the independent neutral ruler (deterministic from key).
         const [type, idxStr] = key.split(':');
         s.ruler = generateNeutralRuler(type, parseInt(idxStr, 10));
-      } else {
+      } else if (!(s.controllingNationId === PLAYER_NATION_ID && !s.playerOwned)) {
+        // Only reset to native NPC control when NOT currently held by a remote player.
+        // Remote-player settlements have controllingNationId === PLAYER_NATION_ID
+        // but playerOwned === false – we must not clobber that server-authoritative state.
         this._setSettlementOwnership(s, false);
       }
     });
@@ -9861,7 +9890,7 @@ export class GameUI {
    */
   _getEffectiveRuler(settlement) {
     const key = this._settlementKey(settlement);
-    if (key && settlement.controllingNationId === PLAYER_NATION_ID) {
+    if (key && settlement.playerOwned) {
       const assigned = this._getAssignedRulerUnit(key);
       if (assigned) return assigned;
     }
@@ -9875,7 +9904,7 @@ export class GameUI {
    * @returns {boolean}
    */
   isPlayerSettlement(settlement) {
-    return settlement?.controllingNationId === PLAYER_NATION_ID;
+    return settlement?.playerOwned === true;
   }
 
   /**
@@ -10030,6 +10059,7 @@ export class GameUI {
     this._liberatedSettlements.add(key);
     settlement.playerOwned = false;
     settlement.controllingNationId = NEUTRAL_NATION_ID;
+    settlement.ownerKingdom = null;
 
     // Generate a new independent self-governing ruler for this neutral settlement.
     // The ruler is deterministic from the settlement key so save/load is not needed.
@@ -10041,6 +10071,44 @@ export class GameUI {
     // Notify map to rebuild so the white flag is shown immediately.
     if (typeof this.onCaptureSettlement === 'function') {
       this.onCaptureSettlement();
+    }
+  }
+
+  /**
+   * Called by Game._applySettlementControl when the server's authoritative
+   * worldDelta tells us that a settlement we previously held has been taken
+   * by another player (or returned to NPC control via server authority).
+   *
+   * Removes the settlement from the local capture/liberate sets and
+   * cleans up any assignments so gameplay calculations (income, strength,
+   * city plans, rulers, garrisons) remain correct.
+   *
+   * Does NOT touch the settlement's controllingNationId / playerOwned
+   * fields – those are updated by _applySettlementControl in Game.js.
+   *
+   * @param {string} key  e.g. 'castle:0' or 'village:3'
+   */
+  _serverLostSettlement(key) {
+    if (!key) return;
+    const wasCaptured  = this._capturedSettlements.has(key);
+    const wasLiberated = this._liberatedSettlements.has(key);
+    if (!wasCaptured && !wasLiberated) return;
+
+    this._capturedSettlements.delete(key);
+    this._liberatedSettlements.delete(key);
+    this._playerSettlementCount = this._capturedSettlements.size;
+
+    // Free any assigned ruler and garrison for this settlement.
+    if (this._assignedRulers?.has(key))     this._assignedRulers.delete(key);
+    if (this._playerGarrisons?.has(key))    this._playerGarrisons.delete(key);
+    if (this._cityPlans?.has(key))          this._cityPlans.delete(key);
+    this._satisfactionMap?.delete(key);
+
+    // Notify the player that they've lost the settlement to another player.
+    if (wasCaptured) {
+      const settlement = this._getSettlementByKey?.(key);
+      const name = settlement?.name ?? key;
+      this._addInboxMessage('⚔️', `${name} 被其他玩家佔領！`);
     }
   }
 
