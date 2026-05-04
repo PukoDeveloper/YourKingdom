@@ -8,14 +8,17 @@
  * ──────────────────────────── Server → Client ─────────────────────────────
  *   { type: 'welcome',    id, seed, time, weather, name, gameState,
  *                         worldState: { settlements: object, version: number },
- *                         serverConfig: { pvpEnabled, teamsEnabled, maxTeamNameLen } }
+ *                         serverConfig: { pvpEnabled, teamsEnabled, maxTeamNameLen },
+ *                         serverGold: number }   (authoritative gold balance)
  *   { type: 'name_taken',   name }          (then the server closes the connection)
  *   { type: 'name_required' }               (then the server closes the connection)
  *   { type: 'state',      players: {...}, ts, time, weather }
- *                          each player entry includes: team: string
+ *                          each player entry includes: team: string,
+ *                          mapBuildings: { type, tx, ty }[]
  *   { type: 'worldDelta', settlements: { [key]: {ownerName,controllingNationId,ownerColor}|null },
  *                         version: number }
  *   { type: 'correction', x, y, angle }
+ *   { type: 'gold_sync',  balance: number }   (authoritative gold correction)
  *   { type: 'join',       id, name }
  *   { type: 'leave',      id, name }
  *   { type: 'action_ok',  kind, ...data }   (action accepted by server)
@@ -25,13 +28,20 @@
  *   { type: 'move',      x, y, angle }
  *   { type: 'info',      appearance: object, kingdom: { name, color } }
  *   { type: 'territory', captured: string[], liberated: string[] }
+ *   { type: 'mapBuildings', buildings: { type: string, tx: number, ty: number }[] }
  *   { type: 'save',      gameState: object|null }
  *   { type: 'team',      team: string }   (declare team name; '' = no team)
  *   { type: 'action',    kind: string, ...payload }
- *       Supported kinds (validated server-side):
- *         'capture'  – { key: 'castle:N'|'village:N' }
- *         'liberate' – { key: 'castle:N'|'village:N' }
- *       Future kinds (accepted and queued; full validation added incrementally):
+ *       Fully validated server-side:
+ *         'capture'    – { key: 'castle:N'|'village:N' }
+ *         'liberate'   – { key: 'castle:N'|'village:N' }
+ *         'gold_earn'  – { amount: number, source: string }
+ *                         source must be one of: treasury, trade, diplomacy_demand,
+ *                         peace_treaty, npc_gift, refund.  Unknown sources rejected.
+ *         'gold_spend' – { amount: number }
+ *                         Server deducts from authoritative balance; if amount exceeds
+ *                         the server's tracked value a gold_sync correction is sent.
+ *       Future kinds (accepted optimistically; full validation added incrementally):
  *         'buy', 'sell', 'recruit', 'declare_war', 'peace', 'trade',
  *         'build_road', 'build_map_building', 'constr_building', …
  *
@@ -40,12 +50,30 @@
  *     • settlement control map  – who owns each settlement (all players share one world)
  *     • version counter         – monotonically increasing; clients use it for change detection
  *     On connect   : server restores prior captures/liberations from gameState into sharedWorld.
- *     On territory : server validates proximity + conflict; updates sharedWorld; broadcasts worldDelta.
+ *     On territory : server validates proximity (captures) + ownership (liberations) + conflict;
+ *                    updates sharedWorld; broadcasts worldDelta.
+ *                    'liberate' entries are only accepted when sharedWorld confirms the requesting
+ *                    player is the current owner, preventing any client from wiping rivals' territory.
+ *                    'capture' re-validates already-held entries against sharedWorld so stale lists
+ *                    are cleaned up automatically when another player takes a settlement via PvP.
  *     On action    : server validates the action against authoritative state; applies; broadcasts.
+ *                    PvP captures also clear the settlement from the previous owner's live
+ *                    player.captured list, keeping state broadcasts accurate.
+ *
+ *   Per-player gold (namedSessions.gold):
+ *     The server is the sole authority for each player's gold balance.
+ *     • On connect  : welcome includes serverGold; client overrides its inventory gold.
+ *     • gold_earn   : server validates source whitelist + per-event cap, then credits balance.
+ *     • gold_spend  : server validates balance ≥ amount; debits; rejects if over-spent.
+ *     • save        : server persists its own gold value; the save blob's inventory gold
+ *                     is ignored after the first bootstrap from the initial save.
  *
  *   Per-player state (namedSessions.gameState):
- *     Full snapshot including inventory, army, character, kingdom, diplomacy deltas.
- *     Persisted via the 'save' message.  Sent back on reconnect in the 'welcome' message.
+ *     Full snapshot including inventory (gold zeroed/ignored), army, character, kingdom,
+ *     diplomacy deltas.  Persisted via the 'save' message; sent back on reconnect.
+ *     NOTE: non-gold economic actions (buy, sell, recruit, build_road, etc.) are currently
+ *     applied client-side only and persisted via the save-blob model.  Server-side validation
+ *     for these mechanics is pending and will be added incrementally via the 'action' protocol.
  *
  * Identity:
  *   Player name is the sole unique identifier.  The client appends
@@ -56,7 +84,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { MapData }                   from './src/world/MapData.js';
-import { TILE_SIZE }                 from './src/world/constants.js';
+import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from './src/world/constants.js';
 
 const PORT                = Number(process.env.PORT ?? 3000);
 const TICK_MS             = 50;     // broadcast interval (20 Hz)
@@ -129,6 +157,51 @@ const MOVE_JITTER_MS = 300;
  * Covers the full extent of a castle (4×4 tiles = 192 px) plus one extra tile.
  */
 const TERRITORY_CAPTURE_RADIUS_PX = 5 * TILE_SIZE;
+
+// ---------------------------------------------------------------------------
+// Server-authoritative gold
+// ---------------------------------------------------------------------------
+
+/**
+ * Recognised `source` tags from `gold_earn` action messages.
+ * Each entry maps to a per-event cap (the max gold a single earn event of
+ * that type can award).  Unknown sources are rejected outright.
+ */
+const GOLD_EARN_SOURCES = {
+  treasury:          100_000, // settlement treasury collection (tax + trade pooled)
+  trade:              10_000, // direct trade-route income (legacy path)
+  diplomacy_demand:    5_000, // gold demanded from an NPC nation
+  peace_treaty:       50_000, // gold received as part of a peace deal
+  npc_gift:            2_000, // goodwill gift from an NPC nation
+  refund:             10_000, // operation refund (failed dispatch, overpayment, …)
+};
+
+/**
+ * Extract the gold total from an Inventory save snapshot.
+ * Safe to call with null/undefined.
+ *
+ * @param {object|null|undefined} gameState
+ * @returns {number}
+ */
+function _extractGoldFromSave(gameState) {
+  const items = gameState?.inventory?.items;
+  if (!Array.isArray(items)) return 0;
+  return items
+    .filter(i => i && i.name === '金幣' && i.type === 'loot')
+    .reduce((sum, i) => sum + (Number(i.quantity) || 0), 0);
+}
+
+/**
+ * Send a `gold_sync` message to one client with the server's authoritative
+ * balance.  The client will hard-overwrite its inventory gold with this value.
+ *
+ * @param {import('ws').WebSocket} ws
+ * @param {number} balance  Non-negative integer.
+ */
+function _sendGoldSync(ws, balance) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'gold_sync', balance: Math.max(0, Math.floor(balance)) }));
+}
 
 // ---------------------------------------------------------------------------
 // Authoritative world time and weather
@@ -246,11 +319,13 @@ const _isValidSettlementKey = k => typeof k === 'string' && /^(castle|village):\
 
 /**
  * Persistent name-based identity store.
- * Key: playerName (lowercase)  Value: { x, y, angle, gameState }
+ * Key: playerName (lowercase)
+ * Value: { x, y, angle, gameState, gold }
+ *   `gold`  – server-tracked authoritative gold balance for this player.
+ *             null when no save has been received yet; initialised from the
+ *             first save blob and then maintained exclusively by the server.
  * Entries are never deleted – they persist for the lifetime of the server process.
- * gameState holds the full serialised game snapshot uploaded by the client via a
- * 'save' message, or null when no save has been received yet.
- * @type {Map<string, { x: number, y: number, angle: number, gameState: object|null }>}
+ * @type {Map<string, { x: number, y: number, angle: number, gameState: object|null, gold: number|null }>}
  */
 const namedSessions = new Map();
 
@@ -301,8 +376,12 @@ wss.on('connection', (ws, req) => {
   if (namedSessions.has(nameKey)) {
     // Restore existing named session (last-known position, and saved game state).
     const prev = namedSessions.get(nameKey);
+    // Bootstrap server gold from the save blob when not yet known (e.g. after server restart).
+    if (prev.gold === null || prev.gold === undefined) {
+      prev.gold = _extractGoldFromSave(prev.gameState);
+    }
     // hasPosition: true – we have the last-known position from namedSessions.
-    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
+    players.set(id, { ws, x: prev.x, y: prev.y, angle: prev.angle, name: incomingName, hasPosition: true, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '', mapBuildings: [], gold: prev.gold ?? 0 });
 
     // ── Restore this player's territory into sharedWorld ──────────────────
     // Any settlement they previously owned or liberated is restored into the
@@ -338,14 +417,14 @@ wss.on('connection', (ws, req) => {
     }
     if (restoredChanged.length) broadcastWorldDelta(restoredChanged);
 
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: prev.gameState ?? null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: prev.gameState ?? null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG, serverGold: prev.gold ?? 0 }));
     broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
     console.log(`[↩] Player "${incomingName}" restored named session (total: ${players.size})`);
   } else {
     // New named player – position unknown until client sends its first 'move'.
-    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '' });
-    namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null });
-    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG }));
+    players.set(id, { ws, x: 0, y: 0, angle: 0, name: incomingName, hasPosition: false, lastMoveMs: Date.now(), appearance: null, kingdom: null, captured: [], liberated: [], team: '', mapBuildings: [], gold: 0 });
+    namedSessions.set(nameKey, { x: 0, y: 0, angle: 0, gameState: null, gold: 0 });
+    ws.send(JSON.stringify({ type: 'welcome', id, seed: WORLD_SEED, time: WORLD_TIME, weather: WORLD_WEATHER, name: incomingName, gameState: null, worldState: { settlements: _worldSnapshot(), version: sharedWorld.version }, serverConfig: SERVER_CONFIG, serverGold: 0 }));
     broadcastExcept(id, JSON.stringify({ type: 'join', id, name: incomingName }));
     console.log(`[+] Player "${incomingName}" connected (total: ${players.size})`);
   }
@@ -442,7 +521,15 @@ function _attachHandlers(ws, id, name) {
         player.captured = msg.captured
           .filter(k => {
             if (!isValidKey(k)) return false;
-            if (oldCapturedSet.has(k)) return true; // player already held this – keep without re-check
+
+            if (oldCapturedSet.has(k)) {
+              // Settlement was previously recorded as held by this player.
+              // Re-validate: if another player now owns it (PvP capture while we weren't
+              // watching), remove it from our list to keep server state consistent.
+              const current = sharedWorld.settlements.get(k);
+              if (current?.ownerName && current.ownerName !== id) return false;
+              return true;
+            }
 
             // New capture: require proximity.
             if (!_isNearSettlement(player, k)) return false;
@@ -468,6 +555,9 @@ function _attachHandlers(ws, id, name) {
         if (newCaptures.length) {
           const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
           for (const k of newCaptures) {
+            // PvP: remove the settlement from the previous owner's captured list so
+            // their state broadcast no longer shows a stale territory overlay.
+            _evictPreviousOwner(k, id);
             sharedWorld.settlements.set(k, { ownerName: id, controllingNationId: -1, ownerColor });
           }
           broadcastWorldDelta(newCaptures);
@@ -479,12 +569,28 @@ function _attachHandlers(ws, id, name) {
         const newlyLiberated  = [];
 
         player.liberated = msg.liberated
-          .filter(isValidKey)
-          .slice(0, 200);
+          .filter(k => {
+            if (!isValidKey(k)) return false;
 
-        for (const k of player.liberated) {
-          if (!oldLiberatedSet.has(k)) newlyLiberated.push(k);
-        }
+            if (oldLiberatedSet.has(k)) {
+              // Re-validate: if someone now owns this settlement (e.g. player B captured
+              // a neutral settlement that A had previously liberated), drop the stale
+              // entry so the state broadcast no longer shows a misleading overlay.
+              const current = sharedWorld.settlements.get(k);
+              if (current?.ownerName) return false;
+              return true;
+            }
+
+            // New liberation: the player must currently own this settlement in the
+            // shared world.  Accepting liberations for settlements owned by other
+            // players (or NPC-only settlements the player never captured) would
+            // allow any client to wipe other players' territory.
+            if (sharedWorld.settlements.get(k)?.ownerName !== id) return false;
+
+            newlyLiberated.push(k);
+            return true;
+          })
+          .slice(0, 200);
 
         // Remove liberated settlements from this player's captured list.
         const liberatedSet  = new Set(player.liberated);
@@ -509,7 +615,21 @@ function _attachHandlers(ws, id, name) {
         if (ns) {
           ns.gameState = msg.gameState;
           if (msg.gameState) {
-            console.log(`[💾] Saved game state for "${name}"`);
+            // If the server has not yet assigned an authoritative gold balance for
+            // this player (e.g. right after a server restart), bootstrap it from
+            // the save blob's inventory.  After that the server never reads gold
+            // from the blob again – player.gold is the sole authoritative source.
+            if (ns.gold === null || ns.gold === undefined) {
+              ns.gold = _extractGoldFromSave(msg.gameState);
+              const player = players.get(id);
+              if (player) player.gold = ns.gold;
+            } else {
+              // Persist the server-tracked gold into the namedSession so it
+              // survives reconnects within the same server process.
+              const player = players.get(id);
+              if (player) ns.gold = player.gold;
+            }
+            console.log(`[💾] Saved game state for "${name}" (gold: ${ns.gold})`);
           } else {
             // Clear this player's territory from sharedWorld when they reset.
             const removedKeys = [];
@@ -520,9 +640,35 @@ function _attachHandlers(ws, id, name) {
               }
             }
             if (removedKeys.length) broadcastWorldDelta(removedKeys);
+            // Also reset the server-tracked gold on a full save wipe.
+            ns.gold = 0;
+            const player = players.get(id);
+            if (player) player.gold = 0;
             console.log(`[🗑] Cleared game state for "${name}"`);
           }
         }
+      }
+    }
+
+    // ─── Map buildings ──────────────────────────────────────────────────────
+    // Clients send { type: 'mapBuildings', buildings: [{type, tx, ty}] } whenever
+    // their placed buildings change (lumber camps, mines, bridges).
+    // The server stores the list per player and includes it in the state broadcast
+    // so other clients can render the buildings and walk on bridges.
+    if (msg.type === 'mapBuildings') {
+      const player = players.get(id);
+      if (!player) return;
+      if (Array.isArray(msg.buildings)) {
+        const VALID_TYPES = new Set(['lumberCamp', 'mine', 'bridge']);
+        player.mapBuildings = msg.buildings
+          .filter(b =>
+            b && typeof b === 'object' &&
+            VALID_TYPES.has(b.type) &&
+            Number.isInteger(b.tx) && b.tx >= 0 && b.tx < MAP_WIDTH &&
+            Number.isInteger(b.ty) && b.ty >= 0 && b.ty < MAP_HEIGHT,
+          )
+          .map(b => ({ type: b.type, tx: b.tx, ty: b.ty }))
+          .slice(0, 500); // reasonable per-player cap
       }
     }
 
@@ -560,14 +706,20 @@ function _attachHandlers(ws, id, name) {
     const snapshot = player
       ? { x: player.x, y: player.y, angle: player.angle }
       : { x: 0, y: 0, angle: 0 };
+    // Persist the server-tracked gold before removing the player entry.
+    const finalGold = player?.gold ?? null;
     players.delete(id);
     console.log(`[-] Player "${name}" disconnected (total: ${players.size})`);
     broadcast(JSON.stringify({ type: 'leave', id, name }));
 
-    // Persist latest position in namedSessions so the player can rejoin by name.
-    // Preserve the existing gameState so it survives the disconnect.
+    // Persist latest position and authoritative gold in namedSessions so the
+    // player can rejoin by name with the correct balance.
     const prevNs = namedSessions.get(name.toLowerCase());
-    namedSessions.set(name.toLowerCase(), { ...snapshot, gameState: prevNs?.gameState ?? null });
+    namedSessions.set(name.toLowerCase(), {
+      ...snapshot,
+      gameState: prevNs?.gameState ?? null,
+      gold: finalGold ?? prevNs?.gold ?? null,
+    });
   });
 
   ws.on('error', (err) => {
@@ -623,6 +775,24 @@ function _isNearSettlement(player, key) {
 }
 
 /**
+ * When a settlement changes hands via PvP, remove it from the previous owner's
+ * `player.captured` list so the next state broadcast no longer shows a stale
+ * territory overlay.
+ *
+ * @param {string} key          Settlement key ('castle:N' / 'village:N').
+ * @param {string} newOwnerId   Id of the player who is taking ownership.
+ */
+function _evictPreviousOwner(key, newOwnerId) {
+  const prev = sharedWorld.settlements.get(key);
+  if (prev?.ownerName && prev.ownerName !== newOwnerId) {
+    const prevPlayer = players.get(prev.ownerName);
+    if (prevPlayer?.captured) {
+      prevPlayer.captured = prevPlayer.captured.filter(c => c !== key);
+    }
+  }
+}
+
+/**
  * Handle an 'action' message from a connected player.
  * Validates the action against authoritative state, applies it, and responds.
  *
@@ -669,6 +839,9 @@ function _handleAction(ws, id, name, player, msg) {
       }
     }
     const ownerColor = typeof player.kingdom?.color === 'string' ? player.kingdom.color : '#64b5f6';
+    // PvP: remove the settlement from the previous owner's captured list so
+    // their state broadcast no longer shows a stale territory overlay.
+    _evictPreviousOwner(key, id);
     sharedWorld.settlements.set(key, { ownerName: id, controllingNationId: -1, ownerColor });
     // Add to the player's captured list if not already there.
     if (!Array.isArray(player.captured)) player.captured = [];
@@ -701,6 +874,65 @@ function _handleAction(ws, id, name, player, msg) {
     return;
   }
 
+  // ── gold_earn ──────────────────────────────────────────────────────────────
+  // Client informs the server that it earned gold from a legitimate in-game
+  // source.  The server validates the source against the whitelist and a
+  // per-event cap, then updates its authoritative balance and sends a
+  // `gold_sync` message so the client reconciles to the canonical value.
+  if (kind === 'gold_earn') {
+    const rawAmount = Number(msg.amount);
+    const source    = typeof msg.source === 'string' ? msg.source : '';
+    const cap       = GOLD_EARN_SOURCES[source];
+
+    if (!Number.isInteger(rawAmount) || rawAmount <= 0) {
+      ws.send(JSON.stringify({ type: 'action_reject', kind, reason: 'invalid_amount' }));
+      return;
+    }
+    if (cap === undefined) {
+      // Unknown source – reject entirely; legitimate income always supplies a
+      // recognised source tag.
+      console.warn(`[⚠] gold_earn from "${name}" rejected: unknown source "${source}"`);
+      ws.send(JSON.stringify({ type: 'action_reject', kind, reason: 'unknown_source' }));
+      _sendGoldSync(ws, player.gold);
+      return;
+    }
+    const amount = Math.min(rawAmount, cap);
+    player.gold = (player.gold ?? 0) + amount;
+    const ns = namedSessions.get(name.toLowerCase());
+    if (ns) ns.gold = player.gold;
+    _sendGoldSync(ws, player.gold);
+    return;
+  }
+
+  // ── gold_spend ─────────────────────────────────────────────────────────────
+  // Client informs the server that it spent gold on an in-game action.
+  // The server deducts from the authoritative balance.  If the balance would
+  // go negative the client's gold is corrected down to the server value
+  // (indicating the client had more gold than the server tracked – a sign of
+  // manipulation), and a `gold_sync` correction is sent.
+  if (kind === 'gold_spend') {
+    const amount = Number(msg.amount);
+    if (!Number.isInteger(amount) || amount <= 0) {
+      ws.send(JSON.stringify({ type: 'action_reject', kind, reason: 'invalid_amount' }));
+      return;
+    }
+    const current = player.gold ?? 0;
+    if (amount > current) {
+      // The client is trying to spend more than the server thinks it has.
+      // This means the client's gold was inflated (cheat or deSync).
+      // Hard-sync the client to the server's authoritative balance.
+      console.warn(`[⚠] gold_spend from "${name}" exceeded server balance (${amount} > ${current}) – correcting`);
+      _sendGoldSync(ws, current);
+      return;
+    }
+    player.gold = current - amount;
+    const ns = namedSessions.get(name.toLowerCase());
+    if (ns) ns.gold = player.gold;
+    // No gold_sync needed for normal spends (client applied it locally already).
+    ws.send(JSON.stringify({ type: 'action_ok', kind }));
+    return;
+  }
+
   // ── All other actions ──────────────────────────────────────────────────────
   // Accepted optimistically.  The server records the action for auditing and
   // future validation expansion (diplomacy, building, trade, recruitment, etc.).
@@ -726,18 +958,19 @@ setInterval(() => {
 
   if (players.size === 0) return;
 
-  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[], team: string }>} */
+  /** @type {Record<string, { x: number, y: number, angle: number, name: string, appearance: object|null, kingdom: object|null, captured: string[], liberated: string[], team: string, mapBuildings: {type:string,tx:number,ty:number}[] }>} */
   const snapshot = {};
   for (const [pid, data] of players) {
     // Omit players whose position isn't known yet (no 'move' received).
     if (!data.hasPosition) continue;
     snapshot[pid] = {
       x: data.x, y: data.y, angle: data.angle, name: data.name,
-      appearance: data.appearance ?? null,
-      kingdom:    data.kingdom    ?? null,
-      captured:   data.captured  ?? [],
-      liberated:  data.liberated ?? [],
-      team:       data.team      ?? '',
+      appearance:   data.appearance   ?? null,
+      kingdom:      data.kingdom      ?? null,
+      captured:     data.captured     ?? [],
+      liberated:    data.liberated    ?? [],
+      team:         data.team         ?? '',
+      mapBuildings: data.mapBuildings ?? [],
     };
   }
 

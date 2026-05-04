@@ -25,8 +25,9 @@
  * Client → Server
  *   move      { type: 'move', x, y, angle }
  *   info      { type: 'info', appearance: object, kingdom: { name, color } }
- *   territory { type: 'territory', captured: string[], liberated: string[] }
- *   save      { type: 'save', gameState: object|null }
+ *   territory    { type: 'territory', captured: string[], liberated: string[] }
+ *   mapBuildings { type: 'mapBuildings', buildings: { type: string, tx: number, ty: number }[] }
+ *   save         { type: 'save', gameState: object|null }
  *   team      { type: 'team', team: string }    (declare team; '' = no team)
  *   action    { type: 'action', kind: string, ...payload }
  *               Validated kinds: 'capture', 'liberate'
@@ -96,6 +97,20 @@ export class MultiplayerClient {
      * @type {{ pvpEnabled: boolean, teamsEnabled: boolean, maxTeamNameLen: number }|null}
      */
     this.serverConfig = null;
+
+    /**
+     * Authoritative gold balance sent by the server in the 'welcome' message.
+     * Game.js passes this to `GameUI.syncGold()` after init so the client's
+     * inventory reflects the server's tracked value rather than any locally
+     * cached (potentially manipulated) save-blob value.
+     * @type {number|null}
+     */
+    this.serverGold = null;
+
+    /** Called whenever the server sends a `gold_sync` balance correction.
+     *  Argument: the authoritative gold balance (non-negative integer).
+     *  @type {((balance: number) => void)|null} */
+    this.onGoldSync = null;
 
     /** Player name confirmed by the server. @type {string} */
     this.playerName = playerName.trim().slice(0, 20) || '玩家';
@@ -221,6 +236,21 @@ export class MultiplayerClient {
   }
 
   /**
+   * Send the player's current list of placed map buildings (lumber camps, mines,
+   * bridges) to the server.  The server re-broadcasts the list in the periodic
+   * 'state' message so other clients can render the buildings and walk on bridges.
+   *
+   * Only the tile position and building type are sent; internal state (phaseTick,
+   * worker assignments, etc.) stays client-local.
+   *
+   * @param {{ type: string, tx: number, ty: number }[]} buildings
+   */
+  sendMapBuildings(buildings) {
+    if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
+    this._ws.send(JSON.stringify({ type: 'mapBuildings', buildings }));
+  }
+
+  /**
    * Send the full game-state snapshot to the server for persistence under this
    * player's named account.  Pass `null` to clear the server-side save (e.g. on reset).
    * Silently ignored if not currently connected.
@@ -293,6 +323,7 @@ export class MultiplayerClient {
         this.gameState  = msg.gameState ?? null;
         this.worldState = msg.worldState ?? null;
         this.serverConfig = msg.serverConfig ?? null;
+        this.serverGold = typeof msg.serverGold === 'number' ? msg.serverGold : null;
         this.playerName = msg.name || this.playerName;
         onWelcome?.();
       } else if ((msg.type === 'name_taken' || msg.type === 'name_required') && !welcomed) {
@@ -353,6 +384,13 @@ export class MultiplayerClient {
         // any player captures or liberates a settlement.
         if (msg.settlements && typeof msg.settlements === 'object') {
           this.onWorldDelta?.({ settlements: msg.settlements, version: msg.version ?? 0 });
+        }
+        break;
+      case 'gold_sync':
+        // Server-authoritative gold balance.  Fired after every gold_earn /
+        // gold_spend action and on reconnect (via serverGold in 'welcome').
+        if (typeof msg.balance === 'number') {
+          this.onGoldSync?.(msg.balance);
         }
         break;
       // action_ok / action_reject are handled by per-action callbacks (sendAction).

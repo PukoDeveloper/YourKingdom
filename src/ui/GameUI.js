@@ -750,6 +750,22 @@ export class GameUI {
      */
     this.onMapBuildingChanged = null;
 
+    /**
+     * Fired whenever the player earns gold (inside `_addGold`).
+     * In multiplayer, Game.js wires this up to send a `gold_earn` action to
+     * the server so the authoritative balance stays in sync.
+     * @type {((amount: number, source: string) => void)|null}
+     */
+    this.onGoldEarned = null;
+
+    /**
+     * Fired whenever the player spends gold (inside `_spendGold`).
+     * In multiplayer, Game.js wires this up to send a `gold_spend` action to
+     * the server so the authoritative balance stays in sync.
+     * @type {((amount: number) => void)|null}
+     */
+    this.onGoldSpent = null;
+
     if (savedState) {
       this.loadState(savedState);
     } else {
@@ -1948,25 +1964,6 @@ export class GameUI {
           <button id="btn-reset-game" class="btn-danger">重置</button>
         </div>
       </div>
-
-      <div class="settings-section settings-dev-section">
-        <div class="settings-dev-header">🛠 開發者工具</div>
-        <div class="settings-row">
-          <div class="settings-row-label">
-            <span class="settings-row-icon">🪙</span>
-            <div>
-              <div class="settings-row-title">金幣操作</div>
-              <div class="settings-row-desc">目前持有：<span id="dev-gold-display">${this._getGold()}</span> 金幣</div>
-            </div>
-          </div>
-          <div class="dev-gold-btns">
-            <button id="dev-btn-add100"   class="dev-gold-btn">+100</button>
-            <button id="dev-btn-add1000"  class="dev-gold-btn">+1000</button>
-            <button id="dev-btn-sub100"   class="dev-gold-btn dev-gold-btn-sub">−100</button>
-            <button id="dev-btn-sub1000"  class="dev-gold-btn dev-gold-btn-sub">−1000</button>
-          </div>
-        </div>
-      </div>
     `;
 
     document.getElementById('btn-reset-game').addEventListener('click', () => {
@@ -1975,28 +1972,6 @@ export class GameUI {
           this.onReset();
         }
       }
-    });
-
-    const _refreshDevGold = () => {
-      const el = document.getElementById('dev-gold-display');
-      if (el) el.textContent = this._getGold();
-    };
-
-    document.getElementById('dev-btn-add100').addEventListener('click', () => {
-      this._addGold(100);
-      _refreshDevGold();
-    });
-    document.getElementById('dev-btn-add1000').addEventListener('click', () => {
-      this._addGold(1000);
-      _refreshDevGold();
-    });
-    document.getElementById('dev-btn-sub100').addEventListener('click', () => {
-      this._spendGold(100);
-      _refreshDevGold();
-    });
-    document.getElementById('dev-btn-sub1000').addEventListener('click', () => {
-      this._spendGold(1000);
-      _refreshDevGold();
     });
   }
 
@@ -4320,16 +4295,37 @@ export class GameUI {
 
   /**
    * Add `amount` gold to the player's inventory.
+   *
+   * In multiplayer the `source` tag is forwarded to the server via the
+   * `onGoldEarned` callback so the server can validate and track the earn
+   * against its authoritative balance.
+   *
+   * Recognised sources (server whitelist):
+   *   'treasury'         – regional treasury collection
+   *   'trade'            – daily trade-route income
+   *   'diplomacy_demand' – gold extorted from an NPC nation
+   *   'peace_treaty'     – gold received as part of a peace deal
+   *   'npc_gift'         – goodwill gift delivered by an NPC nation
+   *   'refund'           – operation refund (failed dispatch, overpayment, etc.)
+   *
    * @param {number} amount
+   * @param {string} [source='']  Income source tag (see above).
    */
-  _addGold(amount) {
+  _addGold(amount, source = '') {
     if (amount <= 0) return;
     this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: amount });
+    this.onGoldEarned?.(amount, source);
   }
 
   /**
    * Deduct `amount` gold from the player's inventory.
    * Returns true on success, false if not enough gold.
+   *
+   * In multiplayer, the spend is also forwarded to the server via the
+   * `onGoldSpent` callback so the authoritative balance can be kept in sync.
+   * If the server detects the client's balance was higher than its own
+   * (indicating manipulation), it sends a `gold_sync` correction.
+   *
    * @param {number} amount
    * @returns {boolean}
    */
@@ -4344,7 +4340,28 @@ export class GameUI {
       this.inventory.removeItem(gi.id, deduct);
       remaining -= deduct;
     }
-    return remaining <= 0;
+    const success = remaining <= 0;
+    if (success) this.onGoldSpent?.(amount);
+    return success;
+  }
+
+  /**
+   * Hard-set the player's gold to `serverBalance`, discarding any locally
+   * tracked value that differs.  Called whenever the server sends an
+   * authoritative `gold_sync` message.
+   *
+   * @param {number} serverBalance  Non-negative integer from the server.
+   */
+  syncGold(serverBalance) {
+    const target = Math.max(0, Math.floor(serverBalance));
+    // Remove all existing gold items.
+    for (const gi of this.inventory.getItems().filter(i => i.name === '金幣' && i.type === 'loot')) {
+      this.inventory.removeItem(gi.id, gi.quantity);
+    }
+    if (target > 0) {
+      this.inventory.addItem({ name: '金幣', type: 'loot', icon: '🪙', quantity: target });
+    }
+    this._refreshGoldDisplay();
   }
 
   // -------------------------------------------------------------------------
@@ -5048,7 +5065,7 @@ export class GameUI {
     document.getElementById('btn-collect-treasury')?.addEventListener('click', () => {
       const amount = this._regionalTreasury.get(key) ?? 0;
       if (amount <= 0) { this._toast('金庫目前為空。'); return; }
-      this._addGold(amount);
+      this._addGold(amount, 'treasury');
       this._regionalTreasury.set(key, 0);
       this._addInboxMessage('💰', `已從 ${settlement.name} 金庫提取 🪙${amount}。`);
       this._refreshGoldDisplay();
@@ -6278,7 +6295,7 @@ export class GameUI {
 
       if (accepted) {
         // Ruler complies – player gets gold, relation drops (resentment)
-        this._addGold(demandGold);
+        this._addGold(demandGold, 'diplomacy_demand');
         const relDelta = -(DEMAND_SUCCESS_REL_BASE + Math.floor(Math.random() * DEMAND_SUCCESS_REL_VARIANCE));
         this.diplomacySystem.modifyPlayerRelation(nationId, relDelta);
         this._refreshGoldDisplay();
@@ -7975,7 +7992,7 @@ export class GameUI {
         if (!bldg) return;
         if (!confirm(`確定要拆除「${bldg.name}」嗎？退還 🪙${refund} 金幣。`)) return;
         settlement.buildings.splice(idx, 1);
-        if (refund > 0) this._addGold(refund);
+        if (refund > 0) this._addGold(refund, 'refund');
         this._addInboxMessage('🪚', `${settlement.name} 拆除了「${bldg.name}」，退還 🪙${refund}。`);
         this._renderBuildingConstructionTab(govBuilding, settlement);
       });
@@ -8650,7 +8667,7 @@ export class GameUI {
         this._renderSendLetter(fromSettlement);
       } else {
         // Refund if we couldn't send
-        this._addGold(goldInput);
+        this._addGold(goldInput, 'refund');
         this._refreshGoldDisplay();
         this._toast('⚠ 無法派出信使（找不到目標位置）');
       }
@@ -8776,7 +8793,7 @@ export class GameUI {
       const { playerGoldGain, structureRebuildNeeded } =
         this.diplomacySystem.applyPeaceTreaty(_PLAYER_NATION_ID_UI, receiverNationId, terms);
 
-      if (playerGoldGain > 0) this._addGold(playerGoldGain);
+      if (playerGoldGain > 0) this._addGold(playerGoldGain, 'peace_treaty');
       else if (playerGoldGain < 0) this._spendGold(-playerGoldGain);
 
       // Sync settlement ownership flags for any ceded territories.
@@ -8807,7 +8824,7 @@ export class GameUI {
       const { playerGoldGain, structureRebuildNeeded } =
         this.diplomacySystem.applyPeaceTreaty(entry.senderNationId, _PLAYER_NATION_ID_UI, entry.terms);
 
-      if (playerGoldGain > 0) this._addGold(playerGoldGain);
+      if (playerGoldGain > 0) this._addGold(playerGoldGain, 'peace_treaty');
       else if (playerGoldGain < 0) this._spendGold(-playerGoldGain);
 
       if (structureRebuildNeeded) {
@@ -9036,7 +9053,7 @@ export class GameUI {
     const nationName = nation?.name ?? '未知國家';
 
     // Credit the player's treasury.
-    if (gold > 0) this._addGold(gold);
+    if (gold > 0) this._addGold(gold, 'npc_gift');
     this._refreshGoldDisplay();
 
     this._addInboxMessage('🎁', `${nationName} 贈送了 🪙${gold} 作為友誼禮物！關係改善 +${relDelta}。`);
