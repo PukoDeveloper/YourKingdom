@@ -68,7 +68,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { MapData }                   from './src/world/MapData.js';
-import { TILE_SIZE }                 from './src/world/constants.js';
+import { TILE_SIZE, MAP_WIDTH, MAP_HEIGHT } from './src/world/constants.js';
 
 const PORT                = Number(process.env.PORT ?? 3000);
 const TICK_MS             = 50;     // broadcast interval (20 Hz)
@@ -579,8 +579,8 @@ function _attachHandlers(ws, id, name) {
           .filter(b =>
             b && typeof b === 'object' &&
             VALID_TYPES.has(b.type) &&
-            Number.isInteger(b.tx) && b.tx >= 0 &&
-            Number.isInteger(b.ty) && b.ty >= 0,
+            Number.isInteger(b.tx) && b.tx >= 0 && b.tx < MAP_WIDTH &&
+            Number.isInteger(b.ty) && b.ty >= 0 && b.ty < MAP_HEIGHT,
           )
           .map(b => ({ type: b.type, tx: b.tx, ty: b.ty }))
           .slice(0, 500); // reasonable per-player cap

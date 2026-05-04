@@ -208,8 +208,12 @@ export class Game {
     // Rendered at the same depth as the local map-building overlay (above roads,
     // below structures and unit sprites), so the visual result is consistent.
     this._remoteBuildingsContainer = new Container();
-    this._world.addChildAt(this._remoteBuildingsContainer,
-      this._world.getChildIndex(this._mapBuildingRenderer.container) + 1);
+    const _localMbIdx = this._world.getChildIndex(this._mapBuildingRenderer.container);
+    if (_localMbIdx >= 0) {
+      this._world.addChildAt(this._remoteBuildingsContainer, _localMbIdx + 1);
+    } else {
+      this._world.addChild(this._remoteBuildingsContainer);
+    }
 
     // Player
     this._setLoadingStatus('召喚玩家...');
